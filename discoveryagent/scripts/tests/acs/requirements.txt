@@ -1,0 +1,41 @@
+# ACS Data Access Script Dependencies
+# Install with: pip install -r requirements.txt
+
+# LLM / Agent
+anthropic>=0.39.0       # Anthropic Claude SDK
+
+# Core HTTP & Async
+aiohttp>=3.9.0          # Async HTTP client
+aiofiles>=23.2.1        # Async file I/O
+requests>=2.31.0        # Sync HTTP (for fallback/simple operations)
+
+# Data Processing
+pandas>=2.1.0           # DataFrames and CSV export
+numpy>=1.24.0           # Numerical operations
+
+# Resilience & Rate Limiting
+tenacity>=8.2.0         # Retry logic with exponential backoff
+aiolimiter>=1.1.0       # Async rate limiting
+
+# Configuration & Environment
+python-dotenv>=1.0.0    # .env file loading
+
+# Caching
+diskcache>=5.6.0        # Persistent disk-based cache
+
+# Progress & Logging
+tqdm>=4.66.0            # Progress bars
+rich>=13.7.0            # Rich console output and logging
+
+# Type hints (for development)
+typing-extensions>=4.9.0
+
+# Testing
+pytest>=8.0.0           # Test framework
+pytest-asyncio>=0.23.0  # Async test support
+aioresponses>=0.7.6     # Mock aiohttp responses
+
+# Optional: For enhanced geographic resolution
+# usaddress>=0.5.10     # Address parsing (uncomment if needed)
+# geopy>=2.4.0          # Geocoding fallback (uncomment if needed)
+

@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Audit | Discovery Agent</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js"></script>
+    <script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <style>
+        #audit-guide-modal .modal-content {
+            max-width: 920px;
+            border: 1px solid rgba(14, 116, 144, 0.18);
+            box-shadow: 0 28px 70px rgba(15, 23, 42, 0.24);
+        }
+
+        #audit-guide-modal .modal-header {
+            position: relative;
+            background: linear-gradient(120deg, rgba(6, 95, 70, 0.1), rgba(14, 116, 144, 0.14));
+            border-bottom-color: rgba(14, 116, 144, 0.2);
+        }
+
+        #audit-guide-modal .modal-header h3 {
+            width: 100%;
+            margin: 0;
+            text-align: center;
+            color: #0f766e;
+            letter-spacing: 0.01em;
+        }
+
+        #audit-guide-modal .modal-close {
+            position: absolute;
+            right: 26px;
+        }
+
+        #audit-guide-modal .modal-body {
+            background: linear-gradient(180deg, #f8fffd 0%, #f7fafc 100%);
+        }
+
+        #audit-guide-modal .markdown-body h1 {
+            text-align: center;
+            color: #0e7490;
+        }
+
+        #audit-guide-modal .markdown-body h2 {
+            color: #0f766e;
+            border-bottom: 1px solid rgba(15, 118, 110, 0.2);
+            padding-bottom: 6px;
+        }
+    </style>
+</head>
+<body class="audit-only">
+    <!-- Slim top bar -->
+    <div id="audit-topbar" class="audit-topbar">
+        <div style="display:flex;align-items:center;gap:12px;">
+            <span class="audit-topbar-brand">Discovery Agent</span>
+            <div class="audit-topbar-links">
+                <a href="{{ url_for('readme_view') }}" target="_blank" rel="noopener noreferrer" class="audit-topbar-btn">README</a>
+                {% if research_paper_pdf_available and research_paper_pdf_url %}
+                <a href="{{ research_paper_pdf_url }}" target="_blank" rel="noopener noreferrer" class="audit-topbar-btn">Research Paper</a>
+                {% else %}
+                <span class="audit-topbar-btn disabled">Research Paper</span>
+                {% endif %}
+                {% if github_url %}
+                <a href="{{ github_url }}" target="_blank" rel="noopener noreferrer" class="audit-topbar-btn">Codebase</a>
+                {% endif %}
+                <a href="{{ url_for('checkpoint_browser') }}" target="_blank" rel="noopener noreferrer" class="audit-topbar-btn">Checkpoints</a>
+            </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;">
+            {% if audit_guide_html %}
+            <button id="audit-guide-btn" class="audit-topbar-btn" type="button">Audit Guide</button>
+            {% endif %}
+        </div>
+    </div>
+
+    {% if audit_guide_html %}
+    <div id="audit-guide-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="audit-guide-title">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="audit-guide-title">Audit UI Guide</h3>
+                <button class="modal-close" id="audit-guide-close" type="button" aria-label="Close audit guide">&times;</button>
+            </div>
+            <div class="modal-body markdown-body">
+                {{ audit_guide_html }}
+            </div>
+            <div class="modal-footer">
+                <button id="audit-guide-dismiss" class="btn btn-secondary" type="button">Close</button>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Main container -->
+    <div class="container">
+        <div id="main-interface" class="hidden">
+            <div id="workspace" class="split-view audit-only-chat">
+                <div id="chat-panel" class="split-panel chat-panel">
+                    <div class="chat-header">
+                        <div>
+                            <h3 class="chat-panel-title">Audit Chat</h3>
+                            <p class="chat-subtitle">Ask about the background report, hypotheses, or research context.</p>
+                        </div>
+                        <div class="chat-header-actions">
+                            <button id="chat-export-btn" class="btn btn-secondary btn-small" type="button">Export</button>
+                            <button id="chat-reset-btn" class="btn btn-secondary btn-small" type="button">Reset</button>
+                        </div>
+                    </div>
+                    <div id="chat-messages" class="chat-messages"></div>
+                    <div class="chat-input-form">
+                        <textarea id="chat-input" placeholder="Ask anything about the hypotheses, reports, or research..." rows="2" disabled></textarea>
+                        <button type="button" id="chat-send-btn" class="btn btn-primary" disabled>Send</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="audit-loading-overlay" class="loading-overlay">
+        <div class="confirm-overlay-card">
+            <div id="audit-loading-spinner" class="spinner" aria-hidden="true"></div>
+            <p id="audit-loading-message">Checking session data...</p>
+            <div class="loading-overlay-actions">
+                <button id="audit-loading-retry-btn" type="button" class="btn btn-secondary hidden">Retry</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        window.auditHomeConfig = {
+            checkpointDir: {{ checkpoint_dir | tojson }},
+            codeDir: {{ code_dir | tojson }},
+            chatStorageScope: {{ chat_storage_scope | default('anonymous') | tojson }},
+        };
+    </script>
+    <script>
+        (function () {
+            const config = window.auditHomeConfig || {};
+            const mainInterfaceEl = document.getElementById('main-interface');
+            const chatMessagesEl = document.getElementById('chat-messages');
+            const chatInputEl = document.getElementById('chat-input');
+            const chatSendBtn = document.getElementById('chat-send-btn');
+            const chatResetBtn = document.getElementById('chat-reset-btn');
+            const bootOverlayEl = document.getElementById('audit-loading-overlay');
+            const bootSpinnerEl = document.getElementById('audit-loading-spinner');
+            const bootMessageEl = document.getElementById('audit-loading-message');
+            const bootRetryBtn = document.getElementById('audit-loading-retry-btn');
+            const guideBtn = document.getElementById('audit-guide-btn');
+            const guideModal = document.getElementById('audit-guide-modal');
+            const guideCloseBtn = document.getElementById('audit-guide-close');
+            const guideDismissBtn = document.getElementById('audit-guide-dismiss');
+
+            let sending = false;
+            let sessionReady = false;
+            let chatHistory = []; // { role: 'user'|'assistant', text: string }
+            const CHAT_STORAGE_VERSION = 1;
+            const AUDIT_CHAT_STORAGE_MAX_MESSAGES = 120;
+            const AUDIT_CHAT_STORAGE_MAX_CHARS = 350000;
+            const chatStorageScope = (typeof config.chatStorageScope === 'string' && config.chatStorageScope.trim())
+                ? config.chatStorageScope.trim()
+                : 'anonymous';
+            const auditChatStorageKey = `da_audit_chat_state_v${CHAT_STORAGE_VERSION}_${chatStorageScope}`;
+
+            // ── Markdown rendering ────────────────────────────────────────────
+            function renderMarkdown(text) {
+                if (!text) return '';
+                if (window.marked) {
+                    try { return marked.parse(text); } catch (_) {}
+                }
+                return text
+                    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                    .replace(/\n/g, '<br>');
+            }
+
+            // Rewrite <img> src attributes produced by marked.parse so they route
+            // through the authenticated /api/serve_asset endpoint.
+            // Only rewrites paths that are not already absolute HTTP URLs or data URIs.
+            function rewriteImagePaths(el) {
+                el.querySelectorAll('img').forEach(function(img) {
+                    var src = img.getAttribute('src');
+                    if (src && !src.startsWith('http') && !src.startsWith('data:') && !src.startsWith('/api/serve_asset')) {
+                        img.setAttribute('src', '/api/serve_asset?path=' + encodeURIComponent(src));
+                    }
+                    img.style.maxWidth = '100%';
+                    img.style.borderRadius = '4px';
+                    img.style.marginTop = '8px';
+                    img.style.display = 'block';
+                    img.addEventListener('error', function() { this.style.display = 'none'; });
+                });
+            }
+
+            function normalizeStoredAuditChatMessages(messages) {
+                if (!Array.isArray(messages)) return [];
+                const normalized = [];
+                for (const message of messages) {
+                    if (!message || typeof message !== 'object') continue;
+                    const role = message.role === 'user' ? 'user' : (message.role === 'assistant' ? 'assistant' : '');
+                    if (!role) continue;
+                    const text = typeof message.text === 'string' ? message.text.trim() : '';
+                    if (!text) continue;
+                    const responseTimeMs = Number.isFinite(message.responseTimeMs)
+                        ? Math.max(0, Math.round(message.responseTimeMs))
+                        : null;
+                    normalized.push({ role, text, responseTimeMs });
+                }
+                const bounded = normalized.length <= AUDIT_CHAT_STORAGE_MAX_MESSAGES
+                    ? normalized
+                    : normalized.slice(normalized.length - AUDIT_CHAT_STORAGE_MAX_MESSAGES);
+                const compact = [];
+                let charBudget = 0;
+                for (let i = bounded.length - 1; i >= 0; i -= 1) {
+                    const entry = bounded[i];
+                    if (compact.length >= AUDIT_CHAT_STORAGE_MAX_MESSAGES) break;
+                    if (charBudget + entry.text.length > AUDIT_CHAT_STORAGE_MAX_CHARS) break;
+                    compact.unshift(entry);
+                    charBudget += entry.text.length;
+                }
+                return compact;
+            }
+
+            function readAuditChatStateFromStorage() {
+                try {
+                    const raw = localStorage.getItem(auditChatStorageKey);
+                    if (!raw) return null;
+                    const parsed = JSON.parse(raw);
+                    if (!parsed || typeof parsed !== 'object') return null;
+                    return {
+                        messages: normalizeStoredAuditChatMessages(parsed.messages),
+                    };
+                } catch (_) {
+                    try { localStorage.removeItem(auditChatStorageKey); } catch (_) {}
+                    return null;
+                }
+            }
+
+            function persistAuditChatState() {
+                try {
+                    localStorage.setItem(auditChatStorageKey, JSON.stringify({
+                        version: CHAT_STORAGE_VERSION,
+                        updatedAt: Date.now(),
+                        messages: normalizeStoredAuditChatMessages(chatHistory),
+                    }));
+                } catch (_) {
+                    // Ignore persistence errors (private mode, disabled storage, quota exceeded).
+                }
+            }
+
+            function clearAuditChatState() {
+                try { localStorage.removeItem(auditChatStorageKey); } catch (_) {}
+            }
+
+            function clearChatBubbles() {
+                while (chatMessagesEl.firstChild) chatMessagesEl.removeChild(chatMessagesEl.firstChild);
+            }
+
+            function renderStoredChatHistory(entries) {
+                clearChatBubbles();
+                entries.forEach(function(entry) {
+                    const contentEl = appendBubble(entry.role, entry.text, false, entry.responseTimeMs);
+                    if (entry.role !== 'user' && window.hljs) {
+                        contentEl.querySelectorAll('pre code').forEach(function(el) { hljs.highlightElement(el); });
+                    }
+                });
+            }
+
+            async function restoreAuditConversationOnServer(entries) {
+                if (!Array.isArray(entries) || entries.length === 0) return;
+                const payloadMessages = normalizeStoredAuditChatMessages(entries).map(function(entry) {
+                    return { role: entry.role, content: entry.text };
+                });
+                if (payloadMessages.length === 0) return;
+                try {
+                    await fetch('/api/audit_chat_restore', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        credentials: 'include',
+                        body: JSON.stringify({ messages: payloadMessages }),
+                    });
+                } catch (_) {
+                    // Best-effort restore only.
+                }
+            }
+
+            function showBootOverlay(message, options) {
+                const config = options || {};
+                if (bootMessageEl && typeof message === 'string') {
+                    bootMessageEl.textContent = message;
+                }
+                if (bootSpinnerEl) {
+                    bootSpinnerEl.classList.toggle('hidden', !!config.hideSpinner);
+                }
+                if (bootRetryBtn) {
+                    bootRetryBtn.classList.toggle('hidden', !config.allowRetry);
+                    bootRetryBtn.disabled = false;
+                }
+                if (bootOverlayEl) {
+                    bootOverlayEl.classList.remove('hidden');
+                }
+            }
+
+            function hideBootOverlay() {
+                if (bootOverlayEl) {
+                    bootOverlayEl.classList.add('hidden');
+                }
+                if (bootSpinnerEl) {
+                    bootSpinnerEl.classList.remove('hidden');
+                }
+                if (bootRetryBtn) {
+                    bootRetryBtn.classList.add('hidden');
+                    bootRetryBtn.disabled = false;
+                }
+            }
+
+            function revealMainInterface() {
+                if (mainInterfaceEl) {
+                    mainInterfaceEl.classList.remove('hidden');
+                }
+            }
+
+            function concealMainInterface() {
+                if (mainInterfaceEl) {
+                    mainInterfaceEl.classList.add('hidden');
+                }
+            }
+
+            function showBootError(message) {
+                showBootOverlay(message, { hideSpinner: true, allowRetry: true });
+            }
+
+            // ── Chat export ───────────────────────────────────────────────────
+            function exportChat() {
+                if (chatHistory.length === 0) {
+                    alert('Nothing to export yet.');
+                    return;
+                }
+                const lines = ['# Audit Chat Export', ''];
+                chatHistory.forEach(function(entry) {
+                    if (entry.role === 'user') {
+                        lines.push('<user>');
+                        lines.push(entry.text);
+                        lines.push('</user>');
+                    } else {
+                        lines.push('<assistant>');
+                        lines.push(entry.text);
+                        lines.push('</assistant>');
+                    }
+                    lines.push('');
+                });
+                const blob = new Blob([lines.join('\n')], { type: 'text/markdown' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+                a.download = `audit_chat_export_${ts}.md`;
+                a.click();
+                URL.revokeObjectURL(url);
+            }
+
+            // ── Chat bubble helpers ───────────────────────────────────────────
+            function scrollToBottom() {
+                chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+            }
+
+            function formatResponseTimeMs(responseTimeMs) {
+                if (!Number.isFinite(responseTimeMs) || responseTimeMs < 0) return null;
+                if (responseTimeMs >= 10000) return `${(responseTimeMs / 1000).toFixed(1)}s`;
+                if (responseTimeMs >= 1000) return `${(responseTimeMs / 1000).toFixed(2)}s`;
+                return `${Math.round(responseTimeMs)} ms`;
+            }
+
+            function appendBubble(role, text, loading, responseTimeMs) {
+                const bubble = document.createElement('div');
+                bubble.classList.add('chat-bubble');
+                if (role === 'user') bubble.classList.add('chat-user');
+
+                const label = document.createElement('div');
+                label.classList.add('chat-bubble-label');
+                label.textContent = role === 'user' ? 'You' : 'Agent';
+
+                const content = document.createElement('div');
+                content.classList.add('chat-bubble-content', 'markdown-body');
+                if (loading) {
+                    content.innerHTML = '<div class="chat-spinner"><span></span><span></span><span></span></div><span class="chat-spinner-text"> Thinking…</span>';
+                } else {
+                    content.innerHTML = renderMarkdown(text);
+                    if (role !== 'user') rewriteImagePaths(content);
+                }
+
+                bubble.appendChild(label);
+                bubble.appendChild(content);
+                const responseTimeLabel = formatResponseTimeMs(responseTimeMs);
+                if (!loading && role === 'assistant' && responseTimeLabel) {
+                    const timing = document.createElement('div');
+                    timing.classList.add('chat-response-time');
+                    timing.textContent = `Response time: ${responseTimeLabel}`;
+                    bubble.appendChild(timing);
+                }
+                chatMessagesEl.appendChild(bubble);
+                scrollToBottom();
+                return content;
+            }
+
+            // ── S3 sync polling ───────────────────────────────────────────────
+            // Mirrors waitForS3SyncIfNeeded() in script.js.
+            // Returns true when ready to proceed, false if sync failed.
+            async function waitForS3Sync() {
+                try {
+                    const res = await fetch('/api/s3_sync_status', { credentials: 'include' });
+                    if (!res.ok) return true;
+                    const status = await res.json();
+                    if (!status.success || !status.required || status.state === 'success') return true;
+
+                    showBootOverlay('Pulling checkpoints and code for your session.\nThis can take a few minutes.');
+
+                    while (true) {
+                        await new Promise(function(r) { setTimeout(r, 2000); });
+                        let s = null;
+                        try {
+                            const r2 = await fetch('/api/s3_sync_status', { credentials: 'include' });
+                            if (r2.ok) s = await r2.json();
+                        } catch (_) {}
+                        if (!s || !s.success || !s.required || s.state === 'success') return true;
+                        if (s.state === 'error') {
+                            showBootError(`Checkpoint download failed: ${s.error || 'unknown error'}`);
+                            return false;
+                        }
+                    }
+                } catch (_) {
+                    return true; // not configured or network error — let initialize try
+                }
+            }
+
+            // ── Guide modal ───────────────────────────────────────────────────
+            function openGuide() {
+                if (!guideModal) return;
+                guideModal.classList.remove('hidden');
+            }
+
+            function closeGuide() {
+                if (!guideModal) return;
+                guideModal.classList.add('hidden');
+            }
+
+            if (guideBtn && guideModal) {
+                guideBtn.addEventListener('click', function() { openGuide(); });
+                guideCloseBtn && guideCloseBtn.addEventListener('click', closeGuide);
+                guideDismissBtn && guideDismissBtn.addEventListener('click', closeGuide);
+                guideModal.addEventListener('click', function (e) {
+                    if (e.target === guideModal) closeGuide();
+                });
+                document.addEventListener('keydown', function (e) {
+                    if (e.key === 'Escape' && !guideModal.classList.contains('hidden')) closeGuide();
+                });
+                openGuide();
+            }
+
+            // ── Session initialization ────────────────────────────────────────
+            async function initSession() {
+                concealMainInterface();
+                sessionReady = false;
+                chatInputEl.disabled = true;
+                chatSendBtn.disabled = true;
+                showBootOverlay('Checking session data...');
+                try {
+                    const syncReady = await waitForS3Sync();
+                    if (!syncReady) return;
+
+                    showBootOverlay('Initializing session...');
+
+                    const res = await fetch('/api/initialize', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        credentials: 'include',
+                        body: JSON.stringify({
+                            checkpoint_dir: config.checkpointDir,
+                            code_dir: config.codeDir,
+                        }),
+                    });
+                    const data = await res.json();
+                    if (!data.success) {
+                        showBootError(`Could not initialize session: ${data.error || 'unknown error'}`);
+                        return;
+                    }
+                    const storedState = readAuditChatStateFromStorage();
+                    const restoredMessages = storedState && Array.isArray(storedState.messages)
+                        ? storedState.messages
+                        : [];
+                    clearChatBubbles();
+                    if (restoredMessages.length > 0) {
+                        chatHistory = restoredMessages;
+                        renderStoredChatHistory(chatHistory);
+                        await restoreAuditConversationOnServer(chatHistory);
+                    } else {
+                        chatHistory = [];
+                        appendBubble(
+                            'assistant',
+                            'Hi! I can answer questions about the background report, hypotheses, and research context for this session. I can also show figures from the research when relevant.',
+                            false,
+                            null
+                        );
+                    }
+                    sessionReady = true;
+                    revealMainInterface();
+                    hideBootOverlay();
+                    chatInputEl.disabled = false;
+                    chatSendBtn.disabled = false;
+                    chatInputEl.focus();
+                } catch (e) {
+                    showBootError('Failed to initialize session. Please try again.');
+                }
+            }
+
+            // ── Send message ──────────────────────────────────────────────────
+            async function sendMessage() {
+                if (sending || !sessionReady) return;
+                const message = (chatInputEl.value || '').trim();
+                if (!message) return;
+
+                sending = true;
+                chatInputEl.value = '';
+                chatInputEl.disabled = true;
+                chatSendBtn.disabled = true;
+
+                chatHistory.push({ role: 'user', text: message, responseTimeMs: null });
+                appendBubble('user', message, false, null);
+                persistAuditChatState();
+                const replyContent = appendBubble('assistant', '', true, null);
+
+                try {
+                    const res = await fetch('/api/chat', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        credentials: 'include',
+                        body: JSON.stringify({ message, mode: 'hypothesis' }),
+                    });
+                    let data = null;
+                    try {
+                        data = await res.json();
+                    } catch (_) {
+                        data = null;
+                    }
+                    if (!res.ok) {
+                        const statusPrefix = `HTTP ${res.status}`;
+                        const detail = (data && data.error) ? data.error : `Request failed with ${statusPrefix}.`;
+                        throw new Error(`${statusPrefix}: ${detail}`);
+                    }
+                    if (!data) {
+                        throw new Error('Server returned an unreadable response payload.');
+                    }
+                    if (!data.success) {
+                        replyContent.innerHTML = `<em>Error: ${data.error || 'unknown error'}</em>`;
+                    } else {
+                        const replyText = data.reply || '';
+                        chatHistory.push({ role: 'assistant', text: replyText, responseTimeMs: data.response_time_ms });
+                        replyContent.innerHTML = renderMarkdown(replyText);
+                        rewriteImagePaths(replyContent);
+                        const responseTimeLabel = formatResponseTimeMs(data.response_time_ms);
+                        if (responseTimeLabel) {
+                            const timing = document.createElement('div');
+                            timing.classList.add('chat-response-time');
+                            timing.textContent = `Response time: ${responseTimeLabel}`;
+                            replyContent.parentElement && replyContent.parentElement.appendChild(timing);
+                        }
+                        persistAuditChatState();
+                        if (window.hljs) {
+                            replyContent.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
+                        }
+                    }
+                } catch (e) {
+                    const message = (e && e.message) ? e.message : 'Request failed due to a network or server error.';
+                    replyContent.innerHTML = `<em>Error: ${message}</em>`;
+                } finally {
+                    sending = false;
+                    chatInputEl.disabled = false;
+                    chatSendBtn.disabled = false;
+                    chatInputEl.focus();
+                    scrollToBottom();
+                }
+            }
+
+            // ── Reset ─────────────────────────────────────────────────────────
+            chatResetBtn && chatResetBtn.addEventListener('click', async () => {
+                if (!confirm('Reset the conversation? This will clear all messages and start a new session.')) return;
+                clearChatBubbles();
+                chatHistory = [];
+                clearAuditChatState();
+                sessionReady = false;
+                sending = false;
+                await fetch('/api/reset_chat_context', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ scope: 'report', report_type: 'background', report_view: 'summary' }),
+                }).catch(() => {});
+                await initSession();
+            });
+
+            // ── Input events ──────────────────────────────────────────────────
+            chatInputEl && chatInputEl.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+            });
+            chatSendBtn && chatSendBtn.addEventListener('click', sendMessage);
+
+            const chatExportBtn = document.getElementById('chat-export-btn');
+            chatExportBtn && chatExportBtn.addEventListener('click', exportChat);
+            bootRetryBtn && bootRetryBtn.addEventListener('click', function () {
+                bootRetryBtn.disabled = true;
+                initSession();
+            });
+
+            window.addEventListener('beforeunload', function () {
+                persistAuditChatState();
+            });
+
+            // ── Boot ──────────────────────────────────────────────────────────
+            document.addEventListener('DOMContentLoaded', initSession);
+        })();
+    </script>
+</body>
+</html>

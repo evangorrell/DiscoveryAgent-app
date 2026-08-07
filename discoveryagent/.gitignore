@@ -1,0 +1,52 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+.vscode
+
+# Virtual environments
+.venv/
+venv/
+env/
+da_cc_venv/
+*.egg-info/
+
+# Environment variables (secrets)
+.env
+
+# IMPORTANT: Do NOT ignore uv.lock - it should be committed!
+# uv.lock ensures reproducible installations
+**/.DS_Store
+
+# Cursor
+.cursor/*
+
+# Claude
+.claude/*
+
+# Package specific:
+AIR/ARCHIVE/*
+data/*
+node_modules/*
+package-lock.json
+package.json
+AIR/OLD/*
+
+scripts/experiments/*
+scripts/user_experiments/*
+scripts/internal_utils/*
+scripts/unit_tests/*
+scripts/testing/*
+scripts/analyses/*
+scripts/OLD/*
+scripts/processing/*
+scripts/evals/*
+scripts/examples/*
+
+DA_data/*
+guides/*
+dwarf_analysis_03-09/*
+baselines/*

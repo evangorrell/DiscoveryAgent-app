@@ -1,0 +1,13 @@
+# This file is kept for backwards compatibility
+# The source of truth is pyproject.toml
+# To install dependencies, use: uv sync
+#
+# If you need to use pip instead of uv:
+-e .
+#
+# For the interactive CLI:
+# pip install -e ".[interactive]"
+# Optional agents require their matching extras:
+#   .[acs]
+#   .[opentargets]
+#   .[all]

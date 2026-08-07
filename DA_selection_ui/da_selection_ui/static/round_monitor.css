@@ -1,0 +1,637 @@
+/* Round Monitor: layout additions only. Colors/spacing reuse the design
+   tokens and components already defined in style.css (.card, .btn, .badge,
+   .chat-bubble, .chat-mode-button, .breadcrumb, .view-badge, etc).
+   The Audit Agent Chat intentionally reuses the same styling as the
+   Hypothesis Agent Chat — purple user bubbles, grey assistant bubbles,
+   dark-mode tabs, and Markdown rendering for assistant responses. */
+
+/* --- Width stability: nothing inside the monitor may widen the page --- */
+.rm-page-container {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: hidden;
+}
+
+.rm-paths-card {
+    padding: 20px 24px;
+    margin-bottom: 20px;
+}
+
+.rm-path-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 6px 0;
+    min-width: 0;
+}
+
+.rm-path-row code {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    word-break: break-all;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.rm-selected-hypothesis-card {
+    margin-bottom: 24px;
+}
+
+.rm-selected-hypothesis-card .hypothesis-text {
+    padding-top: 4px;
+    overflow-wrap: anywhere;
+}
+
+/* Two-column layout: DiscoveryAgent Activity (left) | Constellation + Audit
+   Agent Chat stacked (right), ~50/50. The grid gets an explicit height so
+   its children can scroll internally (via min-height: 0 + overflow: auto)
+   instead of growing the page. min-width: 0 on every child keeps long
+   unbroken text from forcing the grid (and page) wider. */
+.rm-monitor-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 24px;
+    width: 100%;
+    max-width: 100%;
+    height: 84vh;
+    min-height: 1600px;
+}
+
+.rm-log-card {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    height: 100%;
+    overflow: hidden;
+}
+
+/* Right column: Constellation (tall floor) over Audit Agent Chat. Equal
+   1fr weights let both grow together beyond their min-height floors. */
+.rm-right-column {
+    display: grid;
+    grid-template-rows: minmax(1040px, 1fr) minmax(480px, 1fr);
+    gap: 24px;
+    min-width: 0;
+    min-height: 0;
+    height: 100%;
+    overflow: hidden;
+}
+
+.rm-tree-card,
+.rm-chat-card {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+}
+
+@media (max-width: 900px) {
+    .rm-monitor-grid {
+        grid-template-columns: minmax(0, 1fr);
+        height: auto;
+        min-height: 0;
+    }
+    .rm-log-card {
+        height: 60vh;
+    }
+    .rm-right-column {
+        grid-template-rows: minmax(360px, 1fr) minmax(380px, 1fr);
+        height: auto;
+    }
+    .rm-constellation {
+        min-height: 280px;
+    }
+}
+
+/* --- DiscoveryAgent Activity feed (left panel) --- */
+.rm-activity-subtitle {
+    margin-top: -4px;
+    margin-bottom: 12px;
+}
+
+.rm-activity-content {
+    flex: 1;
+    min-height: 0;
+    min-width: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+}
+
+/* Light-grey scrollbar for the Activity feed's internal scroll region, for
+   visual consistency with the rest of the UI. */
+.rm-activity-content {
+    scrollbar-width: thin;
+    scrollbar-color: var(--text-muted) transparent;
+}
+
+.rm-activity-content::-webkit-scrollbar {
+    width: 8px;
+}
+
+.rm-activity-content::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.rm-activity-content::-webkit-scrollbar-thumb {
+    background-color: var(--text-muted);
+    border-radius: 4px;
+}
+
+.rm-activity-content::-webkit-scrollbar-thumb:hover {
+    background-color: var(--text-secondary);
+}
+
+.rm-activity-empty {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    padding: 8px 0;
+}
+
+/* --- DiscoveryAgent Activity: structured, collapsible query timeline ---
+   Rows reuse the shared query-row classes (.rm-tree-marker, .rm-query-name,
+   .rm-query-status, .rm-query-description); the time/caret/marker columns are
+   specific to this feed and share a stable combined width so query text always
+   starts at the same x, with detail bullets indented to match (calc() below). */
+.discovery-activity-item {
+    border-bottom: 1px solid var(--border-light);
+}
+
+.discovery-activity-item:last-child {
+    border-bottom: none;
+}
+
+.discovery-activity-row {
+    display: grid;
+    grid-template-columns: 62px 16px 14px minmax(0, 1fr);
+    align-items: baseline;
+    gap: 8px;
+    width: 100%;
+    padding: 8px 0;
+    background: none;
+    border: none;
+    font: inherit;
+    text-align: left;
+    color: inherit;
+    cursor: pointer;
+}
+
+.discovery-activity-row.no-details {
+    cursor: default;
+}
+
+.discovery-activity-row:focus-visible {
+    outline: 2px solid var(--text-secondary);
+    outline-offset: 2px;
+}
+
+.discovery-activity-time {
+    flex-shrink: 0;
+    color: var(--text-muted);
+    font-family: "SFMono-Regular", "Menlo", "Monaco", "Consolas", "Liberation Mono", "Courier New", monospace;
+    font-size: 0.8rem;
+    white-space: nowrap;
+}
+
+/* The row's only clickability affordance, so it reads as a disclosure
+   control. Empty on rows without details (see .no-details below). */
+.discovery-activity-caret {
+    color: var(--text-secondary);
+    font-size: 0.95rem;
+    font-weight: 700;
+    text-align: center;
+    line-height: 1;
+}
+
+.discovery-activity-row.no-details .discovery-activity-caret {
+    color: transparent;
+}
+
+.discovery-activity-main {
+    min-width: 0;
+    font-size: 0.9rem;
+    overflow-wrap: anywhere;
+}
+
+/* Paired with .rm-query-name (which sets no color) via the JS; the shared
+   .rm-query-status/.rm-query-description own status/summary color already. */
+.discovery-activity-query {
+    color: var(--text-primary);
+}
+
+/* Director-activity bullets. Restores the global list-style/padding reset and
+   indents (margin-left) to align under .discovery-activity-main: the time
+   (62px) + caret (16px) + marker (14px) columns and three 8px row gaps. */
+.discovery-activity-actions {
+    list-style: disc;
+    list-style-position: outside;
+    margin: 2px 0 8px calc(62px + 16px + 14px + 8px + 8px + 8px);
+    padding-left: 1.1rem;
+}
+
+.discovery-activity-actions.hidden {
+    display: none;
+}
+
+.discovery-activity-actions li {
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    line-height: 1.45;
+    margin: 2px 0;
+    overflow-wrap: anywhere;
+}
+
+/* --- Round Constellation: low-text visual concept-map. Two layers share one
+   coordinate space: an SVG edge layer (pointer-events: none) and an HTML layer
+   of absolutely-positioned <button> nodes on top. Positions are set inline by
+   renderConstellation() in round_monitor.js; only appearance lives here. */
+.rm-constellation {
+    position: relative;
+    flex: 1;
+    min-height: 420px;
+    margin-top: 4px;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-lg);
+    background: linear-gradient(180deg, #fafbff 0%, var(--card-background) 65%);
+    overflow: hidden;
+}
+
+/* Legend for node color = lane. Dots reuse the .rm-constellation-node--*
+   color rules directly, so legend and node colors can't drift apart. */
+.rm-constellation-legend {
+    position: absolute;
+    top: 10px;
+    left: 12px;
+    z-index: 4;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    padding: 6px 10px;
+    background: rgba(255, 255, 255, 0.85);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    font-size: 0.68rem;
+    color: var(--text-secondary);
+    line-height: 1.3;
+}
+
+.rm-constellation-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+}
+
+.rm-constellation-legend-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.rm-constellation-edges {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+}
+
+/* Thin subtle lines; .is-highlighted/.is-dimmed (from round_monitor.js) brighten
+   or dim them. vector-effect: non-scaling-stroke keeps stroke-width in real
+   screen pixels despite the "0 0 100 100" preserveAspectRatio="none" viewBox,
+   so thickness doesn't vary with a line's angle. */
+.rm-constellation-edges line {
+    stroke: var(--border-color);
+    stroke-width: 0.9px;
+    vector-effect: non-scaling-stroke;
+    opacity: 0.42;
+    transition: stroke 0.15s ease, opacity 0.15s ease, stroke-width 0.15s ease;
+}
+
+/* Secondary/reference edges (a bare mention, not claimed lineage) are
+   near-invisible by default and only become subtly visible when one of their
+   endpoints is the active node. More specific than the base .is-highlighted
+   rule below, so they never turn accent-blue/thick like a primary edge. */
+.rm-constellation-edges line.rm-constellation-edge--secondary_reference {
+    opacity: 0.06;
+    stroke-width: 0.7px;
+}
+
+.rm-constellation-edges line.rm-constellation-edge--secondary_reference.is-highlighted {
+    stroke: var(--text-secondary);
+    stroke-width: 0.8px;
+    opacity: 0.45;
+}
+
+.rm-constellation-edges line.is-highlighted {
+    stroke: var(--accent-color);
+    stroke-width: 1.35px;
+    opacity: 0.85;
+}
+
+/* Highlighted edge direction: downstream keeps the accent blue above;
+   upstream (into the active node) gets a cooler neutral tone. */
+.rm-constellation-edges line.is-highlighted.is-upstream {
+    stroke: var(--text-secondary);
+}
+
+.rm-constellation-edges line.is-dimmed {
+    opacity: 0.1;
+}
+
+.rm-constellation-arrow-fill {
+    fill: var(--border-color);
+    opacity: 0.6;
+}
+
+.rm-constellation-arrow-fill--highlighted {
+    fill: var(--accent-color);
+    opacity: 0.9;
+}
+
+.rm-constellation-origin {
+    position: absolute;
+    top: 14px;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 8px 18px;
+    background: var(--primary-color);
+    color: #fff;
+    font-size: 0.8rem;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-md);
+    white-space: nowrap;
+    z-index: 2;
+}
+
+.rm-constellation-nodes {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+}
+
+.rm-constellation-empty {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+}
+
+.rm-constellation-empty.hidden {
+    display: none;
+}
+
+/* Node color = lane (grouping only, see _classify_query_lane). Diameter is
+   continuous, driven by artifact_richness via the --node-size custom property
+   set inline per node; font-size stays fixed so labels don't scale with it. */
+.rm-constellation-node {
+    position: absolute;
+    transform: translate(-50%, -50%);
+    width: var(--node-size, 56px);
+    height: var(--node-size, 56px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    border-radius: 50%;
+    color: #fff;
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-align: center;
+    line-height: 1.15;
+    cursor: pointer;
+    box-shadow: var(--shadow);
+    transition: transform 0.18s ease, box-shadow 0.18s ease, opacity 0.18s ease, filter 0.18s ease;
+    z-index: 3;
+}
+
+.rm-constellation-node:focus-visible {
+    outline: 2px solid var(--primary-color);
+    outline-offset: 3px;
+}
+
+.rm-constellation-node--analysis   { background: var(--accent-color); }
+.rm-constellation-node--literature { background: var(--warning-color); }
+.rm-constellation-node--validation { background: var(--success-color); }
+.rm-constellation-node--synthesis  { background: #a855f7; }
+.rm-constellation-node--other      { background: var(--text-muted); }
+
+/* Completed nodes are solid; not-yet-completed ones are lighter/transparent. */
+.rm-constellation-node:not(.is-completed) {
+    opacity: 0.72;
+}
+
+/* Running pulse: a soft expanding ring, not a color change, so lane color stays
+   legible. Disabled under prefers-reduced-motion (media query below). */
+.rm-constellation-node.is-running {
+    animation: rm-constellation-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes rm-constellation-pulse {
+    0%, 100% { box-shadow: var(--shadow), 0 0 0 0 rgba(99, 102, 241, 0.45); }
+    50% { box-shadow: var(--shadow), 0 0 0 10px rgba(99, 102, 241, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .rm-constellation-node.is-running {
+        animation: none;
+    }
+}
+
+.rm-constellation-node.is-active {
+    transform: translate(-50%, -50%) scale(1.35);
+    box-shadow: var(--shadow-lg);
+    z-index: 5;
+}
+
+/* Upstream nodes get a cool neutral ring, downstream a brighter accent ring --
+   an outline only, so the node's lane color (background) never changes.
+   :not(.is-active) so the active node's own box-shadow isn't competed with. */
+.rm-constellation-node.is-upstream:not(.is-active) {
+    box-shadow: var(--shadow), 0 0 0 2px rgba(107, 114, 128, 0.55);
+    z-index: 4;
+}
+
+.rm-constellation-node.is-downstream:not(.is-active) {
+    box-shadow: var(--shadow), 0 0 0 2px rgba(99, 102, 241, 0.6);
+    z-index: 4;
+}
+
+.rm-constellation-node.is-dimmed {
+    opacity: 0.28;
+    filter: grayscale(35%);
+}
+
+/* Detail card: name + status + lane pill + one-line summary. Positioned inline
+   by JS (tooltip-style, clamped inside the panel). min/max-width keep short
+   content from going too narrow and long summaries from stretching too wide. */
+.rm-constellation-card {
+    position: absolute;
+    min-width: 220px;
+    max-width: 320px;
+    padding: 8px 10px;
+    background: var(--card-background);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-lg);
+    font-size: 0.76rem;
+    line-height: 1.4;
+    z-index: 6;
+    pointer-events: none;
+}
+
+.rm-constellation-card.hidden {
+    display: none;
+}
+
+.rm-constellation-card-title {
+    font-weight: 700;
+    color: var(--text-primary);
+    margin-bottom: 2px;
+}
+
+.rm-constellation-card-status {
+    display: inline-block;
+    color: var(--text-secondary);
+    font-style: italic;
+    margin-bottom: 4px;
+}
+
+.rm-constellation-card-pill {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 7px;
+    border-radius: 999px;
+    color: #fff;
+    font-size: 0.62rem;
+    font-weight: 600;
+    text-transform: capitalize;
+    vertical-align: middle;
+}
+
+.rm-constellation-card-summary {
+    color: var(--text-secondary);
+    overflow-wrap: anywhere;
+    margin-top: 4px;
+}
+
+/* --- Shared query-row classes ---
+   .rm-tree-marker/.rm-query-name/.rm-query-status/.rm-query-description are
+   applied by the DiscoveryAgent Activity rows (see renderDiscoveryActivityItem). */
+.rm-tree-marker {
+    width: 14px;
+    display: inline-block;
+    text-align: center;
+    flex-shrink: 0;
+}
+
+.rm-tree-marker.present,
+.rm-tree-marker.completed { color: var(--success-color); }
+.rm-tree-marker.missing { color: var(--text-muted); }
+.rm-tree-marker.failed { color: var(--danger-color); }
+.rm-tree-marker.in_progress,
+.rm-tree-marker.running { color: var(--warning-color); font-weight: bold; }
+.rm-tree-marker.discovered,
+.rm-tree-marker.unknown { color: var(--text-secondary); }
+
+.rm-query-name {
+    font-weight: 600;
+    flex-shrink: 0;
+}
+
+.rm-query-status {
+    color: var(--text-secondary);
+    font-style: italic;
+    flex-shrink: 0;
+}
+
+.rm-query-description {
+    color: var(--text-secondary);
+    font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+/* --- Audit Agent Chat: same card/tab/button/bubble styling as the
+   Hypothesis Agent Chat. The .chat-mode-button (active = dark), .btn-primary
+   (Send button), grey assistant bubbles, and purple user bubbles all follow
+   the Hypothesis Agent Chat styles defined in style.css. --- */
+.rm-chat-card .chat-header {
+    margin-bottom: 12px;
+}
+
+.rm-chat-card .chat-messages {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding-right: 4px;
+}
+
+.rm-chat-form {
+    flex-shrink: 0;
+}
+
+/* Compact Markdown styles for Audit Agent assistant bubbles only.
+   Scoped to .rendered-markdown so user bubbles are never affected.
+   style.css already handles pre, pre code, and inline code via
+   .chat-bubble-content — those rules continue to apply here. */
+.rm-chat-card .rendered-markdown {
+    line-height: 1.45;
+    box-sizing: border-box;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    word-break: normal;
+}
+.rm-chat-card .rendered-markdown > *:first-child { margin-top: 0; }
+.rm-chat-card .rendered-markdown > *:last-child  { margin-bottom: 0; }
+.rm-chat-card .rendered-markdown p {
+    margin: 0 0 0.55em;
+}
+
+/* Lists: global * { padding: 0 } reset zeroes ul/ol padding, so we restore it
+   here. .rm-chat-card scoping has specificity (0,2,1) which beats * at (0,0,0). */
+.rm-chat-card .rendered-markdown ul,
+.rm-chat-card .rendered-markdown ol {
+    margin: 0.35em 0 0.65em 0;
+    padding-left: 1.35rem;
+    list-style-position: outside;
+}
+.rm-chat-card .rendered-markdown ul { list-style-type: disc; }
+.rm-chat-card .rendered-markdown ol { list-style-type: decimal; }
+.rm-chat-card .rendered-markdown li {
+    display: list-item;
+    margin: 0.22em 0;
+    padding-left: 0.15rem;
+}
+.rm-chat-card .rendered-markdown li::marker { color: currentColor; }
+
+/* Headings: marked converts # syntax to <p class="chat-md-heading"> via a
+   custom renderer, bypassing the .card h2/h3 document styles in style.css. */
+.rm-chat-card .rendered-markdown .chat-md-heading {
+    font-size: 0.95rem;
+    font-weight: 600;
+    margin: 0.75em 0 0.35em;
+    line-height: 1.3;
+    border-bottom: none;
+    padding-bottom: 0;
+    background: transparent;
+    letter-spacing: normal;
+    color: var(--text-primary);
+}
+.rm-chat-card .rendered-markdown .chat-md-heading:first-child { margin-top: 0; }
+
+.rm-chat-card .rendered-markdown blockquote {
+    margin: 0.35em 0 0.55em;
+    padding-left: 0.8em;
+    border-left: 3px solid var(--border-color, #e2e8f0);
+    color: var(--text-secondary);
+    font-style: italic;
+}

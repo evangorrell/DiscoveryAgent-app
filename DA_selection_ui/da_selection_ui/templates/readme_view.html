@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dataset README</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <h1>Dataset README</h1>
+        </header>
+
+        <section class="section">
+            <div class="card">
+                <article class="markdown-body">
+                    {% if error_message %}
+                        <p>{{ error_message }}</p>
+                    {% else %}
+                        {{ readme_html | safe }}
+                    {% endif %}
+                </article>
+            </div>
+        </section>
+    </div>
+</body>
+</html>

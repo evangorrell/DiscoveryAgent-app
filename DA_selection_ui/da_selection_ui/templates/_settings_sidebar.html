@@ -1,0 +1,11 @@
+<aside class="v2-workspace-sidebar settings-sidebar" aria-label="Settings sections">
+    <p class="v2-workspace-sidebar-label">Settings</p>
+    <nav class="v2-workspace-sidebar-list" aria-label="Settings">
+        <a class="v2-workspace-sidebar-item{% if settings_section == 'general' %} is-active{% endif %}"
+           href="/settings/general?context={{ settings_context|urlencode }}{% if project_slug %}&amp;project_slug={{ project_slug|urlencode }}{% endif %}&amp;project_section={{ project_section|urlencode }}"
+           {% if settings_section == 'general' %}aria-current="page"{% endif %}>General</a>
+        <a class="v2-workspace-sidebar-item{% if settings_section == 'model_provider' %} is-active{% endif %}"
+           href="/settings/model-provider?context={{ settings_context|urlencode }}{% if project_slug %}&amp;project_slug={{ project_slug|urlencode }}{% endif %}&amp;project_section={{ project_section|urlencode }}"
+           {% if settings_section == 'model_provider' %}aria-current="page"{% endif %}>Model provider</a>
+    </nav>
+</aside>

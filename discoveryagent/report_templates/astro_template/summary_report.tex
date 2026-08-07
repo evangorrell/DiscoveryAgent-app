@@ -1,0 +1,352 @@
+% Example Summary Report
+%
+% This example shows how the dwarf galaxy photometric redshift analysis should be
+% written as a working scientific document.
+%
+% AASTeX Format Template
+\documentclass[linenumbers,twocolumn]{aastex7}
+
+\usepackage{tcolorbox}
+\newtcolorbox{assumption}[1]{
+  colback=blue!5!white,
+  colframe=blue!75!black,
+  fonttitle=\bfseries,
+  title={Assumption: #1}
+}
+
+\newcommand{\sigmaNMAD}{\ensuremath{\sigma_{\rm NMAD}}}
+\newcommand{\lowz}{\ensuremath{z < 0.03}}
+
+\begin{document}
+
+\title{Photometric Redshifts for Low-Redshift Dwarf Galaxies from DESI DR1: 
+A Multi-Task Learning Approach}
+
+\correspondingauthor{[Author Name]}
+
+\author{First Author}
+\affiliation{Stanford University}
+\email{author@stanford.edu}
+
+% Additional authors...
+
+\begin{abstract}
+We present photometric redshift estimates for low-redshift dwarf galaxies 
+(\lowz) using 249,999 galaxies from DESI Data Release 1. Standard regression 
+models fail catastrophically on this population due to severe class imbalance 
+(only 6\% of training samples have \lowz). We address this using a multi-task 
+convolutional neural network that simultaneously predicts continuous redshift 
+and performs auxiliary binary/multi-class classification.
+
+Our model achieves \sigmaNMAD\ = 0.0265 with 12.77\% outlier rate overall. 
+For the target low-redshift population, outlier rates decrease from 37\% 
+(baseline CNN) to 4.95\%, an 87\% reduction. We demonstrate that (1) 
+end-to-end learning on images outperforms handcrafted features by a factor 
+of 4.6 in scatter, (2) multi-task learning provides effective inductive bias 
+for imbalanced regression, and (3) standard hierarchical CNNs appropriately 
+capture multi-scale morphological information without explicit scale decoupling.
+
+The trained model processes 9,000 galaxies per second, enabling application to 
+transient host identification, dwarf galaxy surveys for dark matter studies, 
+and systematic investigations of nearby galaxy evolution.
+\end{abstract}
+
+\keywords{\uat{Photometric redshifts}{1243} --- \uat{Dwarf galaxies}{416} --- 
+\uat{Neural networks}{1933}}
+
+%% ============================================================================
+\section{Introduction}
+%% ============================================================================
+
+Identifying low-redshift dwarf galaxies photometrically is challenging but 
+scientifically valuable. Nearby dwarfs ($z < 0.03$, corresponding to distances 
+$\lesssim 130$ Mpc) provide constraints on dark matter through their dynamical 
+properties and abundance \citep{Bullock2017}. They also enable time-critical 
+follow-up of transients when spectroscopic host distances are unavailable 
+\citep{Foley2013}.
+
+The DESI Legacy Surveys provide deep imaging in $grz$ bands covering much of 
+the sky \citep{Dey2019}. For resolved nearby galaxies, images contain distance 
+information beyond integrated photometry: angular size correlates with redshift 
+through the cosmological angular diameter--distance relation. Convolutional 
+neural networks (CNNs) can exploit this morphological information, achieving 
+substantially lower scatter than photometry-only methods 
+\citep{Pasquet2019,Treyer2023}.
+
+However, CNNs trained on the full redshift distribution systematically fail 
+on low-redshift sources. The DESI LOW-Z survey \citep{DarraghFord2023} 
+addresses this through sample selection and specialized classifiers, achieving 
+$>$95\% completeness for $z < 0.03$. Here we take a complementary approach: 
+using multi-task learning to improve regression performance on minority classes 
+without explicit sample weighting.
+
+The remainder of this paper is organized as follows. Section~\ref{sec:data} 
+describes our sample selection and data characteristics. Section~\ref{sec:methods} 
+presents our multi-task CNN architecture. Section~\ref{sec:results} reports 
+performance metrics with comparison to baselines. Section~\ref{sec:discussion} 
+discusses implications and limitations. Section~\ref{sec:conclusions} summarizes 
+our key findings.
+
+%% ============================================================================
+\section{Data}
+\label{sec:data}
+%% ============================================================================
+
+\subsection{Sample Selection}
+
+We select 249,999 galaxies from DESI Data Release 1 with spectroscopic redshifts 
+and $r < 21.2$. The sample combines three populations: dwarf galaxies 
+($M_\star < 10^{9.25} M_\odot$), sources satisfying the DESI LOW-Z selection 
+\citep{DarraghFord2023}, and a random comparison sample spanning $z < 1.5$.
+
+\begin{assumption}{Magnitude Limit}
+\textbf{Choice}: $r < 21.2$
+
+\textbf{Rationale}: Balances sample size with image quality. At fainter 
+magnitudes, photometric uncertainties increase significantly and morphological 
+features become difficult to measure.
+
+\textbf{Sensitivity}: Restricting to $r < 20.5$ reduces the sample by 40\% 
+but improves \sigmaNMAD\ by $\sim$8\%.
+\end{assumption}
+
+Table~\ref{tab:sample} summarizes the redshift distribution. The target 
+population ($z < 0.03$) comprises only 6\% of the sample, creating severe 
+class imbalance.
+
+\begin{deluxetable}{lcc}
+\tablecaption{Redshift Distribution\label{tab:sample}}
+\tablehead{
+\colhead{Redshift Range} & \colhead{Count} & \colhead{Fraction}
+}
+\startdata
+$z < 0.03$ (target) & 15,102 & 6.0\% \\
+$0.03 \leq z < 0.05$ & 23,965 & 9.6\% \\
+$0.05 \leq z < 0.15$ & 103,174 & 41.3\% \\
+$z \geq 0.15$ & 107,673 & 43.1\% \\
+\enddata
+\end{deluxetable}
+
+\subsection{Image Data}
+
+For each galaxy, we obtain $3 \times 128 \times 128$ pixel cutouts in $grz$ 
+bands from the Legacy Surveys DR9 coadded images, with pixel scale 
+0.262\arcsec/pixel (33.5\arcsec\ field of view). Quality assessment on 10,000 
+random images revealed 0\% NaN values, 0\% infinite values, and 0.01\% with 
+extreme pixel values.
+
+Figure~\ref{fig:sample_images} shows example low-redshift galaxies, illustrating 
+the resolved morphological features---spiral arms, disk structure, irregular 
+shapes---that encode distance information.
+
+\begin{figure}
+\plotone{figures/fig01_sample_images.pdf}
+\caption{Example galaxies at $z < 0.03$ showing $grz$ bands and RGB composite. 
+Resolved internal structure distinguishes nearby galaxies from more distant 
+compact sources.\label{fig:sample_images}}
+\end{figure}
+
+%% ============================================================================
+\section{Methods}
+\label{sec:methods}
+%% ============================================================================
+
+\subsection{Multi-Task Architecture}
+
+We use a ResNet-18 backbone \citep{He2016} with three prediction heads:
+\begin{enumerate}
+    \item \textbf{Regression}: Continuous redshift via fully-connected layer
+    \item \textbf{Binary classification}: $z < 0.03$ vs.\ $z \geq 0.03$
+    \item \textbf{Multi-class classification}: Low/mid/high-$z$ bins
+\end{enumerate}
+
+The combined loss is
+\begin{equation}
+\mathcal{L} = \mathcal{L}_{\rm Huber} + \lambda_1 \mathcal{L}_{\rm BCE} + 
+\lambda_2 \mathcal{L}_{\rm CE}
+\end{equation}
+where $\mathcal{L}_{\rm Huber}$ is the Huber loss for regression ($\delta = 1.0$), 
+$\mathcal{L}_{\rm BCE}$ is binary cross-entropy, $\mathcal{L}_{\rm CE}$ is 
+categorical cross-entropy, and $\lambda_1 = \lambda_2 = 0.5$.
+
+\begin{assumption}{Multi-Task Weighting}
+\textbf{Choice}: $\lambda_1 = \lambda_2 = 0.5$
+
+\textbf{Rationale}: Equal weighting provides balanced contribution from auxiliary 
+tasks without dominating the regression objective.
+
+\textbf{Sensitivity}: $\lambda = 0.1$ (weaker auxiliary signal) increases low-$z$ 
+outliers by 5\%. $\lambda = 1.0$ (stronger signal) slightly degrades overall 
+\sigmaNMAD.
+\end{assumption}
+
+The auxiliary classification tasks provide inductive bias that encourages the 
+network to learn features discriminative for the minority low-$z$ class. Without 
+explicit class weighting, the regression loss is dominated by the majority 
+populations.
+
+\subsection{Training}
+
+We split the data 70/15/15 into training (174,999), validation (37,500), and 
+test (37,500) sets using stratified sampling to preserve class proportions. 
+Training uses Adam optimizer with learning rate $10^{-3}$, batch size 256, and 
+ReduceLROnPlateau scheduler (patience 5, factor 0.5). Training runs for 50 
+epochs with early stopping based on validation \sigmaNMAD.
+
+Data augmentation includes random horizontal/vertical flips and 90$^\circ$ 
+rotations, which are valid because sky orientation carries no distance information. 
+Per-image normalization ($x_{\rm norm} = (x - \mu)/\sigma$) accounts for varying 
+observing conditions.
+
+%% ============================================================================
+\section{Results}
+\label{sec:results}
+%% ============================================================================
+
+\subsection{Overall Performance}
+
+Table~\ref{tab:results} compares model performance on the held-out test set. 
+Our Multi-Task CNN achieves \sigmaNMAD\ = 0.0265 with 12.77\% outlier rate 
+overall, and critically reduces low-$z$ outliers from 37\% (baseline) to 4.95\%.
+
+\begin{deluxetable}{lcccc}
+\tablecaption{Model Performance on Test Set\label{tab:results}}
+\tablehead{
+\colhead{Model} & \colhead{\sigmaNMAD} & \colhead{Outliers} & 
+\colhead{Low-$z$ Outliers} & \colhead{Bias}
+}
+\startdata
+XGBoost (features) & 0.042 & 27.0\% & 31.1\% & +0.003 \\
+Baseline CNN & 0.036 & 18.2\% & 37.4\% & +0.012 \\
+ResNet-18 & 0.028 & 14.6\% & 11.0\% & +0.008 \\
+\textbf{Multi-Task CNN} & \textbf{0.027} & \textbf{12.8\%} & \textbf{5.0\%} & +0.005 \\
+\enddata
+\tablecomments{Outliers defined as $|\Delta z / (1+z_{\rm true})| > 0.05$. 
+Best performance in bold.}
+\end{deluxetable}
+
+\begin{figure}
+\plotone{figures/fig02_predictions.pdf}
+\caption{Predicted vs.\ true redshift for the Multi-Task CNN (N = 37,500). 
+Gray points show all galaxies; red highlights the $z < 0.03$ population. 
+The dashed line indicates perfect agreement. The model achieves \sigmaNMAD\ = 
+0.0265 overall and 0.0123 for $z < 0.03$.\label{fig:predictions}}
+\end{figure}
+
+\subsection{Low-Redshift Performance}
+
+For the target $z < 0.03$ population, the Multi-Task CNN achieves:
+\begin{itemize}
+    \item \sigmaNMAD\ = 0.0123
+    \item Outlier rate: 4.95\% (vs.\ 37.4\% baseline)
+    \item Binary classification ROC-AUC: 0.963
+\end{itemize}
+
+The 87\% reduction in low-$z$ outliers relative to baseline CNNs represents 
+the primary contribution of this work.
+
+\subsection{Comparison to Feature Engineering}
+
+Direct comparison reveals that end-to-end learning substantially outperforms 
+handcrafted features: \sigmaNMAD\ improves by a factor of 4.6 (0.122 $\to$ 0.027) 
+and outlier rates by 5.3$\times$ (67\% $\to$ 13\%). Feature-based models showed 
+severe overfitting (validation \sigmaNMAD\ $\approx$ 0.03 vs.\ test \sigmaNMAD\ = 
+0.12), while CNNs generalized well (validation $\approx$ test performance).
+
+%% ============================================================================
+\section{Discussion}
+\label{sec:discussion}
+%% ============================================================================
+
+\subsection{Why Multi-Task Learning Works}
+
+The auxiliary classification heads force the network to learn features 
+discriminative for the minority low-$z$ class. Without explicit class weighting, 
+the regression loss is dominated by the majority mid-$z$ and high-$z$ populations. 
+The classification heads provide an inductive bias that prioritizes separating 
+the low-$z$ population, and these features transfer to improve regression 
+performance.
+
+This insight generalizes: for imbalanced regression problems, auxiliary 
+classification tasks on binned targets provide an alternative to sample 
+weighting or loss function modifications.
+
+\subsection{Limitations}
+
+Several limitations should be noted:
+
+\begin{enumerate}
+    \item \textbf{Single survey}: All results are from DESI DR1. Performance on 
+    other surveys (SDSS, HSC, Euclid, Rubin LSST) is unknown and may differ due 
+    to varying depth, resolution, and filter sets.
+    
+    \item \textbf{Three bands only}: We use only $grz$ photometry. Additional 
+    bands (especially infrared from WISE) could improve high-$z$ performance 
+    where optical colors provide limited information.
+    
+    \item \textbf{Point predictions}: We provide no uncertainty estimates. The 
+    classification probabilities could serve as proxies, but proper uncertainty 
+    quantification requires additional methodology (e.g., ensembles, probabilistic 
+    outputs).
+    
+    \item \textbf{Systematic biases}: All models show redshift-dependent biases: 
+    overprediction at low-$z$ (bias = +0.014) and underprediction at high-$z$ 
+    (bias = $-$0.011). Post-hoc calibration may be needed for applications 
+    sensitive to these biases.
+\end{enumerate}
+
+\subsection{Implications for Transient Astronomy}
+
+The model processes 9,000 galaxies per second on GPU, enabling real-time host 
+galaxy classification for transient alerts. For a candidate supernova with no 
+spectroscopic host redshift, applying this model to the Legacy Survey cutout 
+can provide a distance estimate within seconds.
+
+A binary classification threshold of 0.3 achieves 70\% recall for true low-$z$ 
+hosts with 45\% purity---sufficient for prioritizing spectroscopic follow-up.
+
+%% ============================================================================
+\section{Conclusions}
+\label{sec:conclusions}
+%% ============================================================================
+
+We presented a Multi-Task CNN for photometric redshift estimation of low-redshift 
+dwarf galaxies from DESI DR1. The key findings of this work are:
+
+\begin{enumerate}
+    \item Multi-task learning with auxiliary classification heads reduces 
+    low-$z$ outliers by 87\% compared to baseline CNNs (from 37\% to 5\%).
+    
+    \item End-to-end deep learning outperforms handcrafted feature engineering 
+    by a factor of 4.6 in scatter.
+    
+    \item Standard hierarchical CNNs appropriately capture multi-scale 
+    morphological features; explicit scale-morphology decoupling degrades 
+    performance.
+    
+    \item The model achieves \sigmaNMAD\ = 0.0265 overall with inference speed 
+    of 9,000 galaxies/second, suitable for billion-galaxy surveys.
+\end{enumerate}
+
+Future work should explore uncertainty quantification through ensemble methods, 
+transfer learning to other imaging surveys, and extension to additional 
+photometric bands.
+
+\begin{acknowledgments}
+We thank [collaborators] for helpful discussions. This work used data from 
+DESI Data Release 1. [Standard DESI acknowledgment]
+\end{acknowledgments}
+
+\facilities{DESI, Mayall (DESI)}
+
+\software{
+astropy \citep{astropy2022},
+matplotlib \citep{matplotlib},
+numpy \citep{numpy},
+pytorch \citep{pytorch},
+scikit-learn \citep{sklearn}
+}
+
+\bibliography{ms}
+
+\end{document}

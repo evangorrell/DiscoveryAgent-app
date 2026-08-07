@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+
+{% block title %}{{ error_code }} &middot; DiscoveryAgent{% endblock %}
+
+{% block content %}
+<section class="v2-error-page" aria-labelledby="error-code error-title">
+    <h1 class="v2-error-code" id="error-code">{{ error_code }}</h1>
+    <h2 class="v2-error-heading" id="error-title">{{ error_heading }}</h2>
+    <p class="v2-error-message">{{ error_message }}</p>
+    <div class="v2-error-actions">
+        <button class="v2-error-back" type="button" hidden>Go back</button>
+        <a class="v2-btn v2-btn-primary" href="{{ url_for('projects') }}">Return to Projects</a>
+        {% if show_retry %}
+        <button class="v2-btn v2-btn-secondary" type="button" data-error-retry>Try again</button>
+        {% endif %}
+    </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  (() => {
+    const back = document.querySelector('.v2-error-back');
+    const retry = document.querySelector('[data-error-retry]');
+    const retryKey = 'discoveryagent:error-retry-url';
+    let isRetryReload = false;
+
+    try {
+      isRetryReload = window.sessionStorage.getItem(retryKey) === window.location.href;
+      if (isRetryReload) window.sessionStorage.removeItem(retryKey);
+    } catch (_) {
+      // Session storage can be unavailable under restrictive browser settings.
+    }
+
+    if (retry) {
+      retry.addEventListener('click', () => {
+        try {
+          window.sessionStorage.setItem(retryKey, window.location.href);
+        } catch (_) {
+          // Reload still works when session storage is unavailable.
+        }
+        window.location.reload();
+      });
+    }
+
+    if (!back || isRetryReload || window.history.length <= 1 || !document.referrer) return;
+    try {
+      if (new URL(document.referrer).origin !== window.location.origin) return;
+    } catch (_) {
+      return;
+    }
+    back.hidden = false;
+    back.addEventListener('click', () => window.history.back());
+  })();
+</script>
+{% endblock %}

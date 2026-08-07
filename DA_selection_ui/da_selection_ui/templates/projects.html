@@ -1,0 +1,149 @@
+{% extends "base.html" %}
+
+{% block title %}Projects &middot; DiscoveryAgent{% endblock %}
+
+{% block content %}
+<div class="v2-projects" id="projects-root">
+
+    <!-- Populated-mode header (title + subtitle + New Project). Hidden entirely
+         in zero-project onboarding mode; shown once one or more projects exist. -->
+    <header class="v2-projects-header" id="pj-header" hidden>
+        <div class="v2-projects-heading">
+            <h1 class="v2-title">DiscoveryAgent Projects</h1>
+        </div>
+        <button type="button" class="v2-btn v2-btn-primary v2-new-project-btn" id="open-new-project">
+            <span class="v2-plus" aria-hidden="true">+</span> New Project
+        </button>
+    </header>
+
+    <!-- Loading -->
+    <div class="v2-home-status" id="pj-loading">
+        <div class="v2-spinner" aria-hidden="true"></div>
+        <p class="v2-muted">Loading projects&hellip;</p>
+    </div>
+
+    <!-- Error -->
+    <div class="v2-home-status" id="pj-error" hidden>
+        <p class="v2-error-title">We couldn&rsquo;t load your projects.</p>
+        <p class="v2-muted" id="pj-error-detail"></p>
+        <button type="button" class="v2-btn v2-btn-primary" id="pj-retry">Try again</button>
+    </div>
+
+    <!-- Zero-project onboarding mode: centered ~52rem composition that the shell
+         transitions into directly from the top bar (no Projects title/subtitle). -->
+    <div class="v2-onboarding" id="pj-empty" hidden>
+        <div class="v2-onboarding-intro">
+            <h1 class="v2-onboarding-headline">Turn a dataset into an evolving research program.</h1>
+            <p class="v2-onboarding-support">Give DiscoveryAgent your data and scientific context. Develop hypotheses 
+                with the agent system. Then let DiscoveryAgent autonomously perform the research and present the evidence to you.</p>
+            <button type="button" class="v2-btn v2-btn-primary v2-onboarding-cta" id="open-new-project-empty">
+                Create your first DiscoveryAgent project <span class="v2-arrow" aria-hidden="true">&rarr;</span>
+            </button>
+        </div>
+
+        <div class="v2-onboarding-how">
+            <p class="v2-section-label v2-onboarding-howlabel">How It Works</p>
+            <ol class="v2-steps">
+                <li class="v2-step">
+                    <span class="v2-step-num">01</span>
+                    <p class="v2-step-title">Add context</p>
+                    <p class="v2-step-text">Files + scientific context</p>
+                </li>
+                <li class="v2-step">
+                    <span class="v2-step-num">02</span>
+                    <p class="v2-step-title">Choose a direction</p>
+                    <p class="v2-step-text">Generate and compare hypotheses</p>
+                </li>
+                <li class="v2-step">
+                    <span class="v2-step-num">03</span>
+                    <p class="v2-step-title">Run autonomous research</p>
+                    <p class="v2-step-text">DiscoveryAgent performs research and presents the evidence to you</p>
+                </li>
+            </ol>
+        </div>
+    </div>
+
+    <!-- List -->
+    <div class="v2-project-list" id="pj-list" hidden></div>
+</div>
+
+<!-- New Project modal -->
+<div class="v2-modal-overlay" id="np-overlay" hidden>
+    <div class="v2-modal" role="dialog" aria-modal="true" aria-labelledby="np-title" id="np-modal">
+        <div class="v2-modal-head">
+            <div>
+                <p class="v2-modal-eyebrow" id="np-eyebrow">NEW PROJECT</p>
+                <h2 class="v2-modal-title" id="np-title">Create a new DiscoveryAgent project</h2>
+            </div>
+            <button type="button" class="v2-modal-close" id="np-close" aria-label="Close">&times;</button>
+        </div>
+
+        <p class="v2-modal-intro">
+            Define your dataset and research context. DiscoveryAgent will use them to generate
+            hypotheses, run computational investigations, and build an evolving understanding of the research problem.
+        </p>
+
+        <form class="v2-modal-form" id="np-form" novalidate>
+            <div class="v2-field">
+                <label class="v2-field-label" for="np-name">PROJECT NAME<span class="v2-required" aria-hidden="true">*</span></label>
+                <p class="v2-field-help">Create a unique name to identify this project later.</p>
+                <input class="v2-input" type="text" id="np-name" name="project_name"
+                       placeholder="Optic Nerve Regeneration" autocomplete="off" required aria-required="true">
+            </div>
+
+            <div class="v2-field">
+                <label class="v2-field-label" for="np-objective">RESEARCH OBJECTIVE<span class="v2-required" aria-hidden="true">*</span></label>
+                <p class="v2-field-help">
+                    Describe the scientific question or goal this project should pursue at a high-level. 
+                    DiscoveryAgent will use it to generate hypotheses and guide research across rounds.
+                </p>
+                <textarea class="v2-textarea" id="np-objective" name="task_description" rows="4" required aria-required="true"
+                          placeholder="Identify the mechanisms that distinguish successful regeneration from non-regenerative injury responses and reveal testable intervention strategies..."></textarea>
+            </div>
+
+            <div class="v2-field">
+                <label class="v2-field-label" for="np-context">PROJECT CONTEXT<span class="v2-required" aria-hidden="true">*</span></label>
+                <p class="v2-field-help">
+                    Describe what the files contain and what DiscoveryAgent should understand about the data 
+                    before investigating them. Include how the data were generated, important samples or groups,
+                    key variables, time points or interventions, preprocessing already performed, known
+                    limitations, and any relationships between files.
+                </p>
+                <textarea class="v2-textarea" id="np-context" name="dataset_context" rows="7" required aria-required="true"
+                          placeholder="These data are single-cell RNA-seq profiles of mouse retinal ganglion cells collected at 0, 3, and 7 days after optic nerve crush, spanning injured and contralateral control eyes. Counts were filtered for..."></textarea>
+                <p class="v2-field-note">DiscoveryAgent will save this as the project&rsquo;s README.md and use it as persistent context during research.</p>
+            </div>
+
+            <div class="v2-field">
+                <label class="v2-field-label">FILES</label>
+                <p class="v2-field-help">Add the source files DiscoveryAgent can use during research rounds.</p>
+                <div class="v2-dropzone" id="np-dropzone" tabindex="0" role="button"
+                     aria-label="Drop files here or browse to add files">
+                    <svg class="v2-dropzone-icon" viewBox="0 0 24 24" width="30" height="30" aria-hidden="true">
+                        <path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
+                              stroke-linejoin="round"
+                              d="M12 15V4m0 0L8.5 7.5M12 4l3.5 3.5M5 15v2.5A2.5 2.5 0 0 0 7.5 20h9a2.5 2.5 0 0 0 2.5-2.5V15"/>
+                    </svg>
+                    <p class="v2-dropzone-text">Drop files here or <span class="v2-dropzone-browse" id="np-browse">browse files</span></p>
+                    <p class="v2-dropzone-note">You can also drop a folder. Every file is listed individually, with subfolder paths preserved.</p>
+                    <input type="file" id="np-files" webkitdirectory directory multiple hidden>
+                </div>
+                <ul class="v2-file-list" id="np-file-list"></ul>
+            </div>
+
+            <p class="v2-modal-form-error" id="np-form-error" hidden></p>
+        </form>
+
+        <div class="v2-modal-footer">
+            <button type="button" class="v2-btn v2-btn-secondary" id="np-cancel">Cancel</button>
+            <button type="submit" form="np-form" class="v2-btn v2-btn-primary" id="np-submit">
+                Create Project <span class="v2-arrow" aria-hidden="true">&rarr;</span>
+            </button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='projects.js') }}"></script>
+{% endblock %}

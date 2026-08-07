@@ -1,0 +1,1616 @@
+/* =====================================================================
+   Hypothesis Studio (V2) — page-specific layout.
+   Reuses the V2 design tokens (--v2-*) and shared components (.v2-btn,
+   .v2-prose, .v2-menu, .v2-section-label) defined in style.css. Scoped under
+   .v2-page-studio / .hs* so it never restyles other screens. Editorial,
+   scientific-document character: warm ground, serif meaning, sans controls,
+   fine borders, generous whitespace. No cards-everywhere, no gradients/glow,
+   no terminal or generic AI-chat styling.
+   ===================================================================== */
+
+/* The `hidden` attribute must always win over a component's own display value.
+   Several studio containers set display:flex/inline-flex (e.g. .hs-review-overlay,
+   .hs-workspace-main and .hs-activity). An author `display:flex`
+   beats the UA sheet's `[hidden]{display:none}` regardless of specificity, so
+   without this guard a hidden panel stays rendered — notably the fixed,
+   full-viewport review overlay (z-index:100), which then silently intercepts
+   every click (symptom: "Initialize workspace" and all controls not clickable). */
+.v2-page-studio [hidden] { display: none !important; }
+
+/* The studio breaks out of the default centered reading column to place a
+   quiet history sidebar beside a workspace that keeps its own reading width. */
+.v2-page-studio {
+    height: 100vh;
+    overflow: hidden;
+}
+
+.v2-page-studio .v2-main {
+    flex: 1 1 auto;
+    max-width: none;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+}
+
+/* ---- Two-column layout: sidebar + workspace ---- */
+.hs-layout {
+    display: flex;
+    align-items: stretch;
+    flex: 1 1 auto;
+    width: 100%;
+    min-height: 0;
+    overflow: hidden;
+}
+
+/* Quiet, recessive left sidebar (round-scoped hypothesis history). Sits below
+   the global app bar and scrolls independently only when needed. */
+.hs-sidebar {
+    flex: 0 0 232px;
+    width: 232px;
+    border-right: 1px solid var(--v2-border);
+    background: var(--v2-surface);
+    align-self: stretch;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 0 10px 24px;
+    font-family: var(--v2-sans);
+}
+.hs-sidebar-label {
+    display: flex;
+    align-items: center;
+    height: 41px;
+    font-family: var(--v2-sans);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-size: 0.67rem;
+    font-weight: 600;
+    color: var(--v2-muted);
+    padding: 0 9px;
+    margin: 0;
+}
+.hs-round-list { display: flex; flex-direction: column; gap: 1px; padding-top: 9px; }
+.hs-round-item {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    width: 100%;
+    text-align: left;
+    background: none;
+    border: none;
+    border-radius: 8px;
+    padding: 8px 10px 8px 33px;
+    cursor: pointer;
+    font-family: var(--v2-sans);
+    font-size: 0.92rem;
+    color: var(--v2-ink-soft);
+    transition: background 0.12s ease, color 0.12s ease;
+}
+.hs-round-item:hover { background: var(--v2-border-soft); color: var(--v2-ink); }
+/* Soft filled treatment for the active round; no heavy badge. */
+.hs-round-item.is-active {
+    background: var(--v2-accent-soft);
+    color: var(--v2-accent);
+    font-weight: 600;
+}
+.hs-round-item-note {
+    font-family: var(--v2-sans);
+    font-size: 0.72rem;
+    color: var(--v2-muted);
+    margin-left: auto;
+}
+.hs-round-item.is-active .hs-round-item-note { color: var(--v2-accent); }
+.hs-round-unread-dot {
+    flex: 0 0 auto;
+    width: 5px;
+    height: 5px;
+    border-radius: 999px;
+    background: currentColor;
+    margin-left: auto;
+}
+.hs-round-item-note + .hs-round-unread-dot { margin-left: 4px; }
+
+/* Workspace keeps the prior reading width, centered in the remaining space. */
+.hs-workspace {
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    padding: 12px 28px 0;
+    overflow: hidden;
+}
+
+.hs {
+    --hs-chat-column-width: min(860px, calc(100vw - 232px - 56px));
+    --hs-workspace-left: 232px;
+    --hs-composer-width: min(calc(var(--hs-chat-column-width) + 32px), calc(100vw - var(--hs-workspace-left) - 24px));
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+    width: 100%;
+    max-width: none;
+    margin: 0 auto;
+    overflow: hidden;
+}
+
+/* ---- Read-only historical round ---- */
+.hs-readonly-header {
+    position: relative;
+    display: grid;
+    grid-template-columns: 1fr;
+    align-items: center;
+    justify-items: center;
+    gap: 10px;
+    padding: 0 0 5px;
+    margin-bottom: 4px;
+    border-bottom: 1px solid var(--v2-border);
+    font-family: var(--v2-sans);
+    color: var(--v2-ink-soft);
+}
+.hs-readonly-copy {
+    min-width: 0;
+    width: 100%;
+    text-align: center;
+}
+.hs-readonly-title-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+    flex-direction: column;
+    gap: 3px;
+}
+.hs-readonly-title {
+    margin: 0;
+    font-family: var(--v2-serif);
+    font-size: clamp(1.2rem, 1.9vw, 1.55rem);
+    line-height: 1.1;
+    font-weight: 640;
+    letter-spacing: -0.01em;
+    color: var(--v2-ink);
+}
+.hs-readonly-kicker {
+    margin: 0;
+    font-family: var(--v2-sans);
+    font-size: 0.82rem;
+    line-height: 1.25;
+    font-weight: 500;
+    color: var(--v2-muted);
+}
+.hs-readonly-caveat {
+    max-width: 560px;
+    margin: 14px auto 0;
+    font-size: 0.88rem;
+    line-height: 1.55;
+    color: var(--v2-muted);
+}
+.hs-readonly-return {
+    position: absolute;
+    right: 0;
+    top: calc(clamp(1.2rem, 1.9vw, 1.55rem) * 1.1 + 3px);
+    margin-top: 0;
+    line-height: 1.25;
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-family: var(--v2-sans);
+    font-size: 0.88rem;
+    font-weight: 400;
+    color: var(--v2-accent);
+}
+.hs-readonly-return:hover { color: var(--v2-accent-hover); text-decoration: underline; }
+
+@media (max-width: 900px) {
+    /* First pass: history is a desktop affordance; keep the workspace clean on
+       narrow screens rather than crushing it with a sidebar. */
+    .hs-sidebar { display: none; }
+    .hs-workspace { padding: 20px 18px 0; }
+    .hs {
+        --hs-chat-column-width: min(860px, calc(100vw - 36px));
+        --hs-workspace-left: 0px;
+        --hs-composer-width: min(calc(var(--hs-chat-column-width) + 32px), calc(100vw - 24px));
+    }
+    .hs-turn-user { width: min(82%, 560px); }
+}
+.hs-shell {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: hidden;
+}
+
+/* ---- Conversation transcript ---- */
+.hs-conversation {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+    gap: 30px;
+    padding: 0 14px 28px 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+    transition: opacity 0.35s ease;
+}
+.hs-conversation > * { flex-shrink: 0; }
+.hs-turn { max-width: 100%; }
+.hs-turn-user {
+    align-self: flex-end;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    width: min(64%, 560px);
+}
+.hs-turn-assistant {
+    align-self: flex-start;
+    width: 100%;
+}
+.hs-turn-role {
+    font-family: var(--v2-sans);
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    font-size: 0.68rem;
+    font-weight: 600;
+    color: var(--v2-muted);
+    margin-bottom: 8px;
+}
+.hs-turn-user .hs-turn-role {
+    color: var(--v2-accent);
+    text-align: right;
+    padding-right: 4px;
+}
+.hs-turn-body {
+    font-size: 1.08rem;
+    line-height: 1.62;
+    color: var(--v2-ink);
+}
+.hs-turn-user .hs-turn-body {
+    /* Scientist messages are compact and right-aligned; scientific objects stay
+       full-width via .hs-event below. */
+    font-family: var(--v2-serif);
+    color: var(--v2-ink);
+    width: fit-content;
+    max-width: 100%;
+    padding: 10px 14px 11px;
+    border: 1px solid var(--v2-border-soft);
+    border-radius: 14px 14px 4px 14px;
+    background: rgba(238, 232, 221, 0.72);
+    text-align: left;
+}
+.hs-turn-body.is-pending { color: var(--v2-muted); }
+.hs-ready-lead {
+    font-family: var(--v2-sans);
+    font-size: 0.85rem;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    color: var(--v2-accent);
+    margin-bottom: 12px !important;
+}
+
+/* Thinking indicator (three quiet dots). */
+.hs-typing { display: inline-flex; gap: 5px; align-items: center; height: 1em; }
+.hs-typing span {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--v2-muted);
+    animation: hs-typing 1.1s infinite ease-in-out both;
+}
+.hs-typing span:nth-child(2) { animation-delay: 0.15s; }
+.hs-typing span:nth-child(3) { animation-delay: 0.3s; }
+@keyframes hs-typing { 0%, 80%, 100% { opacity: 0.3; } 40% { opacity: 1; } }
+
+/* ---- Centered generation activity ---- */
+.hs-activity {
+    display: flex;
+    flex: 1 1 auto;
+    min-height: 420px;
+    width: 100%;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 18px;
+    padding: 48px 0;
+    font-family: var(--v2-sans);
+    color: var(--v2-ink);
+    text-align: center;
+}
+.hs-activity-spinner {
+    width: 62px;
+    height: 62px;
+    color: var(--v2-accent);
+    animation: hs-arrow-cycle 1.15s linear infinite;
+}
+.hs-activity-arrows {
+    display: block;
+    width: 100%;
+    height: 100%;
+    filter: drop-shadow(0 3px 8px rgba(50, 85, 67, 0.14));
+}
+.hs-activity-label {
+    margin: 0;
+    font-size: 1.02rem;
+    line-height: 1.45;
+    color: var(--v2-ink);
+}
+.hs-activity-cancel { min-width: 88px; }
+.hs-activity-error {
+    margin: -4px 0 0;
+    color: #a73b33;
+    font-size: 0.9rem;
+}
+@keyframes hs-arrow-cycle { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+    .hs-activity-spinner { animation: none; }
+}
+
+/* ---- Hypothesis / selection events (inline chronological blocks) ----
+   A generated set, a later set, or the final selection renders as a block in
+   the transcript flow. While it is the newest event it holds foreground
+   emphasis (.is-active): a warm surface, restrained border, and subtle
+   elevation. Once the next message follows, the emphasis drops and the block
+   settles into the transcript as quiet history. No excessive cards, gradients,
+   or glow — the elevation is the only signal. */
+.hs-event {
+    border-radius: 14px;
+    padding: 4px 2px;
+    transition: background 0.3s ease, box-shadow 0.3s ease, border-color 0.3s ease, padding 0.3s ease;
+    border: 1px solid transparent;
+    scroll-margin-top: 18px;
+}
+.hs-event.is-active {
+    background: var(--v2-surface);
+    border-color: var(--v2-border);
+    box-shadow: 0 1px 2px rgba(40, 30, 12, 0.04), 0 8px 26px rgba(40, 30, 12, 0.07);
+    padding: 18px 22px;
+}
+.hs-event-selection.is-active {
+    background: transparent;
+    border-color: transparent;
+    box-shadow: none;
+    padding: 0;
+}
+.hs-event-label { margin-bottom: 6px; }
+/* A single-hypothesis revision reads as a distinct scientific event (not a chat
+   bubble, notification, or modal): same artifact language as a generated set,
+   but its label is marked in the accent to signal it is a revised version. */
+.hs-event-revision-label { color: var(--v2-accent); }
+/* Settled sets read as quiet history: a light top rule and slightly muted. */
+.hs-event-hypotheses:not(.is-active):not(.has-selection),
+.hs-event-revision:not(.is-active):not(.has-selection) { opacity: 0.9; }
+.hs-event-selection:not(.is-active) { opacity: 0.92; }
+.hs-hyp {
+    padding: 30px 0;
+    border-top: 1px solid var(--v2-border-soft);
+    transition: opacity 0.2s ease, background 0.2s ease, border-color 0.2s ease, padding 0.2s ease;
+}
+.hs-hyp.is-selected {
+    margin: 18px 0;
+    padding: 22px 18px;
+    border: 1px solid var(--v2-accent-ring);
+    border-radius: 12px;
+    background: var(--v2-accent-soft);
+    overflow: hidden;
+    background-clip: padding-box;
+}
+.hs-event .hs-hyp.is-selected:first-of-type {
+    padding-top: 22px;
+    border-top: 1px solid var(--v2-accent-ring);
+}
+.hs-hyp.is-selected + .hs-hyp { border-top: none; }
+.hs-selected-row-label { margin-bottom: 12px; }
+/* First row in an event block sits directly under the block's label. */
+.hs-event .hs-hyp:first-of-type { border-top: none; padding-top: 14px; }
+.hs-hyp.is-busy { opacity: 0.5; pointer-events: none; }
+
+/* Header: number + optional title, clickable to focus the composer. */
+.hs-hyp-head {
+    display: flex;
+    align-items: baseline;
+    gap: 18px;
+    width: 100%;
+    text-align: left;
+    background: none;
+    border: none;
+    padding: 0 0 12px;
+    cursor: pointer;
+}
+.hs-hyp-num {
+    font-family: var(--v2-serif);
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: var(--v2-accent);
+    flex: 0 0 auto;
+    min-width: 1.4em;
+    font-variant-numeric: tabular-nums;
+}
+.hs-hyp-title {
+    font-family: var(--v2-serif);
+    font-size: 1.24rem;
+    line-height: 1.3;
+    font-weight: 600;
+    color: var(--v2-ink);
+}
+.hs-hyp-head:hover .hs-hyp-title { color: var(--v2-accent); }
+/* A focused hypothesis is marked with a quiet accent rule down its left edge. */
+.hs-hyp.is-focused { box-shadow: -2px 0 0 var(--v2-accent); }
+
+/* The scientific hypothesis itself — priority content. */
+.hs-hyp-statement {
+    font-size: 1.12rem;
+    line-height: 1.6;
+    color: var(--v2-ink);
+    padding-left: calc(1.4em + 14px);
+}
+.hs-hyp-statement p:last-child { margin-bottom: 0; }
+
+/* Actions row: two clear primary actions + a quiet overflow. */
+.hs-hyp-actions {
+    display: flex;
+    align-items: center;
+    gap: 22px;
+    margin-top: 18px;
+    padding-left: calc(1.4em + 14px);
+}
+.hs-hyp-action {
+    font-family: var(--v2-sans);
+    font-size: 0.9rem;
+    font-weight: 550;
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    color: var(--v2-ink-soft);
+    transition: color 0.15s ease;
+}
+.hs-hyp-justtoggle:hover { color: var(--v2-ink); }
+.hs-hyp-select { color: var(--v2-accent); }
+.hs-hyp-select:hover { color: var(--v2-accent-hover); text-decoration: underline; }
+.hs-hyp-overflow { margin-left: auto; }
+
+/* Inline justification (+ secondary investigation approach). */
+.hs-hyp-justification {
+    margin-top: 20px;
+    margin-left: calc(1.4em + 14px);
+    padding: 18px 22px;
+    background: var(--v2-surface);
+    border: 1px solid var(--v2-border);
+    border-radius: 10px;
+}
+.hs-hyp-detail-title {
+    font-family: var(--v2-serif);
+    font-size: 1.05rem;
+    line-height: 1.35;
+    color: var(--v2-ink);
+    margin: 0 0 8px;
+}
+.hs-hyp-detail-title:not(:first-child) { margin-top: 20px; }
+.hs-hyp-justification .v2-prose ol,
+.hs-hyp-justification .v2-prose ul {
+    margin: 0 0 18px;
+    padding-left: 1.45em;
+}
+.hs-hyp-justification .v2-prose li { padding-left: 0.25em; }
+.hs-hyp-justification .v2-prose li + li { margin-top: 4px; }
+.hs-hyp-subhead {
+    font-family: var(--v2-sans);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-size: 0.68rem;
+    font-weight: 600;
+    color: var(--v2-muted);
+    margin-bottom: 8px;
+}
+.hs-hyp-plan {
+    margin-top: 20px;
+    padding-top: 18px;
+    border-top: 1px solid var(--v2-border-soft);
+}
+.hs-hyp-plan .hs-hyp-subhead { color: var(--v2-muted); }
+.hs-hyp-plan .v2-prose { color: var(--v2-ink-soft); font-size: 1.02rem; }
+
+/* Inline agent-revision request + manual editor. */
+.hs-hyp-revise,
+.hs-hyp-regenerate,
+.hs-hyp-editor {
+    margin-top: 20px;
+    margin-left: calc(1.4em + 14px);
+}
+/* The revision-request instruction reads shorter than a full manual edit. */
+.hs-hyp-revise .hs-hyp-editor-input,
+.hs-hyp-regenerate .hs-hyp-editor-input { min-height: 84px; font-family: var(--v2-sans); font-size: 1rem; }
+.hs-hyp-editor-input {
+    width: 100%;
+    font-family: var(--v2-serif);
+    font-size: 1.02rem;
+    line-height: 1.6;
+    color: var(--v2-ink);
+    background: var(--v2-bg);
+    border: 1px solid var(--v2-border);
+    border-radius: 8px;
+    padding: 14px 16px;
+    min-height: 180px;
+    resize: vertical;
+    outline: none;
+}
+.hs-hyp-editor-input:focus { border-color: var(--v2-accent); box-shadow: 0 0 0 3px var(--v2-accent-soft); }
+.hs-hyp-editor-actions { display: flex; gap: 12px; justify-content: flex-end; margin-top: 14px; }
+
+/* ---- Initial empty state: heading + composer centered in the viewport ----
+   When the shell is empty (no conversation yet) it centers its own content
+   vertically, so the composer becomes the focal point rather than sitting on
+   the footer. The moment a message is sent, the shell returns to a normal
+   top-anchored transcript and the composer settles to the bottom -- the same
+   element persists, so the movement reads as a settle, not a screen change. */
+.hs-shell.is-empty { justify-content: center; }
+.hs-shell.is-empty .hs-conversation { display: none; }
+.hs-intro { text-align: center; margin-bottom: 26px; }
+.hs-intro-heading {
+    font-family: var(--v2-serif);
+    font-size: clamp(1.7rem, 3.4vw, 2.3rem);
+    line-height: 1.2;
+    font-weight: 640;
+    letter-spacing: -0.01em;
+    color: var(--v2-ink);
+    text-wrap: balance;
+}
+
+/* ---- Composer: one unified surface, sticky at the bottom in normal flow ---- */
+.hs-composer {
+    position: sticky;
+    bottom: 0;
+    margin-top: auto;
+    padding: 14px 0 22px;
+    background: var(--v2-bg);
+    z-index: 5;
+}
+/* In the empty state the composer is part of the centered group, not pinned. */
+.hs-shell.is-empty .hs-composer { position: static; margin-top: 0; padding-top: 0; }
+
+/* The surface itself: warm near-white, restrained border, moderate radius,
+   subtle elevation. No divider above it -- the surface separates itself. */
+.hs-composer-surface {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: var(--v2-surface);
+    border: 1px solid var(--v2-border);
+    border-radius: 16px;
+    padding: 10px 12px 10px 18px;
+    box-shadow: 0 1px 2px rgba(40, 30, 12, 0.04), 0 6px 20px rgba(40, 30, 12, 0.06);
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.hs-composer-surface:focus-within {
+    border-color: var(--v2-accent-ring);
+    box-shadow: 0 1px 2px rgba(40, 30, 12, 0.04), 0 8px 26px rgba(40, 30, 12, 0.09);
+}
+
+
+/* Textarea is borderless inside the surface. */
+.hs-input {
+    display: block;
+    flex: 1 1 auto;
+    min-width: 0;
+    width: 100%;
+    height: 34px;
+    min-height: 34px;
+    font-family: var(--v2-sans);
+    font-size: 1.05rem;
+    line-height: 1.45;
+    color: var(--v2-ink);
+    background: transparent;
+    border: none;
+    padding: 5px 0;
+    resize: none;
+    outline: none;
+    max-height: 44px;
+    overflow-y: auto;
+}
+.hs-input::placeholder { color: var(--v2-muted); }
+
+/* Internal bottom toolbar. */
+.hs-toolbar {
+    display: flex;
+    align-items: center;
+    flex: 0 0 auto;
+    gap: 8px;
+    margin-top: 0;
+}
+.hs-toolbar-left { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.hs-toolbar-left:empty { display: none; }
+
+/* Count preference: subtle dropdown trigger "N hypotheses ▾". */
+.hs-count-menu { position: relative; }
+.hs-count-trigger {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-family: var(--v2-sans);
+    font-size: 0.86rem;
+    font-weight: 500;
+    color: var(--v2-ink-soft);
+    background: none;
+    border: none;
+    border-radius: 8px;
+    padding: 6px 8px;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+    white-space: nowrap;
+}
+.hs-count-trigger:hover, .hs-count-trigger[aria-expanded="true"] {
+    background: var(--v2-border-soft);
+    color: var(--v2-ink);
+}
+.hs-caret { font-size: 1.2em; line-height: 1; color: var(--v2-muted); }
+.hs-count-list {
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 0;
+    min-width: 150px;
+    max-height: 260px;
+    overflow-y: auto;
+    background: var(--v2-surface);
+    border: 1px solid var(--v2-border);
+    border-radius: 10px;
+    box-shadow: 0 8px 24px rgba(40, 30, 12, 0.14);
+    padding: 6px;
+    z-index: 30;
+}
+.hs-count-option {
+    display: block;
+    width: 100%;
+    text-align: left;
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-family: var(--v2-sans);
+    font-size: 0.9rem;
+    color: var(--v2-ink);
+    padding: 8px 10px;
+    border-radius: 6px;
+}
+.hs-count-option:hover, .hs-count-option:focus-visible { background: var(--v2-accent-soft); color: var(--v2-accent); outline: none; }
+.hs-count-option[aria-selected="true"] { color: var(--v2-accent); font-weight: 600; }
+
+/* "Generate now": secondary, subtle text action within the toolbar. */
+.hs-generate-inline {
+    font-family: var(--v2-sans);
+    font-size: 0.86rem;
+    font-weight: 500;
+    color: var(--v2-ink-soft);
+    background: none;
+    border: none;
+    border-radius: 8px;
+    padding: 6px 8px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+.hs-generate-inline:hover:not(:disabled) { background: var(--v2-border-soft); color: var(--v2-accent); }
+.hs-generate-inline:disabled { opacity: 0.5; cursor: default; }
+
+/* Compact circular send control (upward arrow). */
+.hs-send {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 36px;
+    height: 36px;
+    border: none;
+    border-radius: 50%;
+    background: var(--v2-accent);
+    color: #f7faf7;
+    cursor: pointer;
+    transition: background 0.15s ease, opacity 0.15s ease;
+}
+.hs-send:hover:not(:disabled) { background: var(--v2-accent-hover); }
+.hs-send.is-stop {
+    background: var(--v2-accent);
+    color: #f7faf7;
+}
+.hs-send.is-stop:hover:not(:disabled) { background: var(--v2-accent-hover); }
+.hs-stop-icon {
+    width: 11px;
+    height: 11px;
+    border-radius: 2px;
+    background: currentColor;
+}
+.hs-send:disabled { background: var(--v2-border); color: var(--v2-muted); cursor: default; }
+
+.hs-queued-messages {
+    width: var(--hs-composer-width);
+    max-width: calc(100% - 24px);
+    margin: 6px auto 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-family: var(--v2-sans);
+}
+.hs-queued-messages[hidden] { display: none; }
+.hs-queue-paused {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 2px 12px;
+    color: var(--v2-ink);
+    font-size: 0.82rem;
+}
+.hs-queue-resume {
+    border: 0;
+    background: transparent;
+    color: var(--v2-muted);
+    font: inherit;
+    cursor: pointer;
+}
+.hs-queue-resume:hover,
+.hs-queue-resume:focus-visible { color: var(--v2-green); outline: none; }
+.hs-queued-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 36px;
+    max-width: 100%;
+    padding: 7px 12px;
+    border: 1px solid rgba(42, 96, 72, 0.11);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.72);
+    color: var(--v2-ink);
+    box-shadow: 0 2px 12px rgba(40, 30, 12, 0.05);
+    font-size: 0.86rem;
+}
+.hs-queued-icon {
+    flex: 0 0 auto;
+    color: var(--v2-muted);
+}
+.hs-queued-text {
+    min-width: 0;
+    flex: 1 1 auto;
+    overflow-wrap: anywhere;
+}
+.hs-queued-status {
+    flex: 0 0 auto;
+    color: var(--v2-muted);
+    font-size: 0.78rem;
+    white-space: nowrap;
+}
+.hs-queued-delete {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 26px;
+    height: 26px;
+    margin-right: -4px;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--v2-muted);
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+.hs-queued-delete:hover,
+.hs-queued-delete:focus-visible {
+    background: rgba(119, 45, 45, 0.08);
+    color: #8d3232;
+    outline: none;
+}
+
+.hs-composer-error {
+    margin: 10px 0 0 4px;
+    font-family: var(--v2-sans);
+    font-size: 0.88rem;
+    color: #b3413a;
+}
+
+/* Ready-to-generate CTA, placed directly beneath the DiscoveryAgent response.
+   Primary action; dynamically reflects the currently selected count. */
+.hs-ready-cta { margin-top: 18px; }
+.hs-ready-cta-btn { transition: background 0.15s ease; }
+
+/* ---- Final review overlay ---- */
+.hs-review-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding: 40px 24px;
+    overflow-y: auto;
+    background: rgba(41, 34, 22, 0.42);
+}
+.hs-review {
+    width: 100%;
+    max-width: min(680px, calc(100vw - 48px));
+    margin: auto;
+    background: var(--v2-surface);
+    border: 1px solid var(--v2-border);
+    border-radius: 16px;
+    box-shadow: 0 12px 40px rgba(40, 30, 12, 0.18);
+    padding: 34px 36px 30px;
+}
+.hs-review .v2-section-label { margin-bottom: 10px; }
+.hs-review-title {
+    font-family: var(--v2-serif);
+    font-size: 1.9rem;
+    line-height: 1.15;
+    font-weight: 680;
+    color: var(--v2-ink);
+    margin-bottom: 26px;
+}
+.hs-review-block { margin-bottom: 24px; }
+.hs-review-label {
+    font-family: var(--v2-sans);
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    font-size: 0.68rem;
+    font-weight: 600;
+    color: var(--v2-muted);
+    margin-bottom: 8px;
+}
+.hs-review-hypothesis { font-size: 1.14rem; }
+.hs-review-justification { font-size: 1.02rem; color: var(--v2-ink-soft); }
+.hs-review-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+    margin-top: 30px;
+    padding-top: 22px;
+    border-top: 1px solid var(--v2-border);
+}
+.hs-remove-menu-row {
+    min-width: 0;
+}
+.hs-remove-menu-row .v2-menu-item {
+    display: block;
+}
+.hs-remove-menu-row.is-confirming {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 8px;
+    border: 1px solid rgba(191, 70, 62, 0.28);
+    border-radius: 9px;
+    background: rgba(191, 70, 62, 0.08);
+}
+.hs-remove-menu-label {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    font-family: var(--v2-sans);
+    font-size: 0.9rem;
+    color: var(--v2-ink-soft);
+}
+.hs-remove-menu-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    flex: 0 0 auto;
+}
+.hs-remove-menu-cancel,
+.hs-remove-menu-delete {
+    border: none;
+    font-family: var(--v2-sans);
+    font-weight: 700;
+    cursor: pointer;
+}
+.hs-remove-menu-cancel {
+    padding: 4px 2px;
+    background: transparent;
+    color: var(--v2-ink-soft);
+}
+.hs-remove-menu-cancel:hover,
+.hs-remove-menu-cancel:focus-visible {
+    color: var(--v2-ink);
+    outline: none;
+}
+.hs-remove-menu-delete {
+    padding: 7px 12px;
+    border-radius: 8px;
+    background: #bf463e;
+    color: #fffaf5;
+}
+.hs-remove-menu-delete:hover,
+.hs-remove-menu-delete:focus-visible {
+    background: #a83a34;
+    outline: none;
+}
+@media (max-width: 680px) {
+    .v2-page-studio .v2-main { padding: 0; }
+    .hs-workspace { padding: 28px 18px 0; }
+    .hs-readonly-header { grid-template-columns: 1fr; gap: 8px; justify-items: center; }
+    .hs-readonly-return { justify-self: center; }
+    .hs-hyp-statement, .hs-hyp-actions { padding-left: 0; }
+    .hs-hyp-justification, .hs-hyp-editor, .hs-hyp-revise, .hs-hyp-regenerate { margin-left: 0; }
+    .hs-composer-bar { flex-wrap: wrap; }
+    .hs-composer-actions { width: 100%; justify-content: space-between; }
+    .hs-review { padding: 26px 22px; }
+}
+
+/* =====================================================================
+   V2 workspace model: candidate hypothesis cards on top + a per-hypothesis
+   refinement chat below. Reuses the tokens/components above; adds only the
+   card grid, the scoped thread, the welcome screen, and the mode toggle.
+   ===================================================================== */
+
+/* The workspace uses more of the available width so several cards read as a
+   row across the top; the chat below keeps a comfortable reading column. */
+.v2-page-studio .hs { max-width: none; }
+
+/* ---- Welcome / initial state ---- */
+.hs-welcome {
+    width: min(100%, 820px);
+    margin: auto;
+    padding: 8px 2px 40px;
+    max-width: 820px;
+}
+.hs-welcome-heading {
+    font-family: var(--v2-serif);
+    font-size: clamp(1.7rem, 3.4vw, 2.25rem);
+    line-height: 1.18;
+    font-weight: 660;
+    letter-spacing: -0.01em;
+    color: var(--v2-ink);
+    text-align: center;
+}
+.hs-welcome-sub {
+    margin-top: 12px;
+    font-size: 1.05rem;
+    line-height: 1.6;
+    color: var(--v2-ink-soft);
+    text-align: center;
+}
+.hs-welcome-guidance {
+    display: block;
+    width: 100%;
+    margin-top: 24px;
+    font-family: var(--v2-sans);
+    font-size: 1.02rem;
+    line-height: 1.55;
+    color: var(--v2-ink);
+    background: var(--v2-surface);
+    border: 1px solid var(--v2-border);
+    border-radius: 12px;
+    padding: 14px 16px;
+    min-height: 220px;
+    resize: vertical;
+    outline: none;
+}
+.hs-welcome-guidance:focus { border-color: var(--v2-accent-ring); box-shadow: 0 0 0 3px var(--v2-accent-soft); }
+.hs-welcome-guidance::placeholder { color: var(--v2-muted); }
+.hs-welcome-actions {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    margin-top: 18px;
+}
+
+/* ---- Workspace: hypothesis surface (top) + thread + composer (bottom) ---- */
+.hs-workspace-main {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: hidden;
+}
+
+/* A substantial comparison surface rather than independent floating cards. */
+.hs-cards {
+    flex: 0 0 auto;
+    width: min(98%, 1520px);
+    max-width: calc(100% - 8px);
+    margin: 0 auto;
+    padding: 0;
+}
+.hs-history-note {
+    width: 100%;
+    text-align: center;
+    margin: 0;
+}
+.hs-hypothesis-surface.is-empty {
+    position: relative;
+    min-height: 160px;
+}
+.hs-hypothesis-surface.is-empty .hs-history-note {
+    position: absolute;
+    top: 25%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+}
+.hs-workspace-main.has-expanded-hypothesis .hs-cards {
+    flex: 0 0 40%;
+    min-height: 0;
+}
+.hs-hypothesis-surface {
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+    max-height: min(54vh, 560px);
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior-x: none;
+    overscroll-behavior-y: contain;
+    touch-action: pan-y;
+    padding: 6px 24px 10px;
+    box-sizing: border-box;
+    scroll-padding-top: 6px;
+    scrollbar-gutter: stable;
+}
+.hs-hypothesis-surface.is-static-row {
+    max-height: none;
+    overflow: hidden;
+    overscroll-behavior: none;
+    touch-action: none;
+}
+.hs-hypothesis-surface.has-expanded-card {
+    overflow-y: auto;
+    padding-bottom: 12px;
+}
+.hs-workspace-main.has-expanded-hypothesis .hs-hypothesis-surface {
+    height: 100%;
+    max-height: none;
+}
+.hs-hypothesis-surface.has-expanded-card .hs-card-grid {
+    padding-bottom: 6px;
+}
+.hs-card-grid {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 14px;
+    align-items: start;
+}
+/* Collapsed workspace (nothing expanded): every card equalizes to the tallest
+   card so a longer — but still valid, word-budgeted — title lifts the whole grid
+   to one shared height instead of being clipped. Scoped to the static state so
+   expanding a card never stretches its collapsed siblings (and the masonry
+   layout, which only appears while a card is expanded, is untouched). */
+.hs-hypothesis-surface.is-static-row .hs-card-grid {
+    align-items: stretch;
+    grid-auto-rows: 1fr;
+}
+.hs-card-grid.is-single { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.hs-card-grid.is-single .hs-card { grid-column: 3 / span 2; }
+.hs-card { grid-column: span 2; }
+/* Center incomplete final rows while keeping a three-column rhythm. */
+.hs-card-grid:not(.is-masonry) > .hs-card:nth-child(3n + 1):last-child { grid-column: 3 / span 2; }
+.hs-card-grid:not(.is-masonry) > .hs-card:nth-child(3n + 1):nth-last-child(2) { grid-column: 2 / span 2; }
+.hs-card-grid:not(.is-masonry) > .hs-card:nth-child(3n + 2):last-child { grid-column: 4 / span 2; }
+.hs-card-grid.is-single:not(.is-masonry) > .hs-card:nth-child(1) { grid-column: 3 / span 2; }
+.hs-card-grid.is-masonry {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.hs-card-column {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    min-width: 0;
+}
+.hs-card-grid.is-masonry .hs-card {
+    grid-column: auto;
+    width: 100%;
+}
+
+.hs-card {
+    display: flex;
+    flex-direction: column;
+    min-height: 154px;
+    background: rgba(255, 252, 246, 0.76);
+    border: 1px solid rgba(116, 95, 62, 0.22);
+    border-radius: 12px;
+    padding: 15px 14px 13px 16px;
+    transition: border-color 0.18s ease, box-shadow 0.18s ease, opacity 0.18s ease, transform 0.18s ease, background 0.18s ease;
+}
+/* min-height, not a fixed height: a collapsed card grows to show its full title
+   (titles are capped at 18 words, so growth is bounded); the grid rule above
+   then equalizes all cards to the tallest. */
+.hs-card.is-collapsed { min-height: 160px; }
+.hs-card.is-expanded { height: auto; }
+.hs-card.is-focused {
+    position: relative;
+    z-index: 1;
+    border-color: var(--v2-accent-ring);
+    background: var(--v2-surface);
+    box-shadow: 0 0 0 1px rgba(47, 93, 67, 0.08), 0 8px 24px rgba(40, 30, 12, 0.10);
+    transform: none;
+    transform-origin: center;
+}
+.hs-card.is-dimmed { opacity: 0.42; transform: scale(0.985); }
+.hs-card.is-dimmed:hover { opacity: 0.72; transform: translateY(-1px) scale(1); }
+.hs-card.is-selected {
+    border-color: var(--v2-accent-ring);
+    background: var(--v2-accent-soft);
+    opacity: 1;
+    border-radius: 12px;
+}
+.hs-card.is-busy { opacity: 0.5; pointer-events: none; }
+/* Chat focus is the authoritative interaction state. Keep it unmistakable
+   even when selected/busy styles are applied later in the cascade. */
+.hs-card.is-focused,
+.hs-card.is-focused.is-selected,
+.hs-card.is-focused.is-busy {
+    opacity: 1;
+    border-color: var(--v2-accent);
+    box-shadow:
+        0 0 0 1px rgba(47, 93, 67, 0.14),
+        0 8px 24px rgba(40, 30, 12, 0.10);
+}
+.hs-card.is-regenerating {
+    position: relative;
+    opacity: 1;
+    transform: none;
+    pointer-events: auto;
+}
+.hs-card-regenerating {
+    flex: 1 1 auto;
+    min-height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    text-align: center;
+    font-family: var(--v2-sans);
+    color: var(--v2-ink-soft);
+}
+.hs-card-spinner {
+    width: 42px;
+    height: 42px;
+}
+.hs-card-regenerating-label {
+    margin: 0;
+    font-size: 0.95rem;
+    line-height: 1.4;
+    color: var(--v2-ink-soft);
+}
+.hs-card-regenerate-cancel {
+    position: absolute;
+    right: 14px;
+    bottom: 12px;
+    min-width: 68px;
+    padding: 6px 10px;
+    font-size: 0.78rem;
+}
+
+.hs-card-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+}
+.hs-card-titlebtn {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    flex: 1 1 auto;
+    min-width: 0;
+    text-align: left;
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+}
+.hs-card-num {
+    font-family: var(--v2-serif);
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: var(--v2-accent);
+    flex: 0 0 auto;
+    font-variant-numeric: tabular-nums;
+}
+.hs-card-title {
+    font-family: var(--v2-serif);
+    font-size: 1.08rem;
+    line-height: 1.28;
+    font-weight: 620;
+    color: var(--v2-ink);
+}
+/* Titles are word-budgeted by the backend/JS contract (max 18 words), so a
+   valid title always fits and is shown in full: no line clamp, no ellipsis.
+   Cards grow to fit the tallest title and equalize via the grid below. */
+.hs-card-details {
+    margin-top: 13px;
+    padding-top: 12px;
+    border-top: 1px solid var(--v2-border-soft);
+}
+.hs-card-detail-label {
+    font-family: var(--v2-sans);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-size: 0.66rem;
+    font-weight: 650;
+    color: var(--v2-muted);
+    margin: 0 0 6px;
+}
+.hs-card-detail-label:not(:first-child) { margin-top: 16px; }
+.hs-card-details .v2-prose { font-size: 0.98rem; line-height: 1.55; }
+.hs-card-grid,
+.hs-card,
+.hs-card-head,
+.hs-card-titlebtn,
+.hs-card-details,
+.hs-hypothesis-markdown {
+    min-width: 0;
+    max-width: 100%;
+}
+.hs-card-title,
+.hs-card-details .v2-prose,
+.hs-hypothesis-markdown {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+.hs-hypothesis-markdown pre {
+    max-width: 100%;
+    overflow-x: hidden;
+    white-space: pre-wrap;
+}
+.hs-hypothesis-markdown code {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
+.hs-manual-edit { margin-top: 2px; }
+.hs-manual-edit-input {
+    width: 100%;
+    min-height: 260px;
+    font-family: var(--v2-serif);
+    font-size: 1.02rem;
+    line-height: 1.58;
+    color: var(--v2-ink);
+    background: var(--v2-bg);
+    border: 1px solid var(--v2-border);
+    border-radius: 8px;
+    padding: 14px 16px;
+    resize: vertical;
+    outline: none;
+}
+.hs-manual-edit-input:focus {
+    border-color: var(--v2-accent-ring);
+    box-shadow: 0 0 0 3px var(--v2-accent-soft);
+}
+.hs-manual-edit-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 12px;
+}
+
+.hs-regeneration-nav {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    margin-right: auto;
+    font-family: var(--v2-sans);
+}
+.hs-regeneration-arrow {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 1px solid var(--v2-border);
+    border-radius: 7px;
+    background: transparent;
+    color: var(--v2-ink-soft);
+    font: 500 1.2rem/1 var(--v2-sans);
+    cursor: pointer;
+}
+.hs-regeneration-arrow:hover:not(:disabled) {
+    border-color: var(--v2-accent);
+    color: var(--v2-accent);
+}
+.hs-regeneration-arrow:disabled {
+    opacity: 0.38;
+    cursor: default;
+}
+.hs-regeneration-count {
+    color: var(--v2-ink-soft);
+    font-size: 0.78rem;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+.hs-card-controls {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 16px;
+    margin-top: auto;
+    padding-top: 12px;
+}
+.hs-card-action {
+    font-family: var(--v2-sans);
+    font-size: 0.86rem;
+    font-weight: 400;
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    color: var(--v2-ink-soft);
+    transition: color 0.15s ease;
+}
+.hs-card-action:hover { color: var(--v2-accent); }
+.hs-card-expand { margin-right: 0; }
+.hs-card-select { color: var(--v2-accent); }
+.hs-card-select:hover { color: var(--v2-accent-hover); text-decoration: underline; }
+.hs-card-selected-static {
+    color: var(--v2-accent);
+    cursor: default;
+}
+.hs-card-overflow {
+    flex: 0 0 auto;
+    margin: 0;
+}
+.hs-card-overflow .v2-row-menu { width: 26px; height: 26px; }
+.hs-card-overflow .v2-menu {
+    min-width: 136px;
+    padding: 4px;
+}
+.hs-card-overflow .v2-menu-item {
+    font-size: 0.82rem;
+    padding: 6px 7px;
+}
+.hs-card-overflow .hs-remove-menu-row.is-confirming {
+    width: 100%;
+    min-height: 28px;
+    box-sizing: border-box;
+    gap: 4px;
+    padding: 3px 6px;
+    border-radius: 6px;
+}
+.hs-card-overflow .hs-remove-menu-actions {
+    width: 100%;
+    justify-content: space-between;
+    gap: 4px;
+}
+.hs-card-overflow .hs-remove-menu-cancel,
+.hs-card-overflow .hs-remove-menu-delete {
+    font-size: 0.75rem;
+    line-height: 1.1;
+}
+.hs-card-overflow .hs-remove-menu-cancel { padding: 3px 1px; }
+.hs-card-overflow .hs-remove-menu-delete {
+    padding: 3px 7px;
+    border-radius: 6px;
+}
+
+/* Inline editor mounted under a card (guided regenerate / manual edit). */
+.hs-inline-editor { margin-top: 16px; }
+.hs-inline-heading {
+    font-family: var(--v2-sans);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-size: 0.66rem;
+    font-weight: 600;
+    color: var(--v2-muted);
+    margin-bottom: 8px;
+}
+.hs-inline-input {
+    width: 100%;
+    font-family: var(--v2-sans);
+    font-size: 0.98rem;
+    line-height: 1.55;
+    color: var(--v2-ink);
+    background: var(--v2-bg);
+    border: 1px solid var(--v2-border);
+    border-radius: 8px;
+    padding: 12px 14px;
+    min-height: 96px;
+    resize: vertical;
+    outline: none;
+}
+.hs-inline-input:focus { border-color: var(--v2-accent); box-shadow: 0 0 0 3px var(--v2-accent-soft); }
+.hs-inline-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 12px; }
+
+.hs-chat-scope {
+    width: var(--hs-chat-column-width);
+    max-width: calc(100% - 24px);
+    margin: 12px auto 0;
+    padding: 0 2px;
+    font-family: var(--v2-sans);
+    text-align: center;
+}
+.hs-chat-scope h2 {
+    margin: 0;
+    font-family: var(--v2-serif);
+    font-size: 1.15rem;
+    line-height: 1.3;
+    font-weight: 650;
+    color: var(--v2-ink);
+}
+.hs-chat-scope p {
+    margin: 4px 0 0;
+    color: var(--v2-muted);
+    font-size: 0.92rem;
+    line-height: 1.4;
+}
+
+.hs-mode-toggle {
+    position: relative;
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    margin: 0;
+    font-family: var(--v2-sans);
+}
+.hs-mode-toggle[hidden] { display: none; }
+.hs-mode-trigger {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    border: none;
+    background: transparent;
+    color: var(--v2-ink-soft);
+    border-radius: 8px;
+    padding: 5px 8px;
+    font: inherit;
+    font-size: 0.86rem;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+}
+.hs-mode-trigger:hover,
+.hs-mode-trigger[aria-expanded="true"] {
+    background: var(--v2-border-soft);
+    color: var(--v2-ink-soft);
+}
+.hs-mode-caret {
+    width: 7px;
+    height: 7px;
+    border-right: 1.7px solid currentColor;
+    border-bottom: 1.7px solid currentColor;
+    transform: translateY(-2px) rotate(45deg);
+}
+.hs-mode-menu {
+    position: absolute;
+    right: 0;
+    bottom: calc(100% + 8px);
+    min-width: 138px;
+    padding: 8px;
+    border: 1px solid var(--v2-border);
+    border-radius: 10px;
+    background: var(--v2-surface);
+    box-shadow: 0 8px 24px rgba(40, 30, 12, 0.14);
+    z-index: 25;
+}
+.hs-mode-menu[hidden] { display: none; }
+.hs-mode-menu-title {
+    margin: 0 0 5px;
+    padding: 0 4px;
+    font-family: var(--v2-sans);
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--v2-muted);
+}
+.hs-mode-option {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    width: 100%;
+    border: none;
+    background: transparent;
+    color: var(--v2-ink-soft);
+    border-radius: 7px;
+    padding: 7px 8px;
+    font: inherit;
+    font-size: 0.88rem;
+    font-weight: 600;
+    text-align: left;
+    cursor: pointer;
+}
+.hs-mode-option:hover,
+.hs-mode-option:focus-visible {
+    background: var(--v2-border-soft);
+    color: var(--v2-ink-soft);
+    outline: none;
+}
+.hs-mode-option.is-active {
+    background: transparent;
+    color: var(--v2-ink-soft);
+}
+.hs-mode-option.is-active::after {
+    content: "✓";
+    flex: 0 0 auto;
+    color: var(--v2-accent);
+    font-size: 0.82rem;
+    line-height: 1;
+}
+.hs-mode-option.is-active:hover,
+.hs-mode-option.is-active:focus-visible {
+    background: var(--v2-border-soft);
+}
+
+/* ---- Per-hypothesis refinement thread ---- */
+.hs-thread {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior-x: none;
+    overscroll-behavior-y: contain;
+    touch-action: pan-y;
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+    width: min(calc(var(--hs-chat-column-width) + 28px), calc(100% - 24px));
+    margin: 0 auto;
+    padding: 10px 28px 18px 0;
+    box-sizing: border-box;
+    scrollbar-gutter: stable;
+}
+.hs-workspace-main.has-expanded-hypothesis .hs-thread {
+    flex: 1 1 60%;
+    min-height: 0;
+}
+.hs-thread > * { flex-shrink: 0; }
+.hs-thread-empty {
+    width: 100%;
+    margin: 8px 0;
+    font-size: 0.98rem;
+    line-height: 1.45;
+    text-align: center;
+}
+
+.hs-thread,
+.hs-hypothesis-surface.has-expanded-card {
+    scrollbar-width: thin;
+    scrollbar-color: var(--text-muted) transparent;
+}
+.hs-thread::-webkit-scrollbar,
+.hs-hypothesis-surface.has-expanded-card::-webkit-scrollbar {
+    width: 8px;
+}
+.hs-thread::-webkit-scrollbar-track,
+.hs-hypothesis-surface.has-expanded-card::-webkit-scrollbar-track {
+    background: transparent;
+}
+.hs-thread::-webkit-scrollbar-thumb,
+.hs-hypothesis-surface.has-expanded-card::-webkit-scrollbar-thumb {
+    background-color: var(--text-muted);
+    border-radius: 4px;
+}
+.hs-thread::-webkit-scrollbar-thumb:hover,
+.hs-hypothesis-surface.has-expanded-card::-webkit-scrollbar-thumb:hover {
+    background-color: var(--text-secondary);
+}
+
+/* ---- Composer inside the flex column (not sticky; the thread scrolls) ---- */
+.hs-workspace-main .hs-composer {
+    position: static;
+    margin-top: 0;
+    padding: 12px 0 20px;
+    width: var(--hs-composer-width);
+    max-width: calc(100% - 24px);
+    margin-left: auto;
+    margin-right: auto;
+    background: transparent;
+}
+.hs-input:disabled { color: var(--v2-muted); cursor: not-allowed; }
+
+@media (max-width: 680px) {
+    .hs {
+        --hs-chat-column-width: calc(100vw - 36px);
+        --hs-workspace-left: 0px;
+        --hs-composer-width: calc(100vw - 24px);
+    }
+    .hs-cards { max-height: 50vh; }
+    .hs-cards, .hs-chat-scope { width: 100%; max-width: 100%; }
+    .hs-thread { width: 100%; padding-right: 0; }
+    .hs-hypothesis-surface { max-height: 54vh; padding: 16px; }
+    .hs-card-grid, .hs-card-grid.is-single, .hs-card-grid.is-masonry { grid-template-columns: 1fr; }
+    .hs-card, .hs-card-grid.is-single .hs-card,
+    .hs-card-grid:not(.is-masonry) > .hs-card:nth-child(3n + 1):last-child,
+    .hs-card-grid:not(.is-masonry) > .hs-card:nth-child(3n + 1):nth-last-child(2),
+    .hs-card-grid:not(.is-masonry) > .hs-card:nth-child(3n + 2):last-child { grid-column: 1; }
+    .hs-welcome-actions { flex-wrap: wrap; }
+}

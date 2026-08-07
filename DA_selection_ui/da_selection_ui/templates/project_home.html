@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+
+{% block title %}Project Home &middot; DiscoveryAgent{% endblock %}
+
+{% block content %}
+<div class="v2-home" id="project-home-root">
+
+    <!-- Loading state -->
+    <div class="v2-home-status" id="ph-loading">
+        <div class="v2-spinner" aria-hidden="true"></div>
+        <p class="v2-muted">Loading project&hellip;</p>
+    </div>
+
+    <!-- Error state -->
+    <div class="v2-home-status" id="ph-error" hidden>
+        <p class="v2-error-title">We couldn&rsquo;t load this project.</p>
+        <p class="v2-muted" id="ph-error-detail"></p>
+        <button type="button" class="v2-btn v2-btn-primary" id="ph-retry">Try again</button>
+    </div>
+
+    <!-- Rendered content is injected here by project_home.js -->
+    <div id="ph-content" hidden></div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<!-- Shared, single-seam round-start action (all three V2 screens' Start round
+     buttons route through it). Loaded before project_home.js so its delegated
+     [data-start-round] handler is active for the rendered Start round CTA. -->
+<script src="{{ url_for('static', filename='round_start.js') }}"></script>
+<script src="{{ url_for('static', filename='project_home.js') }}"></script>
+{% endblock %}

@@ -1,0 +1,209 @@
+{% extends "base.html" %}
+
+{% block title %}Hypothesis Studio &middot; DiscoveryAgent{% endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="{{ url_for('static', filename='hypothesis_studio.css') }}?v=20260805-regeneration-direct-actions">
+<!--
+  Configuration for the Hypothesis Studio controller. The count is passed as
+  data (default 3, allowed 1-10) so 3 is never hardcoded into the reusable
+  interaction logic. Everything else the page needs (task description, restored
+  hypotheses, round-redirect) comes from the existing /api/initialize response.
+-->
+<script>
+  window.hypothesisStudioConfig = {
+    projectSlug: {{ project_slug | tojson }},
+    defaultNumHypotheses: {{ default_num_hypotheses | tojson }},
+    minNumHypotheses: {{ min_num_hypotheses | tojson }},
+    maxNumHypotheses: {{ max_num_hypotheses | tojson }},
+    roundWorkspaceUrl: {{ round_workspace_url | tojson }},
+    // True only before the first exploratory round has ever started. In this
+    // state the studio does not initialize (no composer/workspace/generation/
+    // history); the blocking "Start your first round" overlay owns the screen.
+    initialExploration: {{ initial_exploration | default(false) | tojson }},
+    runningRoundIndex: {{ running_round_index | default(none) | tojson }}
+  };
+</script>
+{% endblock %}
+
+{% block content %}
+<!-- Studio layout: a quiet left history sidebar (round-scoped hypothesis
+     cycles) + the primary workspace. The workspace model is:
+       hypothesis cards across the top (the active candidate set)
+         + one refinement chat below, scoped to the focused hypothesis.
+     Each hypothesis has its own independent chat thread; switching cards
+     switches threads without mixing them. -->
+<div class="hs-layout"{% if initial_exploration %} inert{% endif %}>
+
+    <aside class="v2-workspace-sidebar hs-sidebar" id="hs-sidebar" aria-label="Hypothesis rounds">
+        <p class="v2-workspace-sidebar-label hs-sidebar-label">Rounds</p>
+        <nav class="v2-workspace-sidebar-list hs-round-list" id="hs-round-list"></nav>
+    </aside>
+
+    <div class="hs-workspace">
+<div class="hs" id="hs-root">
+
+    <!-- Loading (session initialize / restore) -->
+    <div class="v2-home-status" id="hs-loading">
+        <div class="v2-spinner" aria-hidden="true"></div>
+        <p class="v2-muted">Opening Hypothesis Studio&hellip;</p>
+    </div>
+
+    <!-- Error -->
+    <div class="v2-home-status" id="hs-error" hidden>
+        <p class="v2-error-title">We couldn&rsquo;t open the studio.</p>
+        <p class="v2-muted" id="hs-error-detail"></p>
+        <button type="button" class="v2-btn v2-btn-primary" id="hs-retry">Try again</button>
+    </div>
+
+    <!-- Main studio shell -->
+    <div class="hs-shell" id="hs-shell" hidden>
+
+        <!-- Read-only context row for historical rounds. -->
+        <div class="hs-readonly-header" id="hs-readonly-bar" hidden>
+            <div class="hs-readonly-copy">
+                <div class="hs-readonly-title-row">
+                    <h1 class="hs-readonly-title" id="hs-readonly-title"></h1>
+                    <p class="hs-readonly-kicker" id="hs-readonly-text">Read-only history</p>
+                </div>
+                <p class="hs-readonly-caveat" id="hs-readonly-caveat" hidden></p>
+            </div>
+            <button type="button" class="hs-readonly-return" id="hs-return-current" hidden>Return to current round &rarr;</button>
+        </div>
+
+        <!-- Welcome / initial state: shown while the current round has no
+             generated hypotheses yet. Optional guidance feeds the existing
+             /api/generate guidance field; there is no interview conversation. -->
+        <div class="hs-welcome" id="hs-welcome" hidden>
+            <h1 class="hs-welcome-heading">Welcome to Hypothesis Studio!</h1>
+            <p class="hs-welcome-sub">DiscoveryAgent will generate candidate hypotheses using your project context and prior results.<br>You can add optional guidance below to steer the first generation.</p>
+            <textarea class="hs-welcome-guidance" id="hs-welcome-guidance" rows="3"
+                      placeholder="Optional guidance &mdash; emphases, constraints, or directions to prioritize&hellip;"></textarea>
+            <div class="hs-welcome-actions">
+                <!-- Lightweight generation preference: "N hypotheses ▾". -->
+                <div class="hs-count-menu" id="hs-count-menu">
+                    <button type="button" class="hs-count-trigger" id="hs-count-trigger"
+                            aria-haspopup="listbox" aria-expanded="false">
+                        <span id="hs-count-label">3 hypotheses</span>
+                        <span class="hs-caret" aria-hidden="true">&#9662;</span>
+                    </button>
+                    <div class="hs-count-list" id="hs-count-list" role="listbox"
+                         aria-label="Number of hypotheses" hidden></div>
+                </div>
+                <button type="button" class="v2-btn v2-btn-primary" id="hs-init" data-hs-action="generate-initial">Initialize workspace</button>
+            </div>
+            <p class="hs-composer-error" id="hs-welcome-error" hidden></p>
+        </div>
+
+        <!-- Centered activity state shown while generation runs. -->
+        <div class="hs-activity" id="hs-activity" hidden>
+            <div class="hs-activity-spinner" aria-hidden="true">
+                <svg class="hs-activity-arrows" viewBox="0 0 64 64" focusable="false">
+                    <circle cx="32" cy="32" r="21" fill="none" stroke="currentColor" stroke-width="3.2" opacity="0.14"/>
+                    <path d="M47.6 46.1A21 21 0 0 1 16.4 46.1" fill="none" stroke="currentColor" stroke-width="3.6" stroke-linecap="round"/>
+                </svg>
+            </div>
+            <p class="hs-activity-label" id="hs-activity-label">Generating hypotheses... This may take a few minutes.</p>
+            <button type="button" class="v2-btn v2-btn-secondary hs-activity-cancel" id="hs-cancel-generation">Cancel</button>
+            <p class="hs-activity-error" id="hs-activity-error" hidden></p>
+        </div>
+
+        <!-- The workspace: candidate hypothesis cards across the top, then the
+             per-hypothesis refinement conversation below. -->
+        <div class="hs-workspace-main" id="hs-workspace-main" hidden>
+            <section class="hs-cards" id="hs-cards" aria-label="Candidate hypotheses"></section>
+
+            <section class="hs-chat-scope" id="hs-chat-scope" hidden>
+                <h2 id="hs-chat-scope-title">Chat About Hypothesis</h2>
+                <p id="hs-chat-scope-help" hidden></p>
+            </section>
+
+
+            <section class="hs-thread" id="hs-thread" aria-live="polite"
+                     aria-label="Refinement conversation for the focused hypothesis"></section>
+
+            <div class="hs-queued-messages" id="hs-queued-messages" hidden></div>
+
+            <!-- Composer: one natural input scoped to the currently focused
+                 hypothesis. The visible Chat/Edit mode controls whether submit
+                 calls /api/chat or /api/edit. -->
+            <form class="hs-composer" id="hs-composer" autocomplete="off" hidden>
+                <div class="hs-composer-surface">
+                    <textarea class="hs-input" id="hs-input" rows="1"
+                              placeholder="Select a hypothesis above to refine it&hellip;"></textarea>
+                    <div class="hs-toolbar">
+                        <div class="hs-toolbar-left" id="hs-toolbar-left">
+                            <div class="hs-mode-toggle" id="hs-mode-toggle" hidden>
+                                <button type="button" class="hs-mode-trigger" id="hs-mode-trigger" aria-haspopup="menu" aria-expanded="false">
+                                    <span id="hs-mode-label">Chat</span>
+                                    <span class="hs-mode-caret" aria-hidden="true"></span>
+                                </button>
+                                <div class="hs-mode-menu" id="hs-mode-menu" role="menu" hidden>
+                                    <p class="hs-mode-menu-title">Mode</p>
+                                    <button type="button" class="hs-mode-option is-active" id="hs-mode-chat" data-mode="chat" role="menuitemradio" aria-checked="true">Chat</button>
+                                    <button type="button" class="hs-mode-option" id="hs-mode-edit" data-mode="edit" role="menuitemradio" aria-checked="false">Edit</button>
+                                </div>
+                            </div>
+                        </div>
+                        <button type="submit" class="hs-send" id="hs-send" aria-label="Send message">
+                            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                                <path d="M12 19V5M12 5l-6 6M12 5l6 6" fill="none" stroke="currentColor"
+                                      stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+                <p class="hs-composer-error" id="hs-composer-error" hidden></p>
+            </form>
+        </div>
+    </div>
+
+    <!-- Final review overlay: one lightweight "Ready for investigation?" step. -->
+    <div class="hs-review-overlay" id="hs-review" hidden>
+        <div class="hs-review" role="dialog" aria-modal="true" aria-labelledby="hs-review-title">
+            <p class="v2-section-label">Final review</p>
+            <h2 class="hs-review-title" id="hs-review-title">Ready for investigation?</h2>
+
+            <div class="hs-review-block">
+                <p class="hs-review-label">Hypothesis</p>
+                <div class="v2-prose hs-review-hypothesis" id="hs-review-hypothesis"></div>
+            </div>
+            <div class="hs-review-block" id="hs-review-just-block">
+                <p class="hs-review-label">Justification</p>
+                <div class="v2-prose hs-review-justification" id="hs-review-justification"></div>
+            </div>
+
+            <p class="hs-composer-error" id="hs-review-error" hidden></p>
+
+            <div class="hs-review-actions">
+                <button type="button" class="v2-btn v2-btn-secondary" id="hs-review-back">Back</button>
+                <button type="button" class="v2-btn v2-btn-primary" id="hs-review-confirm">
+                    Use for next round <span class="v2-arrow" aria-hidden="true">&rarr;</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+</div>
+    </div><!-- /.hs-workspace -->
+</div><!-- /.hs-layout -->
+
+{% if initial_exploration %}
+{# Before any autonomous round has started, the studio shell above is inert and
+   this blocking callout is the only available action. Longer body than the Round
+   Workspace variant: it also explains what the Studio is for once Round 0
+   completes. Shares the one round-start action via [data-start-round]. #}
+{% set overlay_body = 'DiscoveryAgent works best when it begins with an exploratory round to understand your data. Once the round is complete, you can use Hypothesis Studio to choose what DiscoveryAgent investigates next.' %}
+{% set home_url = url_for('project_home_canonical', project_slug=project_slug) %}
+{% include '_start_round_overlay.html' %}
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<!-- Pure event-model helpers (active-version semantics) load first; the
+     controller consumes them via window.HSEvents. -->
+<script src="{{ url_for('static', filename='hypothesis_events.js') }}?v=20260805-regeneration-direct-actions"></script>
+<!-- Shared, single-seam round-start action for the Start round overlay button. -->
+<script src="{{ url_for('static', filename='round_start.js') }}"></script>
+<script src="{{ url_for('static', filename='hypothesis_studio.js') }}?v=20260806-preserve-background-chat-scroll"></script>
+{% endblock %}

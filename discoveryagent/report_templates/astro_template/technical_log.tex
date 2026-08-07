@@ -1,0 +1,432 @@
+% Technical Log Template
+%
+% The Technical Log is a comprehensive record of everything the agent did. It should be
+% exhaustive—this is the authoritative documentation that enables complete understanding
+% and reproduction of the analysis.
+%
+% LaTeX Template
+\documentclass[12pt,modern,linenumbers]{aastex7}
+
+\usepackage{listings}
+\usepackage{tcolorbox}
+\usepackage{longtable}
+\usepackage{xcolor}
+
+% Code listing style
+\lstset{
+    language=Python,
+    basicstyle=\ttfamily\small,
+    keywordstyle=\color{blue},
+    commentstyle=\color{gray},
+    stringstyle=\color{red!70!black},
+    frame=single,
+    breaklines=true,
+    numbers=left,
+    numberstyle=\tiny\color{gray},
+    xleftmargin=2em
+}
+
+% Output box
+\newtcolorbox{codeoutput}{
+    colback=black!5!white,
+    colframe=black!50!white,
+    title=Output,
+    fonttitle=\bfseries\small
+}
+
+% Decision box
+\newtcolorbox{decision}[1]{
+    colback=blue!5!white,
+    colframe=blue!75!black,
+    fonttitle=\bfseries,
+    title={Decision: #1}
+}
+
+% Warning box
+\newtcolorbox{warning}{
+    colback=red!5!white,
+    colframe=red!75!black,
+    title=Warning,
+    fonttitle=\bfseries
+}
+
+\begin{document}
+
+\title{Technical Log: [Analysis Title]}
+
+\author{[Agent Name / Analysis System]}
+\affiliation{Generated automatically from execution trace}
+\email{N/A}
+
+\begin{abstract}
+This technical log documents the complete execution trace of [brief description 
+of analysis]. It includes all data operations, model training steps, decision 
+points, and their outcomes. The log is intended to enable complete reproduction 
+and evaluation of the analysis methodology.
+
+\textbf{Execution Period}: [Start date] -- [End date]\\
+\textbf{Total Runtime}: [X hours]\\
+\textbf{Final Status}: [Completed / Partial / Failed]
+\end{abstract}
+
+%% ============================================================================
+\section{Execution Summary}
+%% ============================================================================
+
+\subsection{Objective}
+[What was the agent trying to accomplish?]
+
+\subsection{Outcome}
+[What was achieved? What metrics were obtained?]
+
+\subsection{Key Findings}
+\begin{enumerate}
+    \item [Finding 1]
+    \item [Finding 2]
+    \item [Finding 3]
+\end{enumerate}
+
+\subsection{Known Issues}
+\begin{itemize}
+    \item [Issue 1: description and impact]
+    \item [Issue 2: description and impact]
+\end{itemize}
+
+%% ============================================================================
+\section{Environment}
+%% ============================================================================
+
+\subsection{Hardware}
+\begin{itemize}
+    \item CPU: [Model, cores]
+    \item GPU: [Model, memory]
+    \item RAM: [Amount]
+    \item Storage: [Type, capacity]
+\end{itemize}
+
+\subsection{Software}
+\begin{lstlisting}
+# Key dependencies (from environment.yml)
+python=3.10.12
+numpy=1.24.3
+pytorch=2.0.1+cu118
+astropy=5.3.1
+scikit-learn=1.3.0
+\end{lstlisting}
+
+\subsection{Reproducibility Information}
+\begin{itemize}
+    \item Random seed: 42
+    \item CUDA deterministic: True
+    \item PyTorch version: 2.0.1
+\end{itemize}
+
+%% ============================================================================
+\section{Data Provenance}
+%% ============================================================================
+
+\subsection{Source Data}
+
+\begin{deluxetable*}{llllc}
+\tablecaption{Data Sources\label{tab:data_sources}}
+\tablehead{
+\colhead{Dataset} & \colhead{Source} & \colhead{Access Date} & 
+\colhead{Format} & \colhead{Size}
+}
+\startdata
+DESI DR1 Catalog & legacysurvey.org/dr9 & 2024-01-15 & FITS & 12.3 GB \\
+Galaxy Images & cutout service & 2024-01-16 & FITS & 45.2 GB \\
+\enddata
+\end{deluxetable*}
+
+\subsection{Selection Criteria}
+
+The following query was used to select the sample:
+
+\begin{lstlisting}[language=SQL]
+SELECT objid, ra, dec, flux_g, flux_r, flux_z, z_spec
+FROM dr9_south
+WHERE r_mag < 21.2
+  AND stellar_mass < POWER(10, 9.25)
+  AND z_spec IS NOT NULL
+  AND z_spec BETWEEN -0.01 AND 1.5
+-- Result: 249,999 galaxies
+\end{lstlisting}
+
+\subsection{Data Quality Assessment}
+
+\begin{lstlisting}
+# Quality check results
+nan_fraction = 0.0%
+inf_fraction = 0.0%
+duplicate_fraction = 0.0%
+missing_images = 0
+\end{lstlisting}
+
+%% ============================================================================
+\section{Chronological Execution Trace}
+%% ============================================================================
+
+% Repeat this pattern for each major step
+
+\subsection{Step 1: Data Loading}
+\textbf{Timestamp}: 2024-01-15 10:23:45 UTC\\
+\textbf{Duration}: 3 minutes 22 seconds
+
+\begin{lstlisting}
+# Load DESI catalog
+from astropy.io import fits
+
+catalog = fits.getdata('data/raw/desi_dr1.fits')
+print(f"Loaded {len(catalog)} galaxies")
+\end{lstlisting}
+
+\begin{codeoutput}
+Loaded 1,234,567 galaxies
+\end{codeoutput}
+
+\begin{decision}{D1: Magnitude Cut}
+\textbf{Choice}: $r < 21.2$
+
+\textbf{Alternatives considered}:
+\begin{itemize}
+    \item $r < 20.5$: Higher quality but 40\% smaller sample
+    \item $r < 22.0$: Larger sample but significantly more noise
+    \item $r < 21.5$: Compromise option
+\end{itemize}
+
+\textbf{Rationale}: The $r < 21.2$ cut provides adequate signal-to-noise for 
+morphological measurements while maintaining a statistically significant sample 
+of low-redshift dwarf galaxies.
+
+\textbf{Sensitivity test}:
+\begin{lstlisting}
+# Test different magnitude cuts
+for mag_cut in [20.5, 21.0, 21.2, 21.5, 22.0]:
+    n_galaxies = np.sum(catalog['r_mag'] < mag_cut)
+    n_lowz = np.sum((catalog['r_mag'] < mag_cut) & 
+                    (catalog['z_spec'] < 0.03))
+    print(f"r < {mag_cut}: {n_galaxies} total, {n_lowz} low-z")
+\end{lstlisting}
+
+\begin{codeoutput}
+r < 20.5: 148,234 total, 8,921 low-z
+r < 21.0: 198,456 total, 12,345 low-z
+r < 21.2: 249,999 total, 15,102 low-z
+r < 21.5: 312,678 total, 17,234 low-z
+r < 22.0: 456,789 total, 19,567 low-z
+\end{codeoutput}
+\end{decision}
+
+\subsection{Step 2: Data Preprocessing}
+\textbf{Timestamp}: 2024-01-15 10:27:07 UTC\\
+\textbf{Duration}: 15 minutes 48 seconds
+
+[Continue with similar structure for each step...]
+
+%% ============================================================================
+\section{Model Training Log}
+%% ============================================================================
+
+\subsection{Architecture}
+
+\begin{lstlisting}
+MultiTaskCNN(
+  backbone: ResNet-18 (11.2M parameters)
+  regression_head: Linear(512 -> 1)
+  binary_head: Linear(512 -> 1) + Sigmoid
+  multiclass_head: Linear(512 -> 3) + Softmax
+)
+Total parameters: 11,178,945
+\end{lstlisting}
+
+\subsection{Training Configuration}
+
+\begin{deluxetable}{ll}
+\tablecaption{Training Hyperparameters\label{tab:hyperparams}}
+\tablehead{
+\colhead{Parameter} & \colhead{Value}
+}
+\startdata
+Optimizer & Adam \\
+Learning rate & $10^{-3}$ \\
+Batch size & 256 \\
+Max epochs & 50 \\
+Early stopping patience & 10 \\
+Loss weights (λ$_1$, λ$_2$) & (0.5, 0.5) \\
+\enddata
+\end{deluxetable}
+
+\subsection{Training Progress}
+
+\begin{lstlisting}
+Epoch  1/50: train_loss=0.0452, val_loss=0.0521, val_nmad=0.0412
+Epoch  2/50: train_loss=0.0389, val_loss=0.0445, val_nmad=0.0356
+...
+Epoch 23/50: train_loss=0.0198, val_loss=0.0267, val_nmad=0.0265
+Epoch 24/50: train_loss=0.0195, val_loss=0.0270, val_nmad=0.0268
+Early stopping triggered at epoch 24
+Best model saved at epoch 23 with val_nmad=0.0265
+\end{lstlisting}
+
+%% ============================================================================
+\section{Decision Registry}
+%% ============================================================================
+
+\begin{deluxetable*}{clllc}
+\tablecaption{Complete Decision Registry\label{tab:decision_registry}}
+\tablehead{
+\colhead{ID} & \colhead{Decision} & \colhead{Alternatives} & 
+\colhead{Rationale} & \colhead{Sensitivity}
+}
+\startdata
+D1 & $r < 21.2$ magnitude cut & 20.5, 21.0, 21.5, 22.0 & S/N vs sample size & 40\% sample change \\
+D2 & Per-image normalization & Global, per-band & Varying conditions & 15\% σ$_{\rm NMAD}$ \\
+D3 & ResNet-18 backbone & VGG, EfficientNet & Speed/accuracy & ±2\% σ$_{\rm NMAD}$ \\
+D4 & Huber loss (δ=1.0) & MSE, MAE & Outlier robustness & 8\% outlier rate \\
+D5 & Multi-task learning & Single-task & Low-z performance & 57\% low-z outliers \\
+D6 & 70/15/15 split & 80/10/10 & Validation size & <1\% effect \\
+D7 & Batch size 256 & 64, 128, 512 & GPU memory & <1\% effect \\
+D8 & Learning rate $10^{-3}$ & $10^{-2}$, $10^{-4}$ & Convergence speed & 2× training time \\
+D9 & λ = 0.5 auxiliary weights & 0.1, 0.3, 1.0 & Task balance & 5\% low-z outliers \\
+D10 & 128×128 pixel images & 64×64, 256×256 & Resolution vs compute & 26\% σ$_{\rm NMAD}$ \\
+\enddata
+\end{deluxetable*}
+
+%% ============================================================================
+\section{Failure Log}
+%% ============================================================================
+
+\subsection{Failed Approaches}
+
+\subsubsection{Attempt 1: Feature Engineering with XGBoost}
+\textbf{Date}: 2024-01-16\\
+\textbf{Description}: Trained XGBoost on 64 handcrafted morphological features.
+
+\begin{warning}
+This approach failed with severe overfitting: validation σ$_{\rm NMAD}$ = 0.03 
+but test σ$_{\rm NMAD}$ = 0.12 (4× worse).
+\end{warning}
+
+\textbf{Diagnosis}: Handcrafted features were too specific to training set 
+characteristics and did not generalize.
+
+\textbf{Resolution}: Switched to end-to-end CNN learning.
+
+\subsubsection{Attempt 2: Scale-Normalized Images}
+\textbf{Date}: 2024-01-17\\
+\textbf{Description}: Cropped images to 3×R50 to remove angular size information.
+
+\begin{warning}
+Performance degraded by 4.1\% (MAE: 0.0336 → 0.0350). Scale and morphology are 
+physically coupled for resolved galaxies.
+\end{warning}
+
+\textbf{Diagnosis}: Angular size is a valid distance indicator for resolved 
+sources; removing it discards useful information.
+
+\textbf{Resolution}: Retained full 128×128 images with scale information.
+
+%% ============================================================================
+\section{Reproducibility Manifest}
+%% ============================================================================
+
+\subsection{Files Required}
+
+\begin{deluxetable}{llc}
+\tablecaption{Required Files for Reproduction\label{tab:manifest}}
+\tablehead{
+\colhead{File} & \colhead{Description} & \colhead{Size}
+}
+\startdata
+src/scripts/01\_download.py & Data download script & 2 KB \\
+src/scripts/02\_preprocess.py & Preprocessing pipeline & 8 KB \\
+src/scripts/03\_train.py & Model training & 15 KB \\
+src/scripts/04\_evaluate.py & Evaluation script & 6 KB \\
+environment.yml & Conda environment & 1 KB \\
+Snakefile & Build automation & 3 KB \\
+models/multitask\_cnn\_best.pth & Trained model & 134 MB \\
+\enddata
+\end{deluxetable}
+
+\subsection{Reproduction Commands}
+
+\begin{lstlisting}[language=bash]
+# From a fresh clone:
+git clone https://github.com/[repo].git
+cd [repo]
+conda env create -f environment.yml
+conda activate photoz
+
+# Full reproduction (including training):
+snakemake --cores 4
+
+# Using pre-trained model (faster):
+snakemake --cores 4 --config use_pretrained=True
+\end{lstlisting}
+
+\subsection{Expected Outputs}
+
+\begin{itemize}
+    \item \texttt{outputs/predictions.csv}: Test set predictions (37,500 rows)
+    \item \texttt{outputs/metrics.json}: Performance metrics
+    \item \texttt{figures/*.pdf}: All figures
+    \item \texttt{outputs/report.pdf}: Summary report
+\end{itemize}
+
+%% ============================================================================
+\section{Appendix: Raw Logs}
+%% ============================================================================
+
+[Include verbatim agent output logs if available]
+
+\end{document}
+%
+% Key Sections Explained
+%
+% Execution Summary
+% - Quick overview for readers who need the TL;DR
+% - What was attempted, what succeeded, what failed
+% - Key numbers and findings
+%
+% Environment
+% - Complete specification for reproduction
+% - Includes hardware (affects training time)
+% - Software versions matter for reproducibility
+%
+% Data Provenance
+% - Every data source with URL and access date
+% - Exact queries used for selection
+% - Quality checks performed and results
+%
+% Chronological Trace
+% - Step-by-step record of what was done
+% - Includes actual code and outputs
+% - Decision boxes for each choice point
+%
+% Decision Registry
+% - Complete table of all decisions
+% - Enables sensitivity analysis
+% - Quick reference for methodology choices
+%
+% Failure Log
+% - Documents what didn't work
+% - Explains why approaches failed
+% - Shows diagnostic reasoning
+% - This is often the most valuable section for future researchers!
+%
+% Reproducibility Manifest
+% - Complete list of files needed
+% - Clear reproduction commands
+% - Expected outputs for verification
+%
+% Tips for Good Technical Logs
+%
+% 1. **Be exhaustive** - Include everything, even if it seems obvious
+% 2. **Timestamp everything** - Enables reconstruction of sequence
+% 3. **Show actual outputs** - Not paraphrased descriptions
+% 4. **Document failures** - They're informative
+% 5. **Include sensitivity tests** - Show robustness of choices
+% 6. **Use consistent formatting** - Decision boxes, code blocks, etc.
+% 7. **Link to code** - Reference specific scripts and line numbers
+% 8. **Make it searchable** - Use clear section headings and labels

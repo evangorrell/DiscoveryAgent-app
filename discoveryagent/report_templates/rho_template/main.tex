@@ -1,0 +1,600 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% --------------------------------------------------------
+%  ____  _
+% |  _ \| |__   ___
+% | |_) | '_ \ / _ \
+% |  _ <| | | | (_) |
+% |_| \_\_| |_|\___/
+%
+% LaTeX2e Template
+% Version 3.0.0 (24/02/2026)
+%
+% Original Author: Guillermo Jimenez (memo.notess1@gmail.com)
+% License: Creative Commons CC BY 4.0
+% --------------------------------------------------------
+%
+% =========================================================
+%  AGENT TEMPLATE — READ BEFORE FILLING IN ANY SECTION
+% =========================================================
+%
+% This file is a structured template for writing a
+% scientific research paper. It is intended to be filled
+% in by an AI agent reporting on a computational or
+% experimental study.
+%
+% GENERAL WRITING GUIDELINES FOR THE AGENT:
+%
+%  1. AUDIENCE: Write for scientists. Assume the reader
+%     has domain expertise but may not be familiar with
+%     every technical detail of the implementation.
+%     Explain concepts in plain, precise language.
+%
+%  2. NO CODE: Do not paste raw code into the paper.
+%     Instead, describe algorithms, workflows, and
+%     analyses in prose. The scientists reading this
+%     paper have direct access to the codebase. Use
+%     pseudocode or equations only when they materially
+%     aid understanding of a method.
+%
+%  3. NARRATIVE: Find and commit to a central narrative
+%     thread. What is the core question? What did you
+%     discover? Every section should connect back to
+%     that thread. Guide the reader from motivation
+%     through findings to implications.
+%
+%  4. OBJECTIVITY: Report results as they are, not as
+%     you might wish them to be. Do not overstate
+%     performance or significance. Where results are
+%     mixed, explain why.
+%
+%  5. TRANSPARENCY: Explicitly state limitations,
+%     failure cases, assumptions, and open questions.
+%     A limitation acknowledged in the paper is far
+%     more credible than one left for the reader to
+%     discover.
+%
+%  6. CITATIONS: Every factual claim about prior work
+%     must be supported by a BibTeX citation. Add all
+%     entries to rho.bib and cite using \cite{key}.
+%     Multiple citations can be grouped: \cite{a,b,c}.
+%
+%  7. FIGURES AND TABLES: All figures and tables belong
+%     in the Supplemental Information section (Section 5)
+%     unless a result is so central that it must appear
+%     inline in Results. When referencing a figure or
+%     table from the main text, use \figref{} or
+%     \tabref{} so that the cross-reference is
+%     hyperlinked in the PDF.
+%
+% =========================================================
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\documentclass[9pt,a4paper,twocolumn,twoside]{rho-class/rho}
+\usepackage[english]{babel}
+
+%----------------------------------------------------------
+% AGENT: Fill in the fields below.
+%   \doctype   — e.g., "Research Article", "Technical Report"
+%   \title     — concise, informative title of the study
+%   \author    — list each contributing author or system
+%   \affil     — institutional affiliation for each author
+%   \dates     — date the manuscript was compiled
+%   \corres    — corresponding author contact information
+%   \docinfo   — brief note on compilation / tools used
+%   \journalname, \journal, \vol, \no — publication venue
+%----------------------------------------------------------
+
+\doctype{Research Article}
+\title{[AGENT: Insert a concise, descriptive title for the study]}
+
+%----------------------------------------------------------
+
+\author[{\textasteriskcentered},a,1]{[Author / Agent Name]}
+\author[{\textdagger},b,2]{[Supervisor / PI Name]}
+
+%----------------------------------------------------------
+
+\affil[a]{[Primary affiliation — department, institution]}
+\affil[b]{[Supervisor affiliation — department, institution]}
+
+%----------------------------------------------------------
+
+\dates{This manuscript was compiled on \today}
+
+%----------------------------------------------------------
+
+\corres{\textsuperscript{\textasteriskcentered}Corresponding author: \href{mailto:author@institute.org}{author@institute.org}}
+\corres{\textsuperscript{\textdagger}Senior / supervising author.}
+
+%----------------------------------------------------------
+
+\docinfo{[AGENT: Briefly note the computational environment, key software versions, or any important compilation details relevant to reproducibility.]}
+
+%----------------------------------------------------------
+
+\journalname{[Journal / Venue]}
+\journal{[Full Journal Title, Year]}
+\theday{\today}
+\vol{X}
+\no{X}
+
+%----------------------------------------------------------
+% ABSTRACT
+%
+% AGENT INSTRUCTIONS:
+%   Write 150–250 words. Cover:
+%     (a) the motivating problem and why it matters,
+%     (b) the approach taken at a high level,
+%     (c) the two or three most important findings, and
+%     (d) the broader implication or next step.
+%   Do not cite references in the abstract.
+%   Do not use jargon without defining it.
+%----------------------------------------------------------
+
+\begin{abstract}
+    [AGENT: Replace this placeholder with the abstract.
+    Summarize the motivation, approach, key findings, and
+    implications in 150--250 words. Be specific about
+    quantitative results where possible.]
+\end{abstract}
+
+%----------------------------------------------------------
+
+\keywords{[keyword 1], [keyword 2], [keyword 3], [keyword 4], [keyword 5]}
+
+%----------------------------------------------------------
+
+\begin{document}
+
+    \maketitle
+    \thispagestyle{firststyle}
+
+%==========================================================
+% SECTION 1 — INTRODUCTION
+%
+% TARGET LENGTH: 1–2 pages (two-column layout).
+%
+% AGENT INSTRUCTIONS:
+%   The introduction does three things: (1) motivates the
+%   problem, (2) surveys relevant prior work, and (3)
+%   states what this paper contributes.
+%
+%   Recommended paragraph structure:
+%     P1 — Hook: the scientific problem and why it is
+%          important. What gap exists in current knowledge
+%          or capability? Cite foundational work.
+%     P2 — Prior work: what has been tried, what works,
+%          and where the field falls short. Be fair and
+%          thorough. Every claim needs a citation.
+%     P3 — This work: what you did, at a high level.
+%          Do NOT recite all results here; save that for
+%          the Results section.
+%     P4 — Paper outline: one sentence per section so the
+%          reader knows what is coming.
+%
+%   Tone: engaging but precise. Find the narrative hook —
+%   the reader should feel compelled to continue.
+%   Avoid hype; let the science speak.
+%==========================================================
+
+\section{Introduction}
+
+    \rhostart{[}AGENT: Begin with a compelling opening
+    sentence that captures the core scientific question.
+    Replace this paragraph with the motivating context
+    for the study.]
+
+    [AGENT: Prior work paragraph. Survey the relevant
+    literature. Highlight what methods or findings already
+    exist \cite{example_ref_1}, where they succeed, and
+    where they fall short. Every factual claim must have
+    a citation. Aim for 5--15 cited works.]
+
+    [AGENT: This work paragraph. Describe the approach
+    taken in this study at a high level — what was done
+    and why it was the right choice given the landscape
+    of prior work. Do not reproduce method details here;
+    those belong in the Methods section.]
+
+    [AGENT: Outline paragraph. Briefly state what each
+    remaining section contains, e.g., ``Section~2
+    presents the main results, Section~3 describes the
+    methods in detail, and Section~4 provides supplemental
+    analyses and extended data.'']
+
+%==========================================================
+% SECTION 2 — RESULTS
+%
+% TARGET LENGTH: 5–6 pages (two-column layout).
+%
+% AGENT INSTRUCTIONS:
+%   This is the heart of the paper. Present findings
+%   clearly and in a logical order — typically from
+%   broad/validating results to specific/novel ones.
+%
+%   STRUCTURE GUIDANCE:
+%     • Use one subsection per major finding or
+%       analytical theme.
+%     • Open each subsection with one sentence stating
+%       what was found, then provide the supporting
+%       evidence and context.
+%     • Report numbers with appropriate precision and
+%       uncertainty (e.g., mean ± std, confidence
+%       intervals, p-values where applicable).
+%     • Compare to baselines or benchmarks wherever
+%       possible. A result only has meaning relative
+%       to something.
+%     • Reference figures and tables from the
+%       Supplemental section using \figref{} and
+%       \tabref{}. Only place a figure inline here if
+%       it is the single most important result of the
+%       paper and must be seen immediately.
+%     • Acknowledge unexpected or negative results
+%       honestly. If something did not work as
+%       expected, say so and offer a hypothesis for
+%       why.
+%
+%   NARRATIVE GUIDANCE:
+%     Build a coherent story across subsections. Each
+%     finding should naturally lead to the next question,
+%     which the following subsection answers. By the end
+%     of this section the reader should feel that the
+%     central question of the paper has been addressed.
+%
+%   LIMITATIONS — weave these in as you report results,
+%   rather than deferring all caveats to a single block
+%   at the end. If a result is sensitive to a particular
+%   assumption or dataset, say so in the same paragraph.
+%==========================================================
+
+\section{Results}
+
+    %------------------------------------------------------
+    % SUBSECTION 2.1 — FINDING / THEME 1
+    %
+    % AGENT: Replace this subsection heading with a
+    % short, descriptive title for the first major
+    % finding or analytical theme (e.g., "Model
+    % accurately predicts X across Y conditions").
+    %------------------------------------------------------
+    \subsection{[First Major Finding or Analytical Theme]}
+
+        [AGENT: State the finding in the opening sentence,
+        then explain the evidence. Describe the experiment
+        or analysis, the data used, the metric evaluated,
+        and the result. Quantify: ``The model achieved an
+        accuracy of 87.3\% (±1.2\%) on the held-out test
+        set, compared to 74.1\% for the baseline.'' Cross-
+        reference supporting figures or tables in the
+        Supplemental section, e.g., see \figref{fig:main_result}.]
+
+        [AGENT: If relevant, discuss what this result means
+        in the context of prior work or the biological /
+        scientific system under study. What does it imply?
+        Note any important caveats or conditions under
+        which the result holds.]
+
+    %------------------------------------------------------
+    % SUBSECTION 2.2 — FINDING / THEME 2
+    %------------------------------------------------------
+    \subsection{[Second Major Finding or Analytical Theme]}
+
+        [AGENT: Follow the same structure as 2.1. State the
+        finding, provide quantitative evidence, compare to a
+        baseline or prior result, and note limitations. Each
+        subsection should feel self-contained but connected
+        to the overall narrative.]
+
+    %------------------------------------------------------
+    % SUBSECTION 2.3 — FINDING / THEME 3
+    %
+    % AGENT: Add or remove subsections as needed to cover
+    % all major findings. Aim for 3–5 subsections total.
+    % Fewer is usually better — consolidate related results
+    % rather than fragmenting them into many small ones.
+    %------------------------------------------------------
+    \subsection{[Third Major Finding or Analytical Theme]}
+
+        [AGENT: Continue the results narrative. By this
+        subsection, the reader should be seeing the full
+        picture of what was discovered. If this finding
+        depends on or contrasts with an earlier one, make
+        that connection explicit.]
+
+    %------------------------------------------------------
+    % SUBSECTION 2.N — SUMMARY OF RESULTS (optional)
+    %
+    % AGENT: Consider closing Results with a brief
+    % integrative paragraph (not a subsection) that
+    % synthesizes the findings, identifies the most
+    % important take-away, and sets up the Discussion /
+    % Conclusion if one is included.
+    %------------------------------------------------------
+
+    [AGENT (optional): Add a brief synthesis paragraph
+    here that ties together the subsections above. What is
+    the single most important conclusion a reader should
+    draw from this Results section?]
+
+%==========================================================
+% REFERENCES
+%
+% AGENT INSTRUCTIONS:
+%   All references are managed through BibTeX. Add every
+%   entry to rho.bib following the existing format.
+%   Cite using \cite{key} in the text. Multiple citations
+%   may be grouped: \cite{key1,key2,key3}.
+%
+%   Checklist before finalizing:
+%     [ ] Every factual claim about prior work is cited.
+%     [ ] Every dataset or software tool used is cited.
+%     [ ] All cited works appear in rho.bib with complete
+%         bibliographic information (authors, year, journal
+%         or venue, volume, pages or article number, DOI).
+%     [ ] No reference appears in rho.bib that is not
+%         cited in the text, and vice versa.
+%==========================================================
+
+\printbibliography
+
+%==========================================================
+% SECTION 3 — METHODS
+%
+% TARGET LENGTH: As long as needed for full reproducibility.
+%   There is no page cap — err on the side of completeness.
+%
+% AGENT INSTRUCTIONS:
+%   The Methods section must be detailed enough that an
+%   expert reader could reproduce the study without access
+%   to the code. Since the scientists reading this paper
+%   DO have access to the codebase, you do not need to
+%   transcribe code — instead, describe the logic,
+%   inputs, outputs, and design choices in plain language.
+%
+%   Recommended subsection structure:
+%     3.1 — Data / Dataset: origin, size, preprocessing
+%             steps, train/val/test splits, any filters
+%             or exclusions applied, and the rationale.
+%     3.2 — Model / Algorithm: the architecture or
+%             algorithmic approach, key hyperparameters,
+%             and why these choices were made.
+%     3.3 — Evaluation: metrics used, how they were
+%             computed, statistical tests if any.
+%     3.4 — Computational Environment: hardware, software
+%             versions, and random seeds if relevant.
+%
+%   Writing style: use past tense ("we trained", "the
+%   model was evaluated"). Be precise about quantities.
+%   State assumptions explicitly. If a design choice was
+%   empirically determined (e.g., via a hyperparameter
+%   sweep), say so and note what was swept.
+%==========================================================
+
+\section{Methods}
+
+    \subsection{Data}
+
+        [AGENT: Describe the dataset(s) used. Include the
+        source, how the data were collected or curated,
+        the total number of samples, any preprocessing or
+        filtering steps applied, and how the data were
+        split for training, validation, and testing.
+        Cite the original data source \cite{example_dataset}.
+        State any exclusion criteria and the rationale
+        behind them.]
+
+    \subsection{Model and Approach}
+
+        [AGENT: Describe the computational or analytical
+        approach in precise but accessible language.
+        Explain the key design decisions and why they were
+        made. If equations help communicate the method,
+        include them using the equation environment, e.g.:
+
+        \begin{equation}\label{eq:loss}
+            \mathcal{L} = [AGENT: insert loss function or
+            key equation if applicable]
+        \end{equation}
+
+        Reference equations with \equref{eq:loss}. Do not
+        paste code. Describe what the code does.]
+
+    \subsection{Evaluation}
+
+        [AGENT: Define every metric reported in the Results
+        section. Explain how each metric was computed, what
+        it measures, and why it is an appropriate choice
+        for this study. If statistical significance tests
+        were used, name the test, the significance
+        threshold, and any corrections for multiple
+        comparisons.]
+
+    \subsection{Computational Environment}
+
+        [AGENT: Specify the hardware (e.g., GPU model,
+        number of GPUs, memory), operating system, and
+        key software dependencies with version numbers.
+        Note wall-clock training or inference times if
+        they are relevant to reproducibility or practicality.
+        Specify the random seed(s) used.]
+
+%==========================================================
+% SECTION 4 — SUPPLEMENTAL INFORMATION
+%
+% AGENT INSTRUCTIONS:
+%   This section is intentionally exhaustive. Include
+%   everything that supports or extends the main paper
+%   but would interrupt its flow if placed inline.
+%
+%   What belongs here:
+%     • ALL figures and tables (unless one is placed
+%       inline in Results as the single central result).
+%     • Extended or ablation results not in the main text.
+%     • Derivations of equations used in Methods.
+%     • Additional dataset statistics or visualizations.
+%     • Sensitivity analyses and robustness checks.
+%     • Failure case analyses.
+%     • Anything the reader might want but that would
+%       slow the narrative in the main text.
+%
+%   HOW TO ADD FIGURES:
+%     \begin{figure}[H]
+%       \centering
+%       \includegraphics[width=0.9\columnwidth]{figures/your_figure.pdf}
+%       \caption{A clear, self-contained caption that
+%         explains what is shown and what the key
+%         take-away is. Panels should be labeled (A),
+%         (B), etc.}
+%       \label{fig:your_label}
+%     \end{figure}
+%
+%   HOW TO ADD TABLES:
+%     \begin{table}[H]
+%       \caption{Table title (caption goes ABOVE the table).}
+%       \label{tab:your_label}
+%       \begin{tabular}{lcc}
+%         \toprule
+%         \textbf{Column 1} & \textbf{Column 2} & \textbf{Column 3} \\
+%         \midrule
+%         Row value & 0.00 & 0.00 \\
+%         \bottomrule
+%       \end{tabular}
+%       \tabletext{Note: add any clarifying notes here.}
+%     \end{table}
+%
+%   FIGURE AND TABLE LABELING CONVENTIONS:
+%     Figures: \label{fig:descriptive_name}
+%     Tables:  \label{tab:descriptive_name}
+%     Reference in text: \figref{fig:name}, \tabref{tab:name}
+%
+%   CAPTION WRITING GUIDE:
+%     A good caption is self-contained — a reader should
+%     understand what the figure/table shows without
+%     having to read the main text. State: (1) what is
+%     plotted/tabulated, (2) what the axes or columns
+%     represent, (3) what the key result or pattern is.
+%     Report n, error bars, and statistical tests in
+%     the caption if they appear in the figure.
+%
+%   AGENT: Be exhaustive here. It is better to over-
+%   include than to leave a reviewer wondering where
+%   the supporting evidence is.
+%==========================================================
+
+\section*{Supplemental Information}
+\addcontentsline{toc}{section}{Supplemental Information}
+
+    %------------------------------------------------------
+    % S1 — EXTENDED RESULTS
+    %------------------------------------------------------
+    \subsection*{S1 \quad Extended Results}
+    \addcontentsline{toc}{subsection}{S1 Extended Results}
+
+        [AGENT: Report any additional quantitative results
+        that support the main findings but were not
+        essential in the Results section. This could
+        include results on additional datasets, additional
+        metrics, or results for subgroups or conditions
+        explored during the study.]
+
+    %------------------------------------------------------
+    % S2 — FIGURES
+    %
+    % AGENT: Add one \begin{figure}...\end{figure} block
+    % per figure. Follow the format above. Use PDF or
+    % high-resolution PNG files saved to the figures/
+    % directory. Name files descriptively.
+    %------------------------------------------------------
+    \subsection*{S2 \quad Figures}
+    \addcontentsline{toc}{subsection}{S2 Figures}
+
+        % ------- FIGURE TEMPLATE — duplicate as needed -------
+        \begin{figure}[H]
+            \centering
+            \includegraphics[width=0.9\columnwidth]{figures/[AGENT: filename.pdf]}
+            \caption{[AGENT: Write a self-contained caption.
+              (A) Describe panel A. (B) Describe panel B.
+              Error bars indicate [mean ± std / 95\% CI / etc].
+              $n = $ [sample size]. State the key take-away.]}
+            \label{fig:fig_s1}
+        \end{figure}
+        % -----------------------------------------------------
+
+    %------------------------------------------------------
+    % S3 — TABLES
+    %
+    % AGENT: Add one \begin{table}...\end{table} block
+    % per table. Caption goes ABOVE the table body.
+    %------------------------------------------------------
+    \subsection*{S3 \quad Tables}
+    \addcontentsline{toc}{subsection}{S3 Tables}
+
+        % ------- TABLE TEMPLATE — duplicate as needed --------
+        \begin{table}[H]
+            \caption{[AGENT: Table title. Describe what
+              is tabulated and, if relevant, the conditions
+              under which values were measured.]}
+            \label{tab:tab_s1}
+            \begin{tabular}{
+                >{\raggedright\arraybackslash}p{0.28\columnwidth}
+                >{\centering\arraybackslash}p{0.28\columnwidth}
+                >{\centering\arraybackslash}p{0.28\columnwidth}
+            }
+            \toprule
+            \textbf{[Column 1]} & \textbf{[Column 2]} & \textbf{[Column 3]} \\
+            \midrule
+            [Row 1 label] & [value] & [value] \\
+            [Row 2 label] & [value] & [value] \\
+            \bottomrule
+            \end{tabular}
+            \tabletext{[AGENT: Add clarifying notes, units,
+              or statistical test details as needed.]}
+        \end{table}
+        % -----------------------------------------------------
+
+    %------------------------------------------------------
+    % S4 — ABLATIONS AND SENSITIVITY ANALYSES
+    %------------------------------------------------------
+    \subsection*{S4 \quad Ablations and Sensitivity Analyses}
+    \addcontentsline{toc}{subsection}{S4 Ablations and Sensitivity Analyses}
+
+        [AGENT: Describe any ablation studies (e.g., what
+        happens when a key component is removed or altered)
+        and any sensitivity analyses (e.g., how results
+        change as a hyperparameter is varied). This is
+        critical for establishing that results are robust
+        and not artifacts of a specific configuration.
+        Present results in tables or figures included here.]
+
+    %------------------------------------------------------
+    % S5 — FAILURE CASES AND LIMITATIONS
+    %------------------------------------------------------
+    \subsection*{S5 \quad Failure Cases and Limitations}
+    \addcontentsline{toc}{subsection}{S5 Failure Cases and Limitations}
+
+        [AGENT: Describe specific cases or conditions under
+        which the approach fails or performs poorly. Be
+        concrete — give examples. Discuss the likely
+        causes and whether they are fundamental limitations
+        of the approach or engineering issues that could be
+        addressed with additional work. This section
+        demonstrates scientific rigor and builds trust
+        with the reader.]
+
+    %------------------------------------------------------
+    % S6 — ADDITIONAL METHODS DETAILS
+    %------------------------------------------------------
+    \subsection*{S6 \quad Additional Methods Details}
+    \addcontentsline{toc}{subsection}{S6 Additional Methods Details}
+
+        [AGENT: Elaborate on any methods that were
+        summarized briefly in Section~3 but warrant more
+        detail. This could include: derivations of key
+        equations, descriptions of data preprocessing
+        edge cases, justifications for hyperparameter
+        choices, or descriptions of any manual curation
+        steps. The goal is full reproducibility.]
+
+%----------------------------------------------------------
+
+\end{document}
