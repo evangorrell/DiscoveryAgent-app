@@ -1,0 +1,20 @@
+python3 -m scripts.run_hb_sherlock \
+    --dataset_name "election" \
+    --analysis_name "election_select_q5_e20" \
+    --num_rounds 1 \
+    --num_branches 1 \
+    --num_exploration_rounds 1 \
+    --num_queries 5 \
+    --execution_max_turns 20 \
+    --hypothesis_model "claude-sonnet-4-5-20250929" \
+    --execution_model "claude-sonnet-4-5-20250929" \
+    --review_search \
+    --review_optimization_steps 2 \
+    --review_design \
+    --human-selection \
+    --n-candidate-hypotheses 3 \
+    --sub_agent_architecture \
+    --hold_reviews_in_exploratory_phase \
+    --git_tracking \
+    --omit_report_summarization \
+    --no-auto-hypothesis

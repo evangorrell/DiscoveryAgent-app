@@ -1,0 +1,8 @@
+# UI-specific extras (core stack is declared in ../pyproject.toml; prefer `pip install -e ..`)
+Flask==3.0.0
+Flask-Session==0.5.0
+Werkzeug==3.0.1
+claude-agent-sdk==0.1.18
+markdown==3.6
+requests>=2.32.0
+send2trash==2.1.0

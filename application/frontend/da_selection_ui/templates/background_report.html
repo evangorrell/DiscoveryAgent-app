@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Background Report</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
+    <script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+</head>
+<body class="report-page">
+    <div class="container background-report-container">
+        <header class="report-header">
+            <div class="report-header-main">
+                <p class="breadcrumb"><a href="{{ url_for('app_interface') }}" class="breadcrumb-link">Home</a> / Background Report</p>
+                <h1>Background Report</h1>
+                <button id="report-chat-toggle" class="btn report-chat-cta">Chat about this report</button>
+                {% if last_updated %}
+                <p class="report-meta">Last updated: {{ last_updated }}</p>
+                {% endif %}
+            </div>
+            <div class="report-actions">
+                <button id="report-back-btn" class="btn btn-secondary" type="button">← Back to Workspace</button>
+            </div>
+        </header>
+
+        <div id="report-workspace" class="split-view report-workspace">
+            <div id="report-content-panel" class="split-panel primary-panel">
+                {% if report_available and report_html %}
+                <article class="markdown-body">
+                    {{ report_html }}
+                </article>
+                {% else %}
+                <div class="card empty-report">
+                    <h3>No background report available</h3>
+                    <p>{{ error_message or "research_paper.md was not found for the current session." }}</p>
+                    <a href="{{ url_for('app_interface') }}" class="btn btn-primary">Return to Workspace</a>
+                </div>
+                {% endif %}
+                {% if report_path %}
+                <p class="report-meta report-path report-meta-footer">Source: <code>{{ report_path }}</code></p>
+                {% endif %}
+            </div>
+
+            <div id="report-split-divider" class="split-divider hidden" role="separator" aria-label="Resize panels"></div>
+
+            <div id="report-chat-panel" class="split-panel chat-panel hidden">
+                <div class="chat-header">
+                    <div>
+                        <h3 id="report-chat-panel-title">Report Chat</h3>
+                        <p id="report-chat-panel-subtitle" class="chat-subtitle">Ask about the report or the codebase.</p>
+                    </div>
+                    <div class="chat-header-actions">
+                        <button id="report-chat-reset-btn" class="btn btn-secondary btn-small" type="button">Reset conversation</button>
+                        <button id="report-chat-close-btn" class="chat-close" type="button">&times;</button>
+                    </div>
+                </div>
+                <div class="chat-context-panel" id="report-chat-context-panel">
+                    <div class="chat-context-header">
+                        <span>Report Context</span>
+                        <button id="report-chat-context-toggle" class="chat-context-toggle" type="button">Expand</button>
+                    </div>
+                    <div id="report-chat-context-content" class="chat-context-content collapsed">
+                        <p class="chat-context-empty">Loading report context...</p>
+                    </div>
+                </div>
+                <div id="report-chat-messages" class="chat-messages"></div>
+                <div id="report-chat-form" class="chat-input-form">
+                    <textarea id="report-chat-input" placeholder="Ask about the report or code..." rows="2"></textarea>
+                    <button type="button" id="report-chat-send-btn" class="btn btn-primary">Send</button>
+                    <button type="button" id="report-chat-cancel-btn" class="btn btn-secondary hidden">Cancel</button>
+                </div>
+            </div>
+        </div>
+
+    </div>
+    <script>
+        window.reportPageConfig = {
+            codeChatAvailable: {{ code_chat_available | tojson }},
+            reportType: "research_paper",
+            currentView: "full",
+            chatStorageScope: {{ chat_storage_scope | default(None) | tojson }},
+            durableChatScope: {{ durable_chat_scope | default(None) | tojson }}
+        };
+        (function () {
+            const backBtn = document.getElementById('report-back-btn');
+            if (backBtn) {
+                backBtn.addEventListener('click', () => {
+                    // Prefer going back to preserve workspace state; fallback to app home.
+                    if (window.history.length > 1) {
+                        window.history.back();
+                    } else {
+                        window.location.href = "{{ url_for('app_interface') }}";
+                    }
+                });
+            }
+        })();
+    </script>
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>

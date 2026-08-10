@@ -1,0 +1,12 @@
+*__pycache__
+.env
+da_selection_ui/.auth_submissions/*
+da_selection_ui/.interaction_logs/
+contained_registration/.auth_submissions/*
+s3_pulls/*
+.flask_session/*
+local_disk/
+.DS_Store
+.venv/
+.claude/settings.local.json
+local_dev_data/

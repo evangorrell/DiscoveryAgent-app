@@ -1,0 +1,17 @@
+python3 -m scripts.run_hb_sherlock \
+    --dataset_name "protpep_unsup" \
+    --analysis_name "protpep_unsup_hb_n5_q8_r3" \
+    --num_rounds 2 \
+    --num_branches 1 \
+    --num_exploration_rounds 1 \
+    --num_queries 2 \
+    --execution_max_turns 20 \
+    --hypothesis_model "claude-sonnet-4-5-20250929" \
+    --execution_model "claude-sonnet-4-5-20250929" \
+    --review_search \
+    --review_optimization_steps 1 \
+    --review_design \
+    --pressure_multiturn_prompt \
+    --sub_agent_architecture \
+    --git_tracking \
+    --omit_report_summarization

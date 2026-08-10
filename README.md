@@ -2,19 +2,46 @@
 
 DiscoveryAgent is a local application for autonomous scientific research.
 
-This repository contains the complete DiscoveryAgent application:
+This is the distribution and release repository for DiscoveryAgent. The
+standalone frontend and backend repositories remain the development sources of
+truth. This repository records one deterministic, committed source pair under:
 
-* `discoveryagent/` — research backend
-* `DA_selection_ui/` — local user interface
+* `application/frontend/` — frontend Git snapshot
+* `application/backend/` — backend Git snapshot
+* `release.json` — deterministic source and integrity metadata
+* `release_builder/` and `tools/build_release.py` — snapshot tooling
 
-## Installation
+## Build a development snapshot
 
-DiscoveryAgent is currently in pre-release development.
+The builder reads Git objects, never repository working trees. Both selected
+commits must exist locally and be reachable from an already-known `origin/*`
+remote-tracking ref.
 
-A one-line installer for macOS and Linux will be provided here before the first public release.
+```bash
+python3 tools/build_release.py \
+  --mode development \
+  --frontend-repo /path/to/DA_selection_ui \
+  --frontend-sha <commit> \
+  --backend-repo /path/to/discoveryagent \
+  --backend-sha <commit>
+```
 
-## Requirements
+Production mode applies the additional guard that each selected commit must be
+an ancestor of its repository's already-known `refs/remotes/origin/main`:
 
-DiscoveryAgent requires an Anthropic API key. Before launching the application, set the `ANTHROPIC_API_KEY` environment variable.
+```bash
+python3 tools/build_release.py --mode production ...
+```
 
-Additional installation requirements and setup instructions will be documented with the first release.
+The builder does not fetch, checkout, switch branches, stash, install
+dependencies, or modify either source repository.
+
+## Test the builder
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+Installation, runtime environments, the public `discoveryagent` manager CLI,
+launch/update/uninstall, and credential onboarding are intentionally deferred to
+later phases.

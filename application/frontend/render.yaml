@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: da-selection-ui
+    env: python
+    pythonVersion: 3.11.0
+    plan: pro_max
+    buildCommand: apt-get update && apt-get install -y awscli && pip install -e '.[hosted]'
+    startCommand: gunicorn da_selection_ui.app:app --bind 0.0.0.0:$PORT --timeout 900 --workers 5
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0

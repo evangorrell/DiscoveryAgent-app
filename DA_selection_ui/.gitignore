@@ -1,6 +1,0 @@
-*__pycache__
-.env
-da_selection_ui/.auth_submissions/*
-contained_registration/.auth_submissions/*
-s3_pulls/*
-.flask_session/*
