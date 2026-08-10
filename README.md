@@ -10,6 +10,7 @@ truth. This repository records one deterministic, committed source pair under:
 * `application/backend/` — backend Git snapshot
 * `release.json` — deterministic source and integrity metadata
 * `release_builder/` and `tools/build_release.py` — snapshot tooling
+* `manager/discoveryagent_cli/` — standard-library installed-application manager
 
 ## Build a development snapshot
 
@@ -36,12 +37,27 @@ python3 tools/build_release.py --mode production ...
 The builder does not fetch, checkout, switch branches, stash, install
 dependencies, or modify either source repository.
 
-## Test the builder
+## Manager foundation
+
+The manager is intentionally separate from both application snapshots. At
+runtime it derives an explicit installation root containing `state.json`,
+`manager/`, `runtime/`, `releases/`, and `cache/`. `state.json` selects a
+versioned release; the manager never uses a `current` symlink or falls back to
+the development repository's top-level `application/` tree.
+
+Phase 2A.1 implements schema validation, active-release resolution,
+platform-aware frontend/backend interpreter paths, metadata-only version
+reporting, and the complete pre-launch filesystem validation contract. It does
+not install runtimes or start the frontend. Tests use an internal fixture
+builder to create synthetic installed layouts in temporary directories.
+
+## Test the distribution tooling
 
 ```bash
 python3 -m unittest discover -s tests -v
 ```
 
-Installation, runtime environments, the public `discoveryagent` manager CLI,
-launch/update/uninstall, and credential onboarding are intentionally deferred to
-later phases.
+Runtime/bootstrap installation, actual frontend launch, update/uninstall, PATH
+integration, and credential onboarding are intentionally deferred to later
+phases. The manager command semantics in this repository are maintainer-facing
+until those installation phases are complete.
