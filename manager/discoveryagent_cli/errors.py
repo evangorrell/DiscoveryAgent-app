@@ -15,3 +15,11 @@ class ReleaseError(ManagerError):
 
 class LaunchValidationError(ManagerError):
     """The installation is not ready for a future application launch."""
+
+
+class RuntimeAcquisitionError(ManagerError):
+    """An app-owned runtime could not be acquired or validated."""
+
+
+class BootstrapError(ManagerError):
+    """A development installation could not be constructed safely."""
