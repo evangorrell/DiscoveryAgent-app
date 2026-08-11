@@ -139,6 +139,60 @@ def test_start_uses_backend_venv_and_secret_free_files(monkeypatch, project, bac
     assert "test-secret-never-persist" not in persisted
 
 
+def test_configured_backend_python_preserves_venv_symlink(monkeypatch, tmp_path, project):
+    home = tmp_path / "home"
+    release = home / "install" / "releases" / "release-1"
+    backend_root = release / "application" / "backend"
+    launcher = backend_root / "scripts" / "run_hb_sherlock.py"
+    backend_venv = release / "envs" / "backend"
+    backend_bin = backend_venv / "bin"
+    backend_python = backend_bin / "python"
+    base_bin = home / "install" / "runtime" / "python" / "bin"
+    base_python = base_bin / "python3.11"
+
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("", encoding="utf-8")
+    backend_bin.mkdir(parents=True)
+    (backend_venv / "pyvenv.cfg").write_text("home = runtime-python\n", encoding="utf-8")
+    base_bin.mkdir(parents=True)
+    base_python.write_text("#!/bin/sh\n", encoding="utf-8")
+    base_python.chmod(0o755)
+    backend_python.symlink_to(base_python)
+    assert backend_python.is_symlink()
+    assert backend_python.resolve() == base_python
+
+    captured = {}
+
+    def fake_popen(command, **kwargs):
+        captured.update(command=command, kwargs=kwargs)
+        return FakeProcess()
+
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(runner.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(runner.threading, "Thread", NoopThread)
+    environment = {
+        "ANTHROPIC_API_KEY": "test-secret-never-persist",
+        "DISCOVERYAGENT_BACKEND_ROOT": str(backend_root),
+        "DISCOVERYAGENT_BACKEND_PYTHON": str(backend_python).replace(str(home), "~", 1),
+        "PATH": "/usr/local/bin:/usr/bin",
+    }
+
+    resolved_root, resolved_python, resolved_launcher = runner.resolve_backend_runtime(environment)
+    runner.start_round_zero(project, env=environment)
+
+    assert (resolved_root, resolved_python, resolved_launcher) == (
+        backend_root,
+        backend_python,
+        launcher,
+    )
+    assert captured["command"][0] == str(backend_python)
+    assert str(base_python) not in captured["command"]
+    child_environment = captured["kwargs"]["env"]
+    assert child_environment["VIRTUAL_ENV"] == str(backend_venv)
+    assert child_environment["PATH"].split(os.pathsep)[0] == str(backend_bin)
+    assert child_environment["PATH"].split(os.pathsep)[0] != str(base_bin)
+
+
 def test_child_environment_localizes_runtime_without_mutating_parent(monkeypatch, project, backend):
     root, _python, _launcher = backend
     project_root = Path(project["project_root"])

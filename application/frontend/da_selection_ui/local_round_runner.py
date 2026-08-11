@@ -80,7 +80,9 @@ def resolve_backend_runtime(env: dict[str, str] | None = None) -> tuple[Path, Pa
 
     configured_python = current_env.get("DISCOVERYAGENT_BACKEND_PYTHON")
     if configured_python:
-        backend_python = Path(configured_python).expanduser().resolve()
+        # Preserve a configured venv interpreter path: resolving its final
+        # symlink would bypass that environment and its site-packages.
+        backend_python = Path(configured_python).expanduser().absolute()
     else:
         posix_python = backend_root / ".venv" / "bin" / "python"
         windows_python = backend_root / ".venv" / "Scripts" / "python.exe"
