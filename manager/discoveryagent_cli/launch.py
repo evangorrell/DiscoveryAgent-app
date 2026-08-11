@@ -10,7 +10,7 @@ import threading
 import time
 import webbrowser
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Iterator, Mapping, TextIO
 from urllib.parse import urlsplit
@@ -25,6 +25,14 @@ from .frontend_process import (
     wait_for_startup,
 )
 from .installation import ValidatedLaunch
+from .onboarding import (
+    paperclip_auth_available_locally,
+    resolve_anthropic_api_key,
+    run_paperclip_login,
+    secure_api_key_input,
+    standard_input_is_interactive,
+    verify_paperclip_login,
+)
 from .paths import InstallationPaths
 from .runtime_state import (
     FRONTEND_RECORD_SCHEMA_VERSION,
@@ -43,6 +51,7 @@ from .installation import validate_launch_installation
 INTERNAL_NO_BROWSER_ENV = "DISCOVERYAGENT_INTERNAL_NO_BROWSER"
 STARTUP_TIMEOUT = 30.0
 READINESS_TIMEOUT = 30.0
+BROWSER_OPEN_GRACE_SECONDS = 15.0
 
 
 class ManagerTerminationRequested(Exception):
@@ -60,6 +69,12 @@ class LaunchDependencies:
     lock_factory: Callable[..., FrontendLaunchLock] = FrontendLaunchLock
     terminate: Callable[..., None] = terminate_frontend
     wall_time: Callable[[], float] = time.time
+    secure_input: Callable[[str], str] = secure_api_key_input
+    input_is_interactive: Callable[[], bool] = standard_input_is_interactive
+    paperclip_auth_available: Callable[[Mapping[str, str]], bool] = (
+        paperclip_auth_available_locally
+    )
+    onboarding_run: Callable[..., subprocess.CompletedProcess] = subprocess.run
 
 
 _REDIRECTING_ENVIRONMENT = {
@@ -143,28 +158,37 @@ def open_frontend_url(
     manager_environment: Mapping[str, str],
     browser_open: Callable[..., bool],
     stderr: TextIO,
-) -> None:
+) -> bool:
     if manager_environment.get(INTERNAL_NO_BROWSER_ENV) == "1":
-        return
+        return False
     try:
         opened = browser_open(url, new=2)
     except Exception as exc:
         print(f"DiscoveryAgent is ready, but the browser could not be opened: {exc}", file=stderr)
-        return
+        return False
     if not opened:
         print("DiscoveryAgent is ready, but the browser did not open automatically.", file=stderr)
+        return False
+    return True
 
 
 def existing_frontend_needs_browser(
     url: str,
     *,
     presence_probe: Callable[[str], BrowserPresence],
+    browser_opened_at: float | None,
+    now: float,
 ) -> bool:
     try:
         presence = presence_probe(url)
     except Exception:
+        return False
+    if presence is not BrowserPresence.ABSENT:
+        return False
+    if browser_opened_at is None:
         return True
-    return presence is not BrowserPresence.ACTIVE
+    age = now - browser_opened_at
+    return not 0.0 <= age < BROWSER_OPEN_GRACE_SECONDS
 
 
 @contextmanager
@@ -212,15 +236,8 @@ def launch_installed_application(
     inherited = os.environ if manager_environment is None else manager_environment
     state: ManagerState = load_state(paths.state_file)
     validated = validate_launch_installation(paths, state, platform_name=state.platform)
-    api_key = inherited.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        raise LaunchRuntimeError(
-            "Phase 2A.3 requires ANTHROPIC_API_KEY to be inherited by the "
-            "discoveryagent command. First-use prompting will be added in Phase 2B."
-        )
 
     selected = dependencies or LaunchDependencies()
-    child_environment = build_frontend_environment(validated, inherited)
     paths.frontend_cwd.mkdir(parents=True, exist_ok=True)
     process: subprocess.Popen[str] | None = None
     capture: FrontendOutputCapture | None = None
@@ -245,17 +262,59 @@ def launch_installed_application(
                         if existing_frontend_needs_browser(
                             existing.url,
                             presence_probe=selected.browser_presence,
+                            browser_opened_at=existing.browser_opened_at,
+                            now=selected.wall_time(),
                         ):
-                            open_frontend_url(
+                            if open_frontend_url(
                                 existing.url,
                                 manager_environment=inherited,
                                 browser_open=selected.browser_open,
                                 stderr=errors,
-                            )
+                            ):
+                                existing = replace(
+                                    existing,
+                                    browser_opened_at=selected.wall_time(),
+                                )
+                                write_frontend_record_atomic(
+                                    paths.frontend_runtime_file, existing
+                                )
                         print(f"DiscoveryAgent is already running at {existing.url}", file=output)
                         return 0
                     remove_frontend_record(paths.frontend_runtime_file)
 
+                paperclip_ready = selected.paperclip_auth_available(inherited)
+                key_ready = bool(str(inherited.get("ANTHROPIC_API_KEY") or "").strip())
+                if not key_ready or not paperclip_ready:
+                    print("Welcome to DiscoveryAgent\n", file=output, flush=True)
+                launch_environment, api_key, _prompted = resolve_anthropic_api_key(
+                    inherited,
+                    interactive=selected.input_is_interactive,
+                    secure_input=selected.secure_input,
+                    stdout=output,
+                )
+                if not paperclip_ready:
+                    print("\nConnecting Paperclip...\n", file=output)
+                    print(
+                        "Your browser will open to complete sign-in.\n",
+                        file=output,
+                        flush=True,
+                    )
+                    run_paperclip_login(
+                        validated,
+                        launch_environment,
+                        runner=selected.onboarding_run,
+                    )
+                    verify_paperclip_login(
+                        validated,
+                        launch_environment,
+                        runner=selected.onboarding_run,
+                    )
+                    print("✓ Paperclip connected\n", file=output)
+
+                print("Launching DiscoveryAgent...", file=output, flush=True)
+                child_environment = build_frontend_environment(
+                    validated, launch_environment
+                )
                 command = frontend_command(validated)
                 try:
                     process = selected.popen(
@@ -298,12 +357,19 @@ def launch_installed_application(
                     started_at=selected.wall_time(),
                 )
                 write_frontend_record_atomic(paths.frontend_runtime_file, owned_record)
-                open_frontend_url(
+                if open_frontend_url(
                     startup.url,
                     manager_environment=inherited,
                     browser_open=selected.browser_open,
                     stderr=errors,
-                )
+                ):
+                    owned_record = replace(
+                        owned_record,
+                        browser_opened_at=selected.wall_time(),
+                    )
+                    write_frontend_record_atomic(
+                        paths.frontend_runtime_file, owned_record
+                    )
                 print(f"DiscoveryAgent is ready at {startup.url}", file=output, flush=True)
 
             return_code = process.wait()

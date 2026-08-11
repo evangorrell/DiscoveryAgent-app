@@ -25,12 +25,13 @@ class FrontendRuntimeRecord:
     url: str
     readiness_url: str
     started_at: float
+    browser_opened_at: float | None = None
 
     @classmethod
     def from_dict(cls, payload: object) -> "FrontendRuntimeRecord":
         if not isinstance(payload, dict):
             raise LaunchRuntimeError("Frontend runtime record must be a JSON object")
-        expected = {
+        required = {
             "schema_version",
             "pid",
             "active_release_id",
@@ -38,7 +39,8 @@ class FrontendRuntimeRecord:
             "readiness_url",
             "started_at",
         }
-        if set(payload) != expected:
+        allowed = required | {"browser_opened_at"}
+        if not required.issubset(payload) or not set(payload).issubset(allowed):
             raise LaunchRuntimeError("Frontend runtime record has unsupported fields")
         if payload["schema_version"] != FRONTEND_RECORD_SCHEMA_VERSION:
             raise LaunchRuntimeError("Unsupported frontend runtime-record schema")
@@ -49,6 +51,7 @@ class FrontendRuntimeRecord:
         url = payload["url"]
         readiness_url = payload["readiness_url"]
         started_at = payload["started_at"]
+        browser_opened_at = payload.get("browser_opened_at")
         if not isinstance(release_id, str) or not release_id:
             raise LaunchRuntimeError("Frontend runtime record has no release ID")
         if not isinstance(url, str) or not url:
@@ -57,6 +60,13 @@ class FrontendRuntimeRecord:
             raise LaunchRuntimeError("Frontend runtime record has no readiness URL")
         if not isinstance(started_at, (int, float)) or isinstance(started_at, bool):
             raise LaunchRuntimeError("Frontend runtime record has an invalid start time")
+        if "browser_opened_at" in payload and (
+            not isinstance(browser_opened_at, (int, float))
+            or isinstance(browser_opened_at, bool)
+        ):
+            raise LaunchRuntimeError(
+                "Frontend runtime record has an invalid browser-open time"
+            )
         return cls(
             schema_version=FRONTEND_RECORD_SCHEMA_VERSION,
             pid=pid,
@@ -64,10 +74,13 @@ class FrontendRuntimeRecord:
             url=url,
             readiness_url=readiness_url,
             started_at=float(started_at),
+            browser_opened_at=(
+                float(browser_opened_at) if browser_opened_at is not None else None
+            ),
         )
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "schema_version": self.schema_version,
             "pid": self.pid,
             "active_release_id": self.active_release_id,
@@ -75,6 +88,9 @@ class FrontendRuntimeRecord:
             "readiness_url": self.readiness_url,
             "started_at": self.started_at,
         }
+        if self.browser_opened_at is not None:
+            payload["browser_opened_at"] = self.browser_opened_at
+        return payload
 
 
 def load_frontend_record(path: Path) -> FrontendRuntimeRecord | None:

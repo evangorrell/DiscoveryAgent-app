@@ -233,7 +233,7 @@ class ManagerFoundationTests(unittest.TestCase):
             ],
         )
 
-    def test_launch_without_phase_2a3_api_key_stops_cleanly(self) -> None:
+    def test_noninteractive_launch_without_api_key_stops_cleanly(self) -> None:
         paths, _state = self.fixture()
         stdout = io.StringIO()
         stderr = io.StringIO()
@@ -245,8 +245,9 @@ class ManagerFoundationTests(unittest.TestCase):
                 stderr=stderr,
             )
         self.assertEqual(result, 1)
-        self.assertEqual(stdout.getvalue(), "")
-        self.assertIn("requires ANTHROPIC_API_KEY", stderr.getvalue())
+        self.assertIn("Welcome to DiscoveryAgent", stdout.getvalue())
+        self.assertIn("interactive terminal", stderr.getvalue())
+        self.assertIn("Set ANTHROPIC_API_KEY", stderr.getvalue())
 
     def test_atomic_state_replacement(self) -> None:
         paths, state = self.fixture()

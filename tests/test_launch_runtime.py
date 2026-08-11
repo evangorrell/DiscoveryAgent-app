@@ -32,6 +32,7 @@ from manager.discoveryagent_cli.launch import (
     frontend_command,
     launch_installed_application,
 )
+from manager.discoveryagent_cli.onboarding import paperclip_auth_available_locally
 from manager.discoveryagent_cli.runtime_state import (
     FRONTEND_RECORD_SCHEMA_VERSION,
     FrontendLaunchLock,
@@ -219,6 +220,7 @@ class LaunchRuntimeTests(unittest.TestCase):
         self.browser_calls: list[str] = []
         self.terminate_calls: list[int] = []
         self.health_calls: list[str] = []
+        self.capture_factory_calls: list[dict] = []
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -228,6 +230,7 @@ class LaunchRuntimeTests(unittest.TestCase):
         return self.process
 
     def capture_factory(self, _stream, _log_path, **_kwargs):
+        self.capture_factory_calls.append(_kwargs)
         return self.capture
 
     def browser(self, url, **_kwargs):
@@ -243,15 +246,25 @@ class LaunchRuntimeTests(unittest.TestCase):
         process.terminate()
 
     def dependencies(self, **overrides) -> LaunchDependencies:
+        def forbidden_secure_input(_prompt):
+            raise AssertionError("secure input was not expected")
+
+        def forbidden_onboarding_run(*_args, **_kwargs):
+            raise AssertionError("Paperclip onboarding was not expected")
+
         values = {
             "popen": self.popen,
             "health_probe": self.health,
             "browser_open": self.browser,
-            "browser_presence": lambda _url: BrowserPresence.INACTIVE,
+            "browser_presence": lambda _url: BrowserPresence.ABSENT,
             "pid_alive": lambda _pid: True,
             "capture_factory": self.capture_factory,
             "terminate": self.terminate,
             "wall_time": lambda: 1234.5,
+            "secure_input": forbidden_secure_input,
+            "input_is_interactive": lambda: False,
+            "paperclip_auth_available": lambda _environment: True,
+            "onboarding_run": forbidden_onboarding_run,
         }
         values.update(overrides)
         return LaunchDependencies(**values)
@@ -276,8 +289,8 @@ class LaunchRuntimeTests(unittest.TestCase):
         )
         return result, stdout.getvalue(), stderr.getvalue()
 
-    def test_required_key_absence_stops_before_spawn(self) -> None:
-        with self.assertRaisesRegex(LaunchRuntimeError, "requires ANTHROPIC_API_KEY"):
+    def test_noninteractive_missing_key_stops_before_spawn(self) -> None:
+        with self.assertRaisesRegex(LaunchRuntimeError, "interactive terminal"):
             self.launch(environment={"HOME": "/Users/test"})
         self.assertEqual(self.popen_calls, [])
 
@@ -325,6 +338,173 @@ class LaunchRuntimeTests(unittest.TestCase):
         self.assertNotIn("real-secret-value", serialized)
         self.assertEqual(self.browser_calls, [])
 
+    def test_prompted_key_is_session_only_and_secret_free(self) -> None:
+        secret = "synthetic-prompted-secret"
+        observed_runtime = ""
+
+        def inspect_runtime_record():
+            nonlocal observed_runtime
+            observed_runtime = self.paths.frontend_runtime_file.read_text(encoding="utf-8")
+
+        self.process.wait_hook = inspect_runtime_record
+        environment = {"HOME": "/Users/test", INTERNAL_NO_BROWSER_ENV: "1"}
+        result, stdout, stderr = self.launch(
+            environment=environment,
+            dependencies=self.dependencies(
+                input_is_interactive=lambda: True,
+                secure_input=lambda prompt: secret if prompt == "> " else "",
+            ),
+        )
+
+        self.assertEqual(result, 0)
+        self.assertIn("Welcome to DiscoveryAgent", stdout)
+        self.assertIn("Anthropic API key", stdout)
+        self.assertIn("✓ API key available for this session", stdout)
+        self.assertNotIn("is missing", stdout)
+        command, kwargs = self.popen_calls[0]
+        self.assertEqual(kwargs["env"]["ANTHROPIC_API_KEY"], secret)
+        self.assertNotIn(secret, repr(command))
+        self.assertNotIn("ANTHROPIC_API_KEY", environment)
+        self.assertEqual(self.capture_factory_calls[0]["secrets"], (secret,))
+        persisted = (
+            self.paths.state_file.read_text(encoding="utf-8")
+            + observed_runtime
+            + stdout
+            + stderr
+        )
+        self.assertNotIn(secret, persisted)
+
+    def test_new_paperclip_login_and_verification_precede_frontend_spawn(self) -> None:
+        trace: list[str] = []
+        onboarding_commands: list[list[str]] = []
+
+        def onboarding_run(command, **_kwargs):
+            onboarding_commands.append(command)
+            trace.append("login" if "login" in command else "verify")
+            return subprocess.CompletedProcess(command, 0)
+
+        def secure_input(prompt):
+            self.assertEqual(prompt, "> ")
+            trace.append("key")
+            return "synthetic-prompted-key"
+
+        def popen(command, **kwargs):
+            trace.append("spawn")
+            return self.popen(command, **kwargs)
+
+        def health(url):
+            trace.append("ready")
+            return self.health(url)
+
+        def browser(url, **kwargs):
+            trace.append("browser")
+            return self.browser(url, **kwargs)
+
+        result, stdout, _stderr = self.launch(
+            environment={"HOME": "/Users/test"},
+            dependencies=self.dependencies(
+                input_is_interactive=lambda: True,
+                secure_input=secure_input,
+                paperclip_auth_available=lambda _environment: False,
+                onboarding_run=onboarding_run,
+                popen=popen,
+                health_probe=health,
+                browser_open=browser,
+            ),
+        )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            trace, ["key", "login", "verify", "spawn", "ready", "browser"]
+        )
+        self.assertEqual(
+            onboarding_commands[0][-3:],
+            ["gxl_paperclip", "login", "--no-install"],
+        )
+        self.assertIn("✓ API key available for this session", stdout)
+        self.assertIn("✓ Paperclip connected", stdout)
+        self.assertIn("Launching DiscoveryAgent...", stdout)
+
+    def test_paperclip_login_or_verification_failure_prevents_frontend(self) -> None:
+        for failing_call in (1, 2):
+            with self.subTest(failing_call=failing_call):
+                calls = 0
+
+                def onboarding_run(command, **_kwargs):
+                    nonlocal calls
+                    calls += 1
+                    return subprocess.CompletedProcess(
+                        command, 1 if calls == failing_call else 0
+                    )
+
+                self.popen_calls.clear()
+                with self.assertRaises(LaunchRuntimeError):
+                    self.launch(
+                        dependencies=self.dependencies(
+                            paperclip_auth_available=lambda _environment: False,
+                            onboarding_run=onboarding_run,
+                        )
+                    )
+                self.assertEqual(self.popen_calls, [])
+                self.assertEqual(calls, failing_call)
+
+    def test_malformed_paperclip_credentials_trigger_onboarding_without_persisting_tokens(
+        self,
+    ) -> None:
+        home = self.root / "paperclip-home"
+        credentials = home / ".paperclip" / "credentials.json"
+        credentials.parent.mkdir(parents=True)
+        credentials.write_text("{malformed", encoding="utf-8")
+        calls: list[list[str]] = []
+
+        def onboarding_run(command, **_kwargs):
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0)
+
+        environment = {
+            "ANTHROPIC_API_KEY": "synthetic-anthropic-key",
+            "HOME": str(home),
+        }
+        self.launch(
+            environment=environment,
+            dependencies=self.dependencies(
+                paperclip_auth_available=paperclip_auth_available_locally,
+                onboarding_run=onboarding_run,
+            ),
+        )
+        self.assertEqual(len(calls), 2)
+        persisted = self.paths.state_file.read_text(encoding="utf-8")
+        self.assertNotIn("refresh_token", persisted)
+        self.assertNotIn("id_token", persisted)
+
+    def test_existing_paperclip_credentials_skip_login_and_stay_external(self) -> None:
+        home = self.root / "configured-paperclip-home"
+        credentials = home / ".paperclip" / "credentials.json"
+        credentials.parent.mkdir(parents=True)
+        token = "synthetic-paperclip-refresh-token"
+        credentials.write_text(
+            json.dumps({"refresh_token": token, "id_token": "synthetic-id-token"}),
+            encoding="utf-8",
+        )
+
+        def forbidden_onboarding(*_args, **_kwargs):
+            raise AssertionError("existing credentials must skip Paperclip login")
+
+        result, stdout, stderr = self.launch(
+            environment={
+                "ANTHROPIC_API_KEY": "synthetic-anthropic-key",
+                "HOME": str(home),
+            },
+            dependencies=self.dependencies(
+                paperclip_auth_available=paperclip_auth_available_locally,
+                onboarding_run=forbidden_onboarding,
+            ),
+        )
+        self.assertEqual(result, 0)
+        self.assertNotIn("Connecting Paperclip", stdout)
+        persisted = self.paths.state_file.read_text(encoding="utf-8") + stdout + stderr
+        self.assertNotIn(token, persisted)
+
     def test_browser_opens_only_after_readiness(self) -> None:
         trace: list[str] = []
 
@@ -355,9 +535,71 @@ class LaunchRuntimeTests(unittest.TestCase):
         self.assertEqual(record.pid, self.process.pid)
         self.assertEqual(record.active_release_id, self.state.active_release_id)
         self.assertEqual(record.started_at, 1234.5)
+        self.assertIsNone(record.browser_opened_at)
         self.assertFalse(self.paths.frontend_runtime_file.exists())
 
-    def _write_existing_record(self) -> FrontendRuntimeRecord:
+    def test_successful_initial_browser_open_is_recorded(self) -> None:
+        observed = {}
+
+        def inspect_record():
+            observed["record"] = load_frontend_record(self.paths.frontend_runtime_file)
+
+        self.process.wait_hook = inspect_record
+        self.launch(
+            environment={"ANTHROPIC_API_KEY": "key", "HOME": "/Users/test"}
+        )
+        self.assertEqual(observed["record"].browser_opened_at, 1234.5)
+        self.assertEqual(self.browser_calls, ["http://127.0.0.1:43123/"])
+
+    def test_failed_initial_browser_open_is_not_recorded_or_suppressed(self) -> None:
+        observed = {}
+
+        def failed_browser(_url, **_kwargs):
+            return False
+
+        def inspect_record():
+            observed["record"] = load_frontend_record(self.paths.frontend_runtime_file)
+
+        self.process.wait_hook = inspect_record
+        self.launch(
+            environment={"ANTHROPIC_API_KEY": "key", "HOME": "/Users/test"},
+            dependencies=self.dependencies(browser_open=failed_browser),
+        )
+        failed_record = observed["record"]
+        self.assertIsNone(failed_record.browser_opened_at)
+
+        write_frontend_record_atomic(self.paths.frontend_runtime_file, failed_record)
+        self.browser_calls.clear()
+        self.launch(
+            environment={"HOME": "/Users/test"},
+            dependencies=self.dependencies(
+                browser_presence=lambda _url: BrowserPresence.ABSENT
+            ),
+        )
+        self.assertEqual(self.browser_calls, [failed_record.url])
+
+    def test_old_runtime_record_without_browser_timestamp_remains_readable(self) -> None:
+        self.paths.frontend_runtime_file.parent.mkdir(parents=True, exist_ok=True)
+        self.paths.frontend_runtime_file.write_text(
+            json.dumps(
+                {
+                    "schema_version": FRONTEND_RECORD_SCHEMA_VERSION,
+                    "pid": 9001,
+                    "active_release_id": self.state.active_release_id,
+                    "url": "http://127.0.0.1:43123/",
+                    "readiness_url": "http://127.0.0.1:43123/api/health",
+                    "started_at": 1000.0,
+                }
+            ),
+            encoding="utf-8",
+        )
+        record = load_frontend_record(self.paths.frontend_runtime_file)
+        self.assertIsNotNone(record)
+        self.assertIsNone(record.browser_opened_at)
+
+    def _write_existing_record(
+        self, *, browser_opened_at: float | None = None
+    ) -> FrontendRuntimeRecord:
         record = FrontendRuntimeRecord(
             FRONTEND_RECORD_SCHEMA_VERSION,
             9001,
@@ -365,6 +607,7 @@ class LaunchRuntimeTests(unittest.TestCase):
             "http://127.0.0.1:43123/",
             "http://127.0.0.1:43123/api/health",
             1000.0,
+            browser_opened_at,
         )
         write_frontend_record_atomic(self.paths.frontend_runtime_file, record)
         return record
@@ -385,12 +628,78 @@ class LaunchRuntimeTests(unittest.TestCase):
         self.assertEqual(self.browser_calls, [])
         self.assertTrue(self.paths.frontend_runtime_file.exists())
 
+    def test_existing_healthy_frontend_reuses_before_any_onboarding(self) -> None:
+        self._write_existing_record()
+
+        def forbidden(*_args, **_kwargs):
+            raise AssertionError("healthy reuse must not perform onboarding")
+
+        result, stdout, _stderr = self.launch(
+            environment={"HOME": "/Users/test"},
+            dependencies=self.dependencies(
+                secure_input=forbidden,
+                input_is_interactive=forbidden,
+                paperclip_auth_available=forbidden,
+                onboarding_run=forbidden,
+                browser_presence=lambda _url: BrowserPresence.ACTIVE,
+            ),
+        )
+        self.assertEqual(result, 0)
+        self.assertIn("already running", stdout)
+        self.assertEqual(self.popen_calls, [])
+        self.assertEqual(self.browser_calls, [])
+        self.assertEqual(self.terminate_calls, [])
+
+    def test_recent_browser_open_suppresses_absent_lease_before_onboarding(self) -> None:
+        self._write_existing_record(browser_opened_at=1220.0)
+
+        def forbidden(*_args, **_kwargs):
+            raise AssertionError("healthy reuse must not perform onboarding")
+
+        result, stdout, _stderr = self.launch(
+            environment={"HOME": "/Users/test"},
+            dependencies=self.dependencies(
+                wall_time=lambda: 1234.5,
+                secure_input=forbidden,
+                input_is_interactive=forbidden,
+                paperclip_auth_available=forbidden,
+                onboarding_run=forbidden,
+                browser_presence=lambda _url: BrowserPresence.ABSENT,
+            ),
+        )
+        self.assertEqual(result, 0)
+        self.assertIn("already running", stdout)
+        self.assertEqual(self.popen_calls, [])
+        self.assertEqual(self.browser_calls, [])
+
+    def test_absent_lease_at_grace_boundary_reopens_and_records_timestamp(self) -> None:
+        record = self._write_existing_record(browser_opened_at=1219.5)
+        self.launch(
+            environment={"HOME": "/Users/test"},
+            dependencies=self.dependencies(
+                wall_time=lambda: 1234.5,
+                browser_presence=lambda _url: BrowserPresence.ABSENT,
+            ),
+        )
+        self.assertEqual(self.browser_calls, [record.url])
+        updated = load_frontend_record(self.paths.frontend_runtime_file)
+        self.assertIsNotNone(updated)
+        self.assertEqual(updated.browser_opened_at, 1234.5)
+
     def test_existing_healthy_frontend_without_active_tab_opens_existing_url(self) -> None:
         record = self._write_existing_record()
+
+        def forbidden(*_args, **_kwargs):
+            raise AssertionError("healthy reuse must not perform onboarding")
+
         result, stdout, _stderr = self.launch(
-            environment={"ANTHROPIC_API_KEY": "key", "HOME": "/Users/test"},
+            environment={"HOME": "/Users/test"},
             dependencies=self.dependencies(
-                browser_presence=lambda _url: BrowserPresence.INACTIVE
+                secure_input=forbidden,
+                input_is_interactive=forbidden,
+                paperclip_auth_available=forbidden,
+                onboarding_run=forbidden,
+                browser_presence=lambda _url: BrowserPresence.ABSENT,
             ),
         )
         self.assertEqual(result, 0)
@@ -398,20 +707,52 @@ class LaunchRuntimeTests(unittest.TestCase):
         self.assertEqual(self.popen_calls, [])
         self.assertEqual(self.browser_calls, [record.url])
         self.assertEqual(self.terminate_calls, [])
+        updated = load_frontend_record(self.paths.frontend_runtime_file)
+        self.assertIsNotNone(updated)
+        self.assertEqual(updated.browser_opened_at, 1234.5)
 
-    def test_presence_failure_opens_url_without_terminating_reused_frontend(self) -> None:
+    def test_stale_presence_avoids_duplicate_browser_and_onboarding(self) -> None:
+        self._write_existing_record()
+
+        def forbidden(*_args, **_kwargs):
+            raise AssertionError("healthy reuse must not perform onboarding")
+
+        result, stdout, _stderr = self.launch(
+            environment={"HOME": "/Users/test"},
+            dependencies=self.dependencies(
+                secure_input=forbidden,
+                input_is_interactive=forbidden,
+                paperclip_auth_available=forbidden,
+                onboarding_run=forbidden,
+                browser_presence=lambda _url: BrowserPresence.AMBIGUOUS_STALE,
+            ),
+        )
+        self.assertEqual(result, 0)
+        self.assertIn("already running", stdout)
+        self.assertEqual(self.popen_calls, [])
+        self.assertEqual(self.browser_calls, [])
+        self.assertEqual(self.terminate_calls, [])
+
+    def test_unknown_or_failed_presence_avoids_duplicate_browser(self) -> None:
         record = self._write_existing_record()
 
         def failed_presence(_url):
             raise OSError("presence unavailable")
 
-        self.launch(
-            environment={"ANTHROPIC_API_KEY": "key", "HOME": "/Users/test"},
-            dependencies=self.dependencies(browser_presence=failed_presence),
-        )
-        self.assertEqual(self.popen_calls, [])
-        self.assertEqual(self.browser_calls, [record.url])
-        self.assertEqual(self.terminate_calls, [])
+        for presence_probe in (
+            lambda _url: BrowserPresence.UNKNOWN,
+            failed_presence,
+        ):
+            with self.subTest(presence_probe=presence_probe):
+                result, stdout, _stderr = self.launch(
+                    environment={"HOME": "/Users/test"},
+                    dependencies=self.dependencies(browser_presence=presence_probe),
+                )
+                self.assertEqual(result, 0)
+                self.assertIn(record.url, stdout)
+                self.assertEqual(self.popen_calls, [])
+                self.assertEqual(self.browser_calls, [])
+                self.assertEqual(self.terminate_calls, [])
 
     def test_stale_pid_and_live_pid_failed_readiness_both_spawn_new_frontend(self) -> None:
         for name, pid_alive in (("dead", False), ("unready", True)):
@@ -496,7 +837,7 @@ class LaunchLockTests(unittest.TestCase):
 
 
 class BrowserPresenceTests(unittest.TestCase):
-    def test_fresh_stale_missing_and_malformed_leases(self) -> None:
+    def test_active_absent_stale_and_unknown_leases(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_name:
             url = "http://127.0.0.1:43123/"
             path = browser_presence_path(url, temp_directory=temporary_name)
@@ -505,7 +846,7 @@ class BrowserPresenceTests(unittest.TestCase):
                 detect_browser_presence(
                     url, now=lambda: 1000.0, temp_directory=temporary_name
                 ),
-                BrowserPresence.INACTIVE,
+                BrowserPresence.ABSENT,
             )
             path.write_text(json.dumps({"active-token-1234": 995.0}), encoding="utf-8")
             self.assertEqual(
@@ -519,9 +860,17 @@ class BrowserPresenceTests(unittest.TestCase):
                 detect_browser_presence(
                     url, now=lambda: 1000.0, temp_directory=temporary_name
                 ),
-                BrowserPresence.INACTIVE,
+                BrowserPresence.AMBIGUOUS_STALE,
             )
             path.write_text("{malformed", encoding="utf-8")
+            self.assertEqual(
+                detect_browser_presence(
+                    url, now=lambda: 1000.0, temp_directory=temporary_name
+                ),
+                BrowserPresence.UNKNOWN,
+            )
+            path.unlink()
+            path.mkdir()
             self.assertEqual(
                 detect_browser_presence(
                     url, now=lambda: 1000.0, temp_directory=temporary_name

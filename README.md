@@ -45,11 +45,13 @@ runtime it derives an explicit installation root containing `state.json`,
 versioned release; the manager never uses a `current` symlink or falls back to
 the development repository's top-level `application/` tree.
 
-Phase 2A.1 implements schema validation, active-release resolution,
-platform-aware frontend/backend interpreter paths, metadata-only version
-reporting, and the complete pre-launch filesystem validation contract. It does
-not install runtimes or start the frontend. Tests use an internal fixture
-builder to create synthetic installed layouts in temporary directories.
+The stable manager validates the selected release and its app-owned runtime,
+launches or reuses the packaged frontend, and performs first-use Anthropic and
+Paperclip onboarding before a new frontend starts. Anthropic keys inherited by
+the command are used silently; securely prompted keys remain only in that
+process tree. Paperclip continues to own its saved OAuth credentials under
+`~/.paperclip`, so configured users do not need a recurring network check or
+login on routine launches.
 
 ## Test the distribution tooling
 
@@ -57,7 +59,6 @@ builder to create synthetic installed layouts in temporary directories.
 python3 -m unittest discover -s tests -v
 ```
 
-Runtime/bootstrap installation, actual frontend launch, update/uninstall, PATH
-integration, and credential onboarding are intentionally deferred to later
-phases. The manager command semantics in this repository are maintainer-facing
-until those installation phases are complete.
+Update, uninstall, PATH integration, and the public installer are intentionally
+deferred to later phases. The development bootstrap and manager-refresh tools
+remain maintainer-facing until that installer is complete.
