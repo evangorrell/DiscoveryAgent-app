@@ -16,6 +16,7 @@ from discoveryagent_cli.installer import (  # noqa: E402
     ProductionInstallConfig,
     install_production_release,
 )
+from discoveryagent_cli.runtime import BootstrapRuntimeSource  # noqa: E402
 
 
 def _absolute_path(value: str) -> Path:
@@ -32,11 +33,30 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--install-root", type=_absolute_path)
     result.add_argument("--cli-path", type=_absolute_path)
     result.add_argument("--data-root", type=_absolute_path)
+    result.add_argument("--bootstrap-uv", type=_absolute_path, help=argparse.SUPPRESS)
+    result.add_argument(
+        "--bootstrap-python-root", type=_absolute_path, help=argparse.SUPPRESS
+    )
+    result.add_argument(
+        "--bootstrap-python", type=_absolute_path, help=argparse.SUPPRESS
+    )
+    result.add_argument("--quiet", action="store_true", help=argparse.SUPPRESS)
     return result
 
 
 def main(arguments: list[str] | None = None) -> int:
-    options = parser().parse_args(arguments)
+    argument_parser = parser()
+    options = argument_parser.parse_args(arguments)
+    bootstrap_values = (
+        options.bootstrap_uv,
+        options.bootstrap_python_root,
+        options.bootstrap_python,
+    )
+    if any(bootstrap_values) and not all(bootstrap_values):
+        argument_parser.error("bootstrap runtime arguments must be supplied together")
+    bootstrap_runtime = (
+        BootstrapRuntimeSource(*bootstrap_values) if all(bootstrap_values) else None
+    )
     try:
         installed = install_production_release(
             ProductionInstallConfig(
@@ -44,15 +64,17 @@ def main(arguments: list[str] | None = None) -> int:
                 install_root=options.install_root,
                 cli_path=options.cli_path,
                 data_root=options.data_root,
+                bootstrap_runtime=bootstrap_runtime,
             )
         )
     except ManagerError as exc:
         print(f"DiscoveryAgent installation failed: {exc}", file=sys.stderr)
         return 1
-    action = "Reused" if installed.reused_release else "Installed"
-    print(f"{action} DiscoveryAgent release {installed.release.release_id}")
-    print(f"Command: {installed.state.cli.path}")
-    print(f"Data: {installed.state.data_root}")
+    if not options.quiet:
+        action = "Reused" if installed.reused_release else "Installed"
+        print(f"{action} DiscoveryAgent release {installed.release.release_id}")
+        print(f"Command: {installed.state.cli.path}")
+        print(f"Data: {installed.state.data_root}")
     return 0
 
 

@@ -24,10 +24,12 @@ from manager.discoveryagent_cli.paths import InstallationPaths
 from manager.discoveryagent_cli.runtime import (
     PYTHON_VERSION,
     UV_APPLE_SILICON_SHA256,
+    BootstrapRuntimeSource,
     RuntimePaths,
     UvArtifact,
     acquire_python,
     acquire_uv,
+    adopt_bootstrap_runtimes,
     platform_identity,
     uv_artifact_for_platform,
 )
@@ -448,6 +450,82 @@ class RuntimeAndSyncTests(unittest.TestCase):
                 runner=runner,
             )
             self.assertEqual(selected, python.resolve())
+
+    def test_verified_bootstrap_runtimes_are_adopted_then_reused(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_name:
+            root = Path(temporary_name)
+            source_uv = root / "bootstrap/uv/uv"
+            source_python_root = root / "bootstrap/python"
+            source_python = source_python_root / "managed/bin/python3.11"
+            source_uv.parent.mkdir(parents=True)
+            source_python.parent.mkdir(parents=True)
+            source_uv.write_text("bootstrap uv\n", encoding="utf-8")
+            source_python.write_text("bootstrap python\n", encoding="utf-8")
+            source_alias = source_python_root / "cpython-3.11-macos-aarch64-none"
+            source_alias.symlink_to(source_python.parent.parent.resolve())
+
+            def runner(command, **_kwargs):
+                output = (
+                    "uv 0.11.17\n"
+                    if Path(command[0]).name == "uv"
+                    else "Python 3.11.11\n"
+                )
+                return subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
+
+            source = BootstrapRuntimeSource(
+                source_uv, source_python_root, source_python
+            )
+            first = adopt_bootstrap_runtimes(
+                root / "installed/runtime",
+                root / "installed/cache",
+                source,
+                runner=runner,
+            )
+            self.assertEqual(first.uv.read_text(encoding="utf-8"), "bootstrap uv\n")
+            self.assertEqual(
+                first.python.read_text(encoding="utf-8"), "bootstrap python\n"
+            )
+            installed_alias = (
+                root
+                / "installed/runtime/python/cpython-3.11-macos-aarch64-none"
+            )
+            self.assertTrue(installed_alias.is_symlink())
+            self.assertFalse(Path(os.readlink(installed_alias)).is_absolute())
+            first_uv_inode = first.uv.stat().st_ino
+            first_python_inode = first.python.stat().st_ino
+            second = adopt_bootstrap_runtimes(
+                root / "installed/runtime",
+                root / "installed/cache",
+                source,
+                runner=runner,
+            )
+            self.assertEqual(second.uv.stat().st_ino, first_uv_inode)
+            self.assertEqual(second.python.stat().st_ino, first_python_inode)
+
+    def test_bootstrap_python_must_be_inside_declared_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_name:
+            root = Path(temporary_name)
+            uv = root / "uv"
+            python = root / "outside/python3.11"
+            uv.write_text("uv\n", encoding="utf-8")
+            python.parent.mkdir()
+            python.write_text("python\n", encoding="utf-8")
+
+            def runner(command, **_kwargs):
+                output = (
+                    "uv 0.11.17\n"
+                    if Path(command[0]).name == "uv"
+                    else "Python 3.11.11\n"
+                )
+                return subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
+
+            with self.assertRaisesRegex(RuntimeAcquisitionError, "outside"):
+                adopt_bootstrap_runtimes(
+                    root / "runtime",
+                    root / "cache",
+                    BootstrapRuntimeSource(uv, root / "declared", python),
+                    runner=runner,
+                )
 
     def test_sync_uses_lock_check_then_frozen_noneditable_install(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_name:

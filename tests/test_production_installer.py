@@ -18,6 +18,7 @@ from manager.discoveryagent_cli.installer import (
     install_production_release,
     production_default_paths,
 )
+from manager.discoveryagent_cli.path_integration import configure_cli_path
 from manager.discoveryagent_cli.runtime import RuntimePaths
 from manager.discoveryagent_cli.state import load_state, write_state_atomic
 from manager.discoveryagent_cli.testing import (
@@ -368,6 +369,82 @@ class ProductionInstallerTests(unittest.TestCase):
         self.install_release()
         self.assertFalse(stale.exists())
         self.assertFalse(list(self.install.glob(".manager-*-*")))
+
+    def test_canonical_path_change_is_recorded_in_state(self) -> None:
+        home = self.root / "isolated-home"
+        home.mkdir()
+        cli = home / ".local/bin/discoveryagent"
+        config = ProductionInstallConfig(
+            payload_root=self.payload,
+            install_root=self.install,
+            cli_path=cli,
+            data_root=self.data,
+        )
+
+        def no_path_runner(command, **_kwargs):
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout="__DISCOVERYAGENT_LOGIN_PATH__=/usr/bin:/bin\n",
+                stderr="",
+            )
+
+        result = install_production_release(
+            config,
+            runtime_acquirer=self.acquire,
+            environment_syncer=self.sync,
+            release_validator=self.validate,
+            frontend_checker=lambda _paths, _state: False,
+            path_integrator=lambda path: configure_cli_path(
+                path,
+                home=home,
+                shell=Path("/bin/zsh"),
+                runner=no_path_runner,
+            ),
+        )
+        profile = home.resolve() / ".zprofile"
+        self.assertTrue(result.state.cli.path_change_added)
+        self.assertEqual(result.state.cli.modified_profile, str(profile))
+        self.assertEqual(load_state(result.paths.state_file).cli, result.state.cli)
+
+    def test_state_failure_rolls_back_new_path_profile(self) -> None:
+        home = self.root / "isolated-home"
+        home.mkdir()
+        cli = home / ".local/bin/discoveryagent"
+        config = ProductionInstallConfig(
+            payload_root=self.payload,
+            install_root=self.install,
+            cli_path=cli,
+            data_root=self.data,
+        )
+
+        def no_path_runner(command, **_kwargs):
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout="__DISCOVERYAGENT_LOGIN_PATH__=/usr/bin:/bin\n",
+                stderr="",
+            )
+
+        with self.assertRaisesRegex(BootstrapError, "state failure"):
+            install_production_release(
+                config,
+                runtime_acquirer=self.acquire,
+                environment_syncer=self.sync,
+                release_validator=self.validate,
+                frontend_checker=lambda _paths, _state: False,
+                path_integrator=lambda path: configure_cli_path(
+                    path,
+                    home=home,
+                    shell=Path("/bin/zsh"),
+                    runner=no_path_runner,
+                ),
+                state_writer=lambda *_args: (_ for _ in ()).throw(
+                    BootstrapError("state failure")
+                ),
+            )
+        self.assertFalse((home / ".zprofile").exists())
+        self.assertFalse((self.install / "state.json").exists())
 
 
 class InstallationLockTests(unittest.TestCase):

@@ -2,6 +2,33 @@
 
 DiscoveryAgent is a local application for autonomous scientific research.
 
+## Install on Apple Silicon macOS
+
+The public release URL is centralized in this command. Replace
+`REPLACE_WITH_RELEASE_TAG` with the published immutable release tag when the
+first release is cut:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/owencqueen/DiscoveryAgent-app/REPLACE_WITH_RELEASE_TAG/install.sh | sh \
+  && export PATH="$HOME/.local/bin:$PATH" \
+  && discoveryagent
+```
+
+DiscoveryAgent installs entirely for the current user. On first launch it
+securely asks for an Anthropic API key if one is not already exported, then
+opens Paperclip browser sign-in once if needed. Later, normal use is simply:
+
+```bash
+discoveryagent
+```
+
+The terminal that owns the frontend can stop it with Ctrl-C. The installer
+permanently configures future login shells when necessary; the inline `export`
+above makes the command available immediately in the terminal running the
+installation.
+
+## Distribution architecture
+
 This is the distribution and release repository for DiscoveryAgent. The
 standalone frontend and backend repositories remain the development sources of
 truth. This repository records one deterministic, committed source pair under:
@@ -65,8 +92,10 @@ python3 tools/install_local_release.py
 On macOS its defaults are `~/.local/share/discoveryagent` for the application,
 `~/.local/bin/discoveryagent` for the command, and
 `~/Library/Application Support/DiscoveryAgent` for durable project data. Tests
-can supply absolute `--install-root`, `--cli-path`, and `--data-root` paths. The
-tool does not change PATH, launch the frontend, or perform authentication.
+can supply absolute `--install-root`, `--cli-path`, and `--data-root` paths.
+Canonical installation configures future-shell PATH when needed; custom CLI
+paths remain maintainer-only. Installation does not launch the frontend or
+perform authentication.
 
 Completed releases are immutable. Reinstalling the same release validates and
 reuses it; installing a different release builds it beside prior releases and
@@ -79,7 +108,22 @@ shim are complete.
 python3 -m unittest discover -s tests -v
 ```
 
-Update, uninstall, PATH integration, and the public installer are intentionally
-deferred to later phases. The local-release installer, development bootstrap,
-and manager-refresh tools remain maintainer-facing until that installer is
-complete.
+Update and uninstall are intentionally deferred to later phases. The public
+shell bootstrap delegates installation to the same production engine used by
+the local-release installer; development bootstrap and manager-refresh tools
+remain maintainer-facing.
+
+## Build the public install artifact
+
+Build the deterministic macOS arm64 GitHub Release asset, checksum, and
+machine-readable manifest with:
+
+```bash
+python3 tools/build_install_artifact.py --output-dir /absolute/output/directory
+```
+
+Before publication, set `RELEASE_TAG` in `install.sh`, publish the generated
+archive under that immutable GitHub Release tag, verify its committed
+`PUBLIC_ARTIFACT_SHA256`, and replace the matching README install tag. The shell
+bootstrap requires only standard macOS utilities; it downloads its own pinned
+uv and Python before handing off to the production installer engine.

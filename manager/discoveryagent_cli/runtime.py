@@ -52,6 +52,13 @@ class RuntimePaths:
     architecture: str = "arm64"
 
 
+@dataclass(frozen=True)
+class BootstrapRuntimeSource:
+    uv: Path
+    python_root: Path
+    python: Path
+
+
 def platform_identity(
     platform_name: str | None = None,
     machine: str | None = None,
@@ -189,6 +196,25 @@ def _restore_runtime_directory(root: Path, backup: Path | None) -> None:
         shutil.rmtree(root, ignore_errors=True)
     if backup is not None and backup.exists():
         os.replace(backup, root)
+
+
+def _relocate_copied_runtime_symlinks(staging: Path, source_root: Path) -> None:
+    for path in staging.rglob("*"):
+        if not path.is_symlink():
+            continue
+        link = Path(os.readlink(path))
+        if not link.is_absolute():
+            continue
+        try:
+            relative_target = link.resolve().relative_to(source_root)
+        except ValueError as exc:
+            raise RuntimeAcquisitionError(
+                f"Bootstrap Python contains an external absolute symlink: {path}"
+            ) from exc
+        staged_target = staging / relative_target
+        relative_link = os.path.relpath(staged_target, path.parent)
+        path.unlink()
+        path.symlink_to(relative_link, target_is_directory=staged_target.is_dir())
 
 
 def acquire_uv(
@@ -346,6 +372,100 @@ def acquire_runtimes(
     return RuntimePaths(
         uv=uv,
         python=python,
+        platform_name=platform_name,
+        architecture=architecture,
+    )
+
+
+def adopt_bootstrap_runtimes(
+    runtime_root: Path,
+    _cache_root: Path,
+    source: BootstrapRuntimeSource,
+    *,
+    runner: RunCommand = subprocess.run,
+) -> RuntimePaths:
+    """Validate and atomically adopt shell-bootstrapped runtimes."""
+    platform_name, architecture = platform_identity()
+    source_uv = source.uv.expanduser().resolve()
+    source_python_root = source.python_root.expanduser().resolve()
+    source_python = source.python.expanduser().resolve()
+    verify_uv(source_uv, runner=runner)
+    verify_python(source_python, runner=runner)
+    try:
+        python_relative = source_python.relative_to(source_python_root)
+    except ValueError as exc:
+        raise RuntimeAcquisitionError(
+            "Bootstrap Python is outside its declared runtime root"
+        ) from exc
+
+    uv_root = runtime_root / "uv"
+    installed_uv = uv_root / "uv"
+    uv_backup: Path | None = None
+    selected_uv: Path | None = None
+    if installed_uv.is_file():
+        try:
+            verify_uv(installed_uv, runner=runner)
+        except RuntimeAcquisitionError:
+            uv_backup = _quarantine_runtime_directory(uv_root)
+        else:
+            selected_uv = installed_uv.resolve()
+    elif uv_root.exists():
+        uv_backup = _quarantine_runtime_directory(uv_root)
+    if selected_uv is None:
+        staging_uv = runtime_root / f".uv.adopt-{uuid.uuid4().hex}"
+        try:
+            staging_uv.mkdir(parents=True)
+            staged_uv = staging_uv / "uv"
+            shutil.copy2(source_uv, staged_uv)
+            verify_uv(staged_uv, runner=runner)
+            os.replace(staging_uv, uv_root)
+            selected_uv = installed_uv.resolve()
+        except Exception:
+            shutil.rmtree(staging_uv, ignore_errors=True)
+            _restore_runtime_directory(uv_root, uv_backup)
+            raise
+        else:
+            if uv_backup is not None:
+                shutil.rmtree(uv_backup, ignore_errors=True)
+
+    python_root = runtime_root / "python"
+    existing = _python_candidates(python_root)
+    selected_python: Path | None = None
+    python_backup: Path | None = None
+    for candidate in existing:
+        try:
+            verify_python(candidate, runner=runner)
+        except RuntimeAcquisitionError:
+            continue
+        selected_python = candidate
+        break
+    if selected_python is None:
+        if python_root.exists():
+            python_backup = _quarantine_runtime_directory(python_root)
+        staging_python = runtime_root / f".python.adopt-{uuid.uuid4().hex}"
+        try:
+            shutil.copytree(source_python_root, staging_python, symlinks=True)
+            _relocate_copied_runtime_symlinks(staging_python, source_python_root)
+            staged_python = staging_python / python_relative
+            if not staged_python.is_file():
+                raise RuntimeAcquisitionError(
+                    "Bootstrap Python copy does not contain its interpreter"
+                )
+            verify_python(staged_python, runner=runner)
+            os.replace(staging_python, python_root)
+            selected_python = (python_root / python_relative).resolve()
+        except Exception:
+            shutil.rmtree(staging_python, ignore_errors=True)
+            _restore_runtime_directory(python_root, python_backup)
+            raise
+        else:
+            if python_backup is not None:
+                shutil.rmtree(python_backup, ignore_errors=True)
+
+    assert selected_python is not None
+    return RuntimePaths(
+        uv=selected_uv,
+        python=selected_python,
         platform_name=platform_name,
         architecture=architecture,
     )

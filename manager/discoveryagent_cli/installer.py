@@ -30,7 +30,16 @@ from .frontend_process import readiness_is_healthy
 from .installation import ReleaseMetadata
 from .launch import existing_frontend_is_healthy
 from .paths import InstallationPaths
-from .runtime import PYTHON_VERSION, UV_VERSION, RuntimePaths, acquire_runtimes, sha256_file
+from .path_integration import PathIntegrationChange, configure_cli_path
+from .runtime import (
+    PYTHON_VERSION,
+    UV_VERSION,
+    BootstrapRuntimeSource,
+    RuntimePaths,
+    acquire_runtimes,
+    adopt_bootstrap_runtimes,
+    sha256_file,
+)
 from .runtime_state import load_frontend_record, process_is_alive
 from .state import (
     STATE_SCHEMA_VERSION,
@@ -49,6 +58,7 @@ FrontendChecker = Callable[[InstallationPaths, ManagerState | None], bool]
 ManagerInstaller = Callable[[Path, InstallationPaths], Path]
 CliInstaller = Callable[..., Path]
 StateWriter = Callable[[Path, ManagerState], None]
+PathIntegrator = Callable[[Path], PathIntegrationChange]
 
 
 @dataclass(frozen=True)
@@ -73,6 +83,7 @@ class ProductionInstallConfig:
     install_root: Path | None = None
     cli_path: Path | None = None
     data_root: Path | None = None
+    bootstrap_runtime: BootstrapRuntimeSource | None = None
 
     def normalized(self, *, home: Path | None = None) -> "ProductionInstallConfig":
         defaults = production_default_paths(home)
@@ -90,6 +101,7 @@ class ProductionInstallConfig:
             install_root=(self.install_root or defaults.install_root).expanduser().resolve(),
             cli_path=(self.cli_path or defaults.cli_path).expanduser().resolve(),
             data_root=(self.data_root or defaults.data_root).expanduser().resolve(),
+            bootstrap_runtime=self.bootstrap_runtime,
         )
         assert normalized.install_root is not None
         assert normalized.data_root is not None
@@ -347,7 +359,7 @@ def _state_for_installation(
     metadata: ReleaseMetadata,
     runtimes: RuntimePaths,
     data_root: Path,
-    cli_path: Path,
+    cli_state: CliState,
     previous: ManagerState | None,
 ) -> ManagerState:
     releases = dict(previous.installed_releases) if previous else {}
@@ -368,11 +380,7 @@ def _state_for_installation(
         data_root=str(data_root),
         platform=runtimes.platform_name,
         architecture=runtimes.architecture,
-        cli=CliState(
-            path=str(cli_path),
-            path_change_added=False,
-            modified_profile=None,
-        ),
+        cli=cli_state,
     )
 
 
@@ -387,6 +395,7 @@ def install_production_release(
     manager_installer: ManagerInstaller = install_manager_atomic,
     cli_installer: CliInstaller = install_cli_shim,
     state_writer: StateWriter = write_state_atomic,
+    path_integrator: PathIntegrator = configure_cli_path,
 ) -> BootstrapResult:
     selected = config.normalized()
     assert selected.install_root is not None
@@ -409,7 +418,14 @@ def install_production_release(
                 "DiscoveryAgent is currently running. Stop it before installing."
             )
 
-        runtimes = runtime_acquirer(paths.runtime_root, paths.cache_root)
+        if selected.bootstrap_runtime is None:
+            runtimes = runtime_acquirer(paths.runtime_root, paths.cache_root)
+        else:
+            runtimes = adopt_bootstrap_runtimes(
+                paths.runtime_root,
+                paths.cache_root,
+                selected.bootstrap_runtime,
+            )
         final_release = paths.release_root(metadata.release_id)
         reused_release = False
         if final_release.exists():
@@ -470,15 +486,20 @@ def install_production_release(
             install_root=paths.root,
             python=runtimes.python,
         )
-        state = _state_for_installation(
-            paths,
-            metadata,
-            runtimes,
-            selected.data_root,
-            cli_path,
-            previous,
-        )
-        state_writer(paths.state_file, state)
+        path_change = path_integrator(cli_path)
+        try:
+            state = _state_for_installation(
+                paths,
+                metadata,
+                runtimes,
+                selected.data_root,
+                path_change.cli_state,
+                previous,
+            )
+            state_writer(paths.state_file, state)
+        except Exception:
+            path_change.rollback()
+            raise
         return BootstrapResult(
             paths=paths,
             release=metadata,
