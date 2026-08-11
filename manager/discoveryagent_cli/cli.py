@@ -9,12 +9,10 @@ from pathlib import Path
 from typing import Callable, Mapping, Sequence, TextIO
 
 from .errors import ManagerError
-from .installation import load_active_release, validate_launch_installation
+from .installation import load_active_release
+from .launch import launch_installed_application
 from .paths import InstallationPaths, resolve_installation_root
 from .state import ManagerState, load_state
-
-
-LAUNCH_NOT_IMPLEMENTED_EXIT = 3
 
 
 @dataclass(frozen=True)
@@ -40,17 +38,11 @@ def _load_manager_state(context: CommandContext) -> ManagerState:
 
 
 def launch_command(context: CommandContext) -> int:
-    state = _load_manager_state(context)
-    validate_launch_installation(
+    return launch_installed_application(
         context.paths,
-        state,
-        platform_name=state.platform,
+        stdout=context.stdout,
+        stderr=context.stderr,
     )
-    print(
-        "DiscoveryAgent runtime launch is not implemented in Phase 2A.1.",
-        file=context.stderr,
-    )
-    return LAUNCH_NOT_IMPLEMENTED_EXIT
 
 
 def version_command(context: CommandContext) -> int:

@@ -2,17 +2,15 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest import mock
 
 from manager.discoveryagent_cli import MANAGER_VERSION
-from manager.discoveryagent_cli.cli import (
-    LAUNCH_NOT_IMPLEMENTED_EXIT,
-    main,
-    version_command,
-)
+from manager.discoveryagent_cli.cli import main, version_command
 from manager.discoveryagent_cli.errors import LaunchValidationError, ReleaseError, StateError
 from manager.discoveryagent_cli.installation import (
     load_active_release,
@@ -235,19 +233,20 @@ class ManagerFoundationTests(unittest.TestCase):
             ],
         )
 
-    def test_valid_launch_only_validates_and_returns_not_implemented(self) -> None:
+    def test_launch_without_phase_2a3_api_key_stops_cleanly(self) -> None:
         paths, _state = self.fixture()
         stdout = io.StringIO()
         stderr = io.StringIO()
-        result = main(
-            ["launch"],
-            install_root=paths.root,
-            stdout=stdout,
-            stderr=stderr,
-        )
-        self.assertEqual(result, LAUNCH_NOT_IMPLEMENTED_EXIT)
+        with mock.patch.dict(os.environ, {}, clear=True):
+            result = main(
+                ["launch"],
+                install_root=paths.root,
+                stdout=stdout,
+                stderr=stderr,
+            )
+        self.assertEqual(result, 1)
         self.assertEqual(stdout.getvalue(), "")
-        self.assertIn("not implemented in Phase 2A.1", stderr.getvalue())
+        self.assertIn("requires ANTHROPIC_API_KEY", stderr.getvalue())
 
     def test_atomic_state_replacement(self) -> None:
         paths, state = self.fixture()

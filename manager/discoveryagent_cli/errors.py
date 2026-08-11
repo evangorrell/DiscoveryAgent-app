@@ -23,3 +23,7 @@ class RuntimeAcquisitionError(ManagerError):
 
 class BootstrapError(ManagerError):
     """A development installation could not be constructed safely."""
+
+
+class LaunchRuntimeError(ManagerError):
+    """The packaged frontend could not be launched or reached safely."""

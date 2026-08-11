@@ -13,6 +13,7 @@ from manager.discoveryagent_cli.bootstrap import (
     EnvironmentValidation,
     bootstrap_development_install,
     install_wrapper,
+    refresh_development_manager,
     sync_environment,
 )
 from manager.discoveryagent_cli.errors import BootstrapError, RuntimeAcquisitionError
@@ -27,6 +28,7 @@ from manager.discoveryagent_cli.runtime import (
 )
 from manager.discoveryagent_cli.state import load_state
 from manager.discoveryagent_cli.testing import fixture_release_metadata
+from manager.discoveryagent_cli.testing import create_fake_installation
 
 
 class DevelopmentBootstrapTests(unittest.TestCase):
@@ -312,6 +314,39 @@ class RuntimeAndSyncTests(unittest.TestCase):
             )
             self.assertNotIn("VIRTUAL_ENV", commands[1][1])
             self.assertNotIn("PYTHONPATH", commands[1][1])
+
+
+class DevelopmentManagerRefreshTests(unittest.TestCase):
+    def test_refresh_changes_only_installed_manager(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_name:
+            root = Path(temporary_name)
+            repository = root / "repository"
+            source_manager = repository / "manager" / "discoveryagent_cli"
+            source_manager.mkdir(parents=True)
+            (source_manager / "__init__.py").write_text("refreshed = True\n", encoding="utf-8")
+            paths, _state = create_fake_installation(root / "install")
+            (paths.manager_root / "old.py").write_text("old\n", encoding="utf-8")
+            release_root = paths.release_root(fixture_release_metadata()["release_id"])
+
+            def manifest(path: Path) -> dict[str, bytes | str]:
+                result = {}
+                for item in sorted(path.rglob("*")):
+                    relative = item.relative_to(path).as_posix()
+                    if item.is_symlink():
+                        result[relative] = os.readlink(item)
+                    elif item.is_file():
+                        result[relative] = item.read_bytes()
+                return result
+
+            before = manifest(release_root)
+            refreshed = refresh_development_manager(repository, paths.root)
+            after = manifest(release_root)
+
+            self.assertEqual(before, after)
+            self.assertEqual(refreshed, paths.manager_root)
+            self.assertTrue((paths.manager_root / "discoveryagent_cli/__init__.py").is_file())
+            self.assertFalse((paths.manager_root / "old.py").exists())
+            self.assertFalse(list(paths.root.glob(".manager-*-*")))
 
 
 if __name__ == "__main__":

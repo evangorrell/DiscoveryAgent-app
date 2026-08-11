@@ -42,6 +42,22 @@ class InstallationPaths:
     def cache_root(self) -> Path:
         return self.root / "cache"
 
+    @property
+    def frontend_runtime_file(self) -> Path:
+        return self.runtime_root / "frontend.json"
+
+    @property
+    def frontend_launch_lock(self) -> Path:
+        return self.runtime_root / "frontend.launch.lock"
+
+    @property
+    def frontend_log_file(self) -> Path:
+        return self.runtime_root / "logs" / "frontend.log"
+
+    @property
+    def frontend_cwd(self) -> Path:
+        return self.runtime_root / "frontend-cwd"
+
     def release_root(self, release_id: str) -> Path:
         validate_release_id(release_id)
         return self.releases_root / release_id

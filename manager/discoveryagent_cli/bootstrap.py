@@ -16,7 +16,7 @@ from typing import Callable, Mapping, Sequence
 
 from . import MANAGER_VERSION
 from .errors import BootstrapError
-from .installation import ReleaseMetadata
+from .installation import ReleaseMetadata, validate_launch_installation
 from .paths import InstallationPaths, release_environment_python
 from .runtime import PYTHON_VERSION, UV_VERSION, RuntimePaths, acquire_runtimes
 from .state import (
@@ -25,6 +25,7 @@ from .state import (
     InstalledReleaseState,
     ManagerState,
     RuntimeState,
+    load_state,
     write_state_atomic,
 )
 
@@ -404,21 +405,20 @@ def validate_installed_release(
     )
 
 
+def _manager_manifest(root: Path) -> dict[str, tuple[str, str]]:
+    return {
+        key: value
+        for key, value in _tree_manifest(root).items()
+        if "__pycache__" not in PurePosixPath(key).parts and not key.endswith(".pyc")
+    }
+
+
 def _copy_manager(repository_root: Path, paths: InstallationPaths) -> None:
     source = repository_root / "manager" / "discoveryagent_cli"
     destination = paths.manager_root / "discoveryagent_cli"
-
-    def manager_manifest(root: Path) -> dict[str, tuple[str, str]]:
-        return {
-            key: value
-            for key, value in _tree_manifest(root).items()
-            if "__pycache__" not in PurePosixPath(key).parts
-            and not key.endswith(".pyc")
-        }
-
-    source_manifest = manager_manifest(source)
+    source_manifest = _manager_manifest(source)
     if destination.exists():
-        if manager_manifest(destination) != source_manifest:
+        if _manager_manifest(destination) != source_manifest:
             raise BootstrapError(
                 "Installed manager differs from this bootstrap; refusing to overwrite it"
             )
@@ -427,11 +427,48 @@ def _copy_manager(repository_root: Path, paths: InstallationPaths) -> None:
     temporary = paths.root / f".manager-staging-{uuid.uuid4().hex}"
     try:
         shutil.copytree(source, temporary / "discoveryagent_cli", ignore=_ignored_runtime_names)
-        if manager_manifest(temporary / "discoveryagent_cli") != source_manifest:
+        if _manager_manifest(temporary / "discoveryagent_cli") != source_manifest:
             raise BootstrapError("Installed manager copy is not byte-identical")
         os.replace(temporary, paths.manager_root)
     finally:
         shutil.rmtree(temporary, ignore_errors=True)
+
+
+def refresh_development_manager(repository_root: Path, install_root: Path) -> Path:
+    """Atomically refresh only manager code in an existing development install."""
+    repository = repository_root.expanduser().resolve()
+    installation = install_root.expanduser().resolve()
+    if not install_root.is_absolute():
+        raise BootstrapError("--install-root must be an absolute path")
+    paths = InstallationPaths(installation)
+    state = load_state(paths.state_file)
+    validate_launch_installation(paths, state, platform_name=state.platform)
+    source = repository / "manager" / "discoveryagent_cli"
+    source_manifest = _manager_manifest(source)
+    staging = paths.root / f".manager-refresh-{uuid.uuid4().hex}"
+    backup = paths.root / f".manager-backup-{uuid.uuid4().hex}"
+    destination = paths.manager_root
+    destination_moved = False
+    try:
+        shutil.copytree(source, staging / "discoveryagent_cli", ignore=_ignored_runtime_names)
+        if _manager_manifest(staging / "discoveryagent_cli") != source_manifest:
+            raise BootstrapError("Refreshed manager copy is not byte-identical")
+        if destination.exists():
+            os.replace(destination, backup)
+            destination_moved = True
+        os.replace(staging, destination)
+        if _manager_manifest(destination / "discoveryagent_cli") != source_manifest:
+            raise BootstrapError("Installed manager refresh did not validate")
+    except Exception:
+        if destination.exists():
+            shutil.rmtree(destination, ignore_errors=True)
+        if destination_moved and backup.exists():
+            os.replace(backup, destination)
+        raise
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+        shutil.rmtree(backup, ignore_errors=True)
+    return destination
 
 
 def _shell_single_quote(value: str) -> str:
