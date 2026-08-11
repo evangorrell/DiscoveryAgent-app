@@ -53,6 +53,26 @@ process tree. Paperclip continues to own its saved OAuth credentials under
 `~/.paperclip`, so configured users do not need a recurring network check or
 login on routine launches.
 
+## Exercise the production installer engine
+
+The maintainer-facing installer builds a complete local installation from only
+the committed `application/`, `release.json`, and `manager/` payload:
+
+```bash
+python3 tools/install_local_release.py
+```
+
+On macOS its defaults are `~/.local/share/discoveryagent` for the application,
+`~/.local/bin/discoveryagent` for the command, and
+`~/Library/Application Support/DiscoveryAgent` for durable project data. Tests
+can supply absolute `--install-root`, `--cli-path`, and `--data-root` paths. The
+tool does not change PATH, launch the frontend, or perform authentication.
+
+Completed releases are immutable. Reinstalling the same release validates and
+reuses it; installing a different release builds it beside prior releases and
+publishes the new active release only after its environments, manager, and CLI
+shim are complete.
+
 ## Test the distribution tooling
 
 ```bash
@@ -60,5 +80,6 @@ python3 -m unittest discover -s tests -v
 ```
 
 Update, uninstall, PATH integration, and the public installer are intentionally
-deferred to later phases. The development bootstrap and manager-refresh tools
-remain maintainer-facing until that installer is complete.
+deferred to later phases. The local-release installer, development bootstrap,
+and manager-refresh tools remain maintainer-facing until that installer is
+complete.

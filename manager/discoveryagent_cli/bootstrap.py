@@ -14,20 +14,11 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Callable, Mapping, Sequence
 
-from . import MANAGER_VERSION
 from .errors import BootstrapError
 from .installation import ReleaseMetadata, validate_launch_installation
 from .paths import InstallationPaths, release_environment_python
-from .runtime import PYTHON_VERSION, UV_VERSION, RuntimePaths, acquire_runtimes
-from .state import (
-    STATE_SCHEMA_VERSION,
-    CliState,
-    InstalledReleaseState,
-    ManagerState,
-    RuntimeState,
-    load_state,
-    write_state_atomic,
-)
+from .runtime import PYTHON_VERSION, RuntimePaths, acquire_runtimes
+from .state import load_state
 
 
 RunCommand = Callable[..., subprocess.CompletedProcess[str]]
@@ -413,46 +404,22 @@ def _manager_manifest(root: Path) -> dict[str, tuple[str, str]]:
     }
 
 
-def _copy_manager(repository_root: Path, paths: InstallationPaths) -> None:
-    source = repository_root / "manager" / "discoveryagent_cli"
-    destination = paths.manager_root / "discoveryagent_cli"
-    source_manifest = _manager_manifest(source)
-    if destination.exists():
-        if _manager_manifest(destination) != source_manifest:
-            raise BootstrapError(
-                "Installed manager differs from this bootstrap; refusing to overwrite it"
-            )
-        return
-    paths.manager_root.parent.mkdir(parents=True, exist_ok=True)
-    temporary = paths.root / f".manager-staging-{uuid.uuid4().hex}"
-    try:
-        shutil.copytree(source, temporary / "discoveryagent_cli", ignore=_ignored_runtime_names)
-        if _manager_manifest(temporary / "discoveryagent_cli") != source_manifest:
-            raise BootstrapError("Installed manager copy is not byte-identical")
-        os.replace(temporary, paths.manager_root)
-    finally:
-        shutil.rmtree(temporary, ignore_errors=True)
-
-
-def refresh_development_manager(repository_root: Path, install_root: Path) -> Path:
-    """Atomically refresh only manager code in an existing development install."""
-    repository = repository_root.expanduser().resolve()
-    installation = install_root.expanduser().resolve()
-    if not install_root.is_absolute():
-        raise BootstrapError("--install-root must be an absolute path")
-    paths = InstallationPaths(installation)
-    state = load_state(paths.state_file)
-    validate_launch_installation(paths, state, platform_name=state.platform)
-    source = repository / "manager" / "discoveryagent_cli"
+def install_manager_atomic(payload_root: Path, paths: InstallationPaths) -> Path:
+    """Install or refresh the out-of-release manager with rollback."""
+    source = payload_root / "manager" / "discoveryagent_cli"
     source_manifest = _manager_manifest(source)
     staging = paths.root / f".manager-refresh-{uuid.uuid4().hex}"
     backup = paths.root / f".manager-backup-{uuid.uuid4().hex}"
     destination = paths.manager_root
     destination_moved = False
     try:
-        shutil.copytree(source, staging / "discoveryagent_cli", ignore=_ignored_runtime_names)
+        shutil.copytree(
+            source,
+            staging / "discoveryagent_cli",
+            ignore=_ignored_runtime_names,
+        )
         if _manager_manifest(staging / "discoveryagent_cli") != source_manifest:
-            raise BootstrapError("Refreshed manager copy is not byte-identical")
+            raise BootstrapError("Installed manager copy is not byte-identical")
         if destination.exists():
             os.replace(destination, backup)
             destination_moved = True
@@ -469,6 +436,18 @@ def refresh_development_manager(repository_root: Path, install_root: Path) -> Pa
         shutil.rmtree(staging, ignore_errors=True)
         shutil.rmtree(backup, ignore_errors=True)
     return destination
+
+
+def refresh_development_manager(repository_root: Path, install_root: Path) -> Path:
+    """Atomically refresh only manager code in an existing development install."""
+    repository = repository_root.expanduser().resolve()
+    installation = install_root.expanduser().resolve()
+    if not install_root.is_absolute():
+        raise BootstrapError("--install-root must be an absolute path")
+    paths = InstallationPaths(installation)
+    state = load_state(paths.state_file)
+    validate_launch_installation(paths, state, platform_name=state.platform)
+    return install_manager_atomic(repository, paths)
 
 
 def _shell_single_quote(value: str) -> str:
@@ -504,37 +483,47 @@ def install_wrapper(paths: InstallationPaths, python: Path) -> Path:
     return wrapper.resolve()
 
 
-def _state_for_installation(
-    paths: InstallationPaths,
-    metadata: ReleaseMetadata,
-    runtimes: RuntimePaths,
-    data_root: Path,
-    wrapper: Path,
-) -> ManagerState:
-    return ManagerState(
-        schema_version=STATE_SCHEMA_VERSION,
-        active_release_id=metadata.release_id,
-        installed_releases={
-            metadata.release_id: InstalledReleaseState(
-                path=f"releases/{metadata.release_id}"
-            )
-        },
-        manager_version=MANAGER_VERSION,
-        runtime=RuntimeState(
-            python_version=PYTHON_VERSION,
-            python_path=str(runtimes.python.resolve()),
-            uv_version=UV_VERSION,
-            uv_path=str(runtimes.uv.resolve()),
-        ),
-        data_root=str(data_root.resolve()),
-        platform=runtimes.platform_name,
-        architecture=runtimes.architecture,
-        cli=CliState(
-            path=str(wrapper),
-            path_change_added=False,
-            modified_profile=None,
-        ),
+def production_wrapper_contents(
+    python: Path,
+    *,
+    install_root: Path,
+) -> str:
+    quoted_python = _shell_single_quote(str(python.resolve()))
+    quoted_root = _shell_single_quote(str(install_root.resolve()))
+    return f"""#!/bin/sh
+set -eu
+exec {quoted_python} -c 'import sys; from pathlib import Path; root=Path(sys.argv.pop(1)); sys.path.insert(0, str(root / "manager")); from discoveryagent_cli.cli import main; raise SystemExit(main())' {quoted_root} "$@"
+"""
+
+
+def install_cli_shim(
+    cli_path: Path,
+    *,
+    install_root: Path,
+    python: Path,
+) -> Path:
+    """Atomically install the external production CLI shim."""
+    cli_path.parent.mkdir(parents=True, exist_ok=True)
+    expected = production_wrapper_contents(python, install_root=install_root)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{cli_path.name}.", suffix=".tmp", dir=cli_path.parent
     )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(expected)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.chmod(
+            temporary.stat().st_mode
+            | stat.S_IXUSR
+            | stat.S_IXGRP
+            | stat.S_IXOTH
+        )
+        os.replace(temporary, cli_path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return cli_path.resolve()
 
 
 def bootstrap_development_install(
@@ -545,77 +534,16 @@ def bootstrap_development_install(
     release_validator: Callable[[Path, Path], EnvironmentValidation] = validate_installed_release,
 ) -> BootstrapResult:
     selected = config.normalized()
-    paths = InstallationPaths(selected.install_root)
-    metadata = _read_release_metadata(selected.repository_root / "release.json")
-    source_application = selected.repository_root / "application"
-    if not (source_application / "frontend").is_dir() or not (
-        source_application / "backend"
-    ).is_dir():
-        raise BootstrapError("Canonical frontend/backend application snapshots are missing")
+    from .installer import ProductionInstallConfig, install_production_release
 
-    paths.root.mkdir(parents=True, exist_ok=True)
-    paths.cache_root.mkdir(parents=True, exist_ok=True)
-    paths.releases_root.mkdir(parents=True, exist_ok=True)
-    runtimes = runtime_acquirer(paths.runtime_root, paths.cache_root)
-    final_release = paths.release_root(metadata.release_id)
-    reused_release = False
-
-    if final_release.exists():
-        if not (final_release / "complete").is_file():
-            raise BootstrapError(
-                f"Existing release is incomplete and will not be overwritten: {final_release}"
-            )
-        _validate_canonical_release_copy(selected.repository_root, final_release, metadata)
-        validation = release_validator(final_release, paths.cache_root)
-        reused_release = True
-    else:
-        staging = paths.releases_root / f".{metadata.release_id}.staging-{uuid.uuid4().hex}"
-        try:
-            staging.mkdir()
-            _copy_canonical_release(selected.repository_root, staging)
-            environment_syncer(
-                runtimes.uv,
-                runtimes.python,
-                staging / "application" / "frontend",
-                staging / "envs" / "frontend",
-                paths.cache_root,
-            )
-            environment_syncer(
-                runtimes.uv,
-                runtimes.python,
-                staging / "application" / "backend",
-                staging / "envs" / "backend",
-                paths.cache_root,
-            )
-            _validate_canonical_release_copy(selected.repository_root, staging, metadata)
-            validation = release_validator(staging, paths.cache_root)
-            (staging / "complete").write_text("complete\n", encoding="utf-8")
-            os.replace(staging, final_release)
-            try:
-                _validate_canonical_release_copy(
-                    selected.repository_root, final_release, metadata
-                )
-                validation = release_validator(final_release, paths.cache_root)
-            except Exception:
-                # This release was created by this call and cannot be active:
-                # state publication has not happened yet.
-                shutil.rmtree(final_release, ignore_errors=True)
-                raise
-        except Exception:
-            shutil.rmtree(staging, ignore_errors=True)
-            raise
-
-    _copy_manager(selected.repository_root, paths)
-    wrapper = install_wrapper(paths, runtimes.python)
-    state = _state_for_installation(
-        paths, metadata, runtimes, selected.data_root, wrapper
-    )
-    write_state_atomic(paths.state_file, state)
-    return BootstrapResult(
-        paths=paths,
-        release=metadata,
-        runtimes=runtimes,
-        validation=validation,
-        state=state,
-        reused_release=reused_release,
+    return install_production_release(
+        ProductionInstallConfig(
+            payload_root=selected.repository_root,
+            install_root=selected.install_root,
+            cli_path=selected.install_root / "bin" / "discoveryagent",
+            data_root=selected.data_root,
+        ),
+        runtime_acquirer=runtime_acquirer,
+        environment_syncer=environment_syncer,
+        release_validator=release_validator,
     )

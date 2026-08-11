@@ -11,6 +11,7 @@ import subprocess
 import tarfile
 import tempfile
 import urllib.request
+import uuid
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Callable, Mapping, Sequence
@@ -177,6 +178,19 @@ def verify_uv(executable: Path, *, runner: RunCommand = subprocess.run) -> None:
         )
 
 
+def _quarantine_runtime_directory(root: Path) -> Path:
+    backup = root.parent / f".{root.name}.invalid-{uuid.uuid4().hex}"
+    os.replace(root, backup)
+    return backup
+
+
+def _restore_runtime_directory(root: Path, backup: Path | None) -> None:
+    if root.exists():
+        shutil.rmtree(root, ignore_errors=True)
+    if backup is not None and backup.exists():
+        os.replace(backup, root)
+
+
 def acquire_uv(
     runtime_root: Path,
     cache_root: Path,
@@ -188,32 +202,46 @@ def acquire_uv(
     selected = artifact or uv_artifact_for_platform()
     uv_root = runtime_root / "uv"
     executable = uv_root / selected.executable_name
+    invalid_backup: Path | None = None
     if executable.is_file():
-        verify_uv(executable, runner=runner)
-        return executable.resolve()
-
-    cache_root.mkdir(parents=True, exist_ok=True)
-    cached_archive = cache_root / selected.archive_name
-    if not cached_archive.is_file() or sha256_file(cached_archive) != selected.sha256:
-        descriptor, temporary_name = tempfile.mkstemp(
-            prefix=f".{selected.archive_name}.", suffix=".download", dir=cache_root
-        )
-        os.close(descriptor)
-        temporary = Path(temporary_name)
         try:
-            downloader(selected.url, temporary)
-            actual = sha256_file(temporary)
-            if actual != selected.sha256:
-                raise RuntimeAcquisitionError(
-                    "uv artifact SHA-256 mismatch: "
-                    f"expected {selected.sha256}, received {actual}"
-                )
-            os.replace(temporary, cached_archive)
-        finally:
-            temporary.unlink(missing_ok=True)
-    executable = _extract_uv(cached_archive, uv_root, selected)
-    verify_uv(executable, runner=runner)
-    return executable
+            verify_uv(executable, runner=runner)
+        except RuntimeAcquisitionError:
+            invalid_backup = _quarantine_runtime_directory(uv_root)
+        else:
+            return executable.resolve()
+    elif uv_root.exists():
+        invalid_backup = _quarantine_runtime_directory(uv_root)
+
+    try:
+        cache_root.mkdir(parents=True, exist_ok=True)
+        cached_archive = cache_root / selected.archive_name
+        if not cached_archive.is_file() or sha256_file(cached_archive) != selected.sha256:
+            descriptor, temporary_name = tempfile.mkstemp(
+                prefix=f".{selected.archive_name}.", suffix=".download", dir=cache_root
+            )
+            os.close(descriptor)
+            temporary = Path(temporary_name)
+            try:
+                downloader(selected.url, temporary)
+                actual = sha256_file(temporary)
+                if actual != selected.sha256:
+                    raise RuntimeAcquisitionError(
+                        "uv artifact SHA-256 mismatch: "
+                        f"expected {selected.sha256}, received {actual}"
+                    )
+                os.replace(temporary, cached_archive)
+            finally:
+                temporary.unlink(missing_ok=True)
+        executable = _extract_uv(cached_archive, uv_root, selected)
+        verify_uv(executable, runner=runner)
+    except Exception:
+        _restore_runtime_directory(uv_root, invalid_backup)
+        raise
+    else:
+        if invalid_backup is not None:
+            shutil.rmtree(invalid_backup, ignore_errors=True)
+        return executable
 
 
 def _python_environment(python_root: Path) -> dict[str, str]:
@@ -249,6 +277,7 @@ def acquire_python(
 ) -> Path:
     python_root = runtime_root / "python"
     existing = _python_candidates(python_root)
+    invalid_backup: Path | None = None
     if existing:
         for candidate in existing:
             try:
@@ -256,41 +285,47 @@ def acquire_python(
             except RuntimeAcquisitionError:
                 continue
             return candidate
-        raise RuntimeAcquisitionError(
-            f"App-owned Python directory contains no Python {PYTHON_VERSION} interpreter"
-        )
+        invalid_backup = _quarantine_runtime_directory(python_root)
+    elif python_root.exists():
+        invalid_backup = _quarantine_runtime_directory(python_root)
 
-    python_root.mkdir(parents=True, exist_ok=True)
-    environment = _python_environment(python_root)
-    _run_checked(
-        [
-            uv,
-            "python",
-            "install",
-            PYTHON_VERSION,
-            "--install-dir",
-            python_root,
-            "--no-bin",
-            "--no-registry",
-            "--managed-python",
-        ],
-        runner=runner,
-        environ=environment,
-    )
-    candidates = _python_candidates(python_root)
-    if not candidates:
-        raise RuntimeAcquisitionError(
-            f"uv installed Python but no interpreter was found under {python_root}"
+    try:
+        python_root.mkdir(parents=True, exist_ok=True)
+        environment = _python_environment(python_root)
+        _run_checked(
+            [
+                uv,
+                "python",
+                "install",
+                PYTHON_VERSION,
+                "--install-dir",
+                python_root,
+                "--no-bin",
+                "--no-registry",
+                "--managed-python",
+            ],
+            runner=runner,
+            environ=environment,
         )
-    for candidate in candidates:
-        try:
-            verify_python(candidate, runner=runner)
-        except RuntimeAcquisitionError:
-            continue
-        return candidate
-    raise RuntimeAcquisitionError(
-        f"uv did not install the required Python {PYTHON_VERSION} under {python_root}"
-    )
+        candidates = _python_candidates(python_root)
+        if not candidates:
+            raise RuntimeAcquisitionError(
+                f"uv installed Python but no interpreter was found under {python_root}"
+            )
+        for candidate in candidates:
+            try:
+                verify_python(candidate, runner=runner)
+            except RuntimeAcquisitionError:
+                continue
+            if invalid_backup is not None:
+                shutil.rmtree(invalid_backup, ignore_errors=True)
+            return candidate
+        raise RuntimeAcquisitionError(
+            f"uv did not install the required Python {PYTHON_VERSION} under {python_root}"
+        )
+    except Exception:
+        _restore_runtime_directory(python_root, invalid_backup)
+        raise
 
 
 def acquire_runtimes(

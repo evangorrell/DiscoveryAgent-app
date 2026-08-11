@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import hashlib
+import io
 import json
 import os
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -22,6 +25,8 @@ from manager.discoveryagent_cli.runtime import (
     PYTHON_VERSION,
     UV_APPLE_SILICON_SHA256,
     RuntimePaths,
+    UvArtifact,
+    acquire_python,
     acquire_uv,
     platform_identity,
     uv_artifact_for_platform,
@@ -54,13 +59,37 @@ class DevelopmentBootstrapTests(unittest.TestCase):
         (self.repository / "application" / "backend" / "backend.txt").write_text(
             "backend snapshot\n", encoding="utf-8"
         )
+        frontend_lock = self.repository / "application" / "frontend" / "uv.lock"
+        backend_lock = self.repository / "application" / "backend" / "uv.lock"
+        paperclip_wheel = (
+            self.repository
+            / "application"
+            / "backend"
+            / "vendor"
+            / "gxl_paperclip-0.7.24-py3-none-any.whl"
+        )
+        frontend_lock.write_text("frontend lock\n", encoding="utf-8")
+        backend_lock.write_text("backend lock\n", encoding="utf-8")
+        paperclip_wheel.parent.mkdir()
+        paperclip_wheel.write_bytes(b"paperclip wheel fixture\n")
         manager = self.repository / "manager" / "discoveryagent_cli"
         manager.mkdir(parents=True)
         (manager / "__init__.py").write_text(
             'MANAGER_VERSION = "0.1.0"\n', encoding="utf-8"
         )
+        metadata = fixture_release_metadata()
+        metadata["frontend"]["uv_lock_sha256"] = hashlib.sha256(
+            frontend_lock.read_bytes()
+        ).hexdigest()
+        metadata["backend"]["uv_lock_sha256"] = hashlib.sha256(
+            backend_lock.read_bytes()
+        ).hexdigest()
+        metadata["paperclip"] = {
+            "vendored_wheel": "vendor/gxl_paperclip-0.7.24-py3-none-any.whl",
+            "sha256": hashlib.sha256(paperclip_wheel.read_bytes()).hexdigest(),
+        }
         (self.repository / "release.json").write_text(
-            json.dumps(fixture_release_metadata(), indent=2) + "\n", encoding="utf-8"
+            json.dumps(metadata, indent=2) + "\n", encoding="utf-8"
         )
 
     def acquire(self, runtime_root: Path, _cache_root: Path) -> RuntimePaths:
@@ -277,6 +306,148 @@ class RuntimeAndSyncTests(unittest.TestCase):
                     downloader=bad_download,
                     runner=lambda *_args, **_kwargs: self.fail("must not execute uv"),
                 )
+
+    def test_invalid_owned_uv_runtime_is_repaired_atomically(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_name:
+            root = Path(temporary_name)
+            runtime_root = root / "runtime"
+            cache_root = root / "cache"
+            old_uv = runtime_root / "uv" / "uv"
+            old_uv.parent.mkdir(parents=True)
+            old_uv.write_bytes(b"old uv")
+            archive = cache_root / "fixture.tar.gz"
+            cache_root.mkdir()
+            with tarfile.open(archive, "w:gz") as bundle:
+                payload = b"new uv"
+                member = tarfile.TarInfo("uv-aarch64/uv")
+                member.size = len(payload)
+                member.mode = 0o755
+                bundle.addfile(member, io.BytesIO(payload))
+            artifact = UvArtifact(
+                version="0.11.17",
+                url="https://invalid.example/unused",
+                sha256=hashlib.sha256(archive.read_bytes()).hexdigest(),
+                archive_name=archive.name,
+            )
+
+            def runner(command, **_kwargs):
+                output = (
+                    "uv 0.11.17\n"
+                    if Path(command[0]).read_bytes() == b"new uv"
+                    else "uv 0.1.0\n"
+                )
+                return subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
+
+            repaired = acquire_uv(
+                runtime_root,
+                cache_root,
+                artifact=artifact,
+                downloader=lambda *_args: self.fail("cached artifact must be reused"),
+                runner=runner,
+            )
+            self.assertEqual(repaired.read_bytes(), b"new uv")
+            self.assertFalse(list(runtime_root.glob(".uv.invalid-*")))
+
+    def test_valid_owned_uv_runtime_is_reused_without_download(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_name:
+            root = Path(temporary_name)
+            uv = root / "runtime" / "uv" / "uv"
+            uv.parent.mkdir(parents=True)
+            uv.write_text("existing uv\n", encoding="utf-8")
+
+            def runner(command, **_kwargs):
+                return subprocess.CompletedProcess(
+                    command, 0, stdout="uv 0.11.17\n", stderr=""
+                )
+
+            selected = acquire_uv(
+                root / "runtime",
+                root / "cache",
+                downloader=lambda *_args: self.fail("valid uv must not be downloaded"),
+                runner=runner,
+            )
+            self.assertEqual(selected, uv.resolve())
+
+    def test_failed_uv_repair_restores_previous_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_name:
+            root = Path(temporary_name)
+            runtime_root = root / "runtime"
+            old_uv = runtime_root / "uv" / "uv"
+            old_uv.parent.mkdir(parents=True)
+            old_uv.write_bytes(b"old uv")
+            artifact = UvArtifact(
+                version="0.11.17",
+                url="https://invalid.example/failure",
+                sha256="0" * 64,
+                archive_name="fixture.tar.gz",
+            )
+
+            def runner(command, **_kwargs):
+                return subprocess.CompletedProcess(
+                    command, 0, stdout="uv 0.1.0\n", stderr=""
+                )
+
+            def fail_download(_url: str, _destination: Path) -> None:
+                raise RuntimeAcquisitionError("injected download failure")
+
+            with self.assertRaisesRegex(RuntimeAcquisitionError, "injected"):
+                acquire_uv(
+                    runtime_root,
+                    root / "cache",
+                    artifact=artifact,
+                    downloader=fail_download,
+                    runner=runner,
+                )
+            self.assertEqual(old_uv.read_bytes(), b"old uv")
+            self.assertFalse(list(runtime_root.glob(".uv.invalid-*")))
+
+    def test_wrong_owned_python_runtime_is_repaired(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_name:
+            root = Path(temporary_name)
+            runtime_root = root / "runtime"
+            python = runtime_root / "python" / "managed" / "bin" / "python3.11"
+            python.parent.mkdir(parents=True)
+            python.write_text("old python\n", encoding="utf-8")
+
+            def runner(command, **_kwargs):
+                if command[1:3] == ["python", "install"]:
+                    python.parent.mkdir(parents=True)
+                    python.write_text("new python\n", encoding="utf-8")
+                    return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+                reported = (
+                    "Python 3.11.11\n"
+                    if Path(command[0]).read_text(encoding="utf-8") == "new python\n"
+                    else "Python 3.10.0\n"
+                )
+                return subprocess.CompletedProcess(command, 0, stdout=reported, stderr="")
+
+            repaired = acquire_python(
+                root / "runtime/uv/uv",
+                runtime_root,
+                runner=runner,
+            )
+            self.assertEqual(repaired.read_text(encoding="utf-8"), "new python\n")
+            self.assertFalse(list(runtime_root.glob(".python.invalid-*")))
+
+    def test_valid_owned_python_runtime_is_reused_without_install(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_name:
+            root = Path(temporary_name)
+            python = root / "runtime/python/managed/bin/python3.11"
+            python.parent.mkdir(parents=True)
+            python.write_text("existing python\n", encoding="utf-8")
+
+            def runner(command, **_kwargs):
+                self.assertEqual(command[1], "--version")
+                return subprocess.CompletedProcess(
+                    command, 0, stdout="Python 3.11.11\n", stderr=""
+                )
+
+            selected = acquire_python(
+                root / "runtime/uv/uv",
+                root / "runtime",
+                runner=runner,
+            )
+            self.assertEqual(selected, python.resolve())
 
     def test_sync_uses_lock_check_then_frozen_noneditable_install(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_name:
