@@ -72,6 +72,11 @@
   const markdownDisplayUrl = (file) => '/api/round_workspace_markdown?round=' + encodeURIComponent(file.round)
     + (file.sourceKind==='external'?'&source=' + encodeURIComponent(file.source || ''):'') + '&path=' + encodeURIComponent(file.artifactPath || file.path || '') + projectQuery();
   const node = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
+  function disclosureCaret(tag = 'span', className = 'rw-tree-caret') {
+    const caret = node(tag, className);
+    caret.innerHTML = '<svg class="rw-tree-caret-icon" viewBox="0 0 12 12" width="10" height="10" aria-hidden="true" focusable="false"><path d="M4 2.5 7.5 6 4 9.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    return caret;
+  }
   function formatFileSize(bytes){if(!Number.isFinite(bytes))return'';if(bytes<1024)return bytes+' B';if(bytes<1048576)return Math.round(bytes/1024)+' KB';return(bytes/1048576).toFixed(1)+' MB';}
   function entryTooltip(item,owner){const location=owner.sourceScope==='code'?'Code':'Round '+owner.round_index;const bits=[location+' / '+(item.path||item.name||'')];bits.push(item.type==='dir'?'Folder':((fileExt(item.name).slice(1)||'file').toUpperCase()+' file'));if(item.type==='file'&&Number.isFinite(item.size))bits.push(formatFileSize(item.size));if(item.last_modified){const date=new Date(item.last_modified*1000);if(!isNaN(date.getTime()))bits.push('Modified '+date.toLocaleString());}return bits.join('\n');}
   function visibleResearchTreeNode(item){if(!item||item.visibility!=='research')return null;if(item.type!=='dir')return item;const children=(item.children||[]).map(visibleResearchTreeNode).filter(Boolean);if(!children.length)return null;return{...item,children};}
@@ -93,7 +98,7 @@
     row.append(disclosure);
     if (item.type === 'dir') {
       const open = state.expanded.has(key); wrap.classList.toggle('is-collapsed', !open);
-      row.type = 'button'; row.setAttribute('aria-expanded', String(open)); disclosure.append(node('span', 'rw-tree-caret', '>'));
+      row.type = 'button'; row.setAttribute('aria-expanded', String(open)); disclosure.append(disclosureCaret());
       row.addEventListener('click', () => { open ? state.expanded.delete(key) : state.expanded.add(key); renderExplorer(); });
     } else {
       disclosure.setAttribute('aria-hidden','true');if(item.primary_output){disclosure.classList.add('rw-primary-star');disclosure.innerHTML='<svg viewBox="0 0 16 16" width="10" height="10" focusable="false"><path d="M8 1.5 9.9 5.35l4.25.62-3.08 3 .73 4.23L8 11.2l-3.8 2 .73-4.23-3.08-3 4.25-.62L8 1.5Z" fill="currentColor"/></svg>';}row.draggable = true;
@@ -116,7 +121,7 @@
       const key = 'round:' + round.round_index; const open = state.expanded.has(key);
       section.classList.toggle('is-collapsed', !open);
       const header = node('div', 'rw-round-header');
-      const caret = node('button', 'v2-round-row-leading rw-round-caret rw-tree-caret', '>'); caret.type = 'button'; caret.setAttribute('aria-label', 'Toggle ' + round.label);
+      const caret = disclosureCaret('button', 'v2-round-row-leading rw-round-caret rw-tree-caret'); caret.type = 'button'; caret.setAttribute('aria-label', 'Toggle ' + round.label);
       caret.addEventListener('click', (e) => { e.stopPropagation(); open ? state.expanded.delete(key) : state.expanded.add(key); renderExplorer(); });
       const select = node('button', 'rw-round-select'); select.type = 'button'; select.append(node('span', 'v2-round-row-title rw-round-title', round.label));
       const rawStatus=round.status||'unknown';const status=node('span','v2-round-row-status rw-round-status '+rawStatus);
@@ -132,7 +137,7 @@
       const tree = node('div', 'rw-file-tree');(round.tree && round.tree.children || []).map(visibleResearchTreeNode).filter(Boolean).forEach(c => tree.append(renderTreeNode(c, round, 0))); section.append(tree); els.list.append(section);
     });
     const codeChildren=(state.codeTree&&state.codeTree.children||[]).map(visibleResearchTreeNode).filter(Boolean);
-    if(codeChildren.length){const owner={sourceScope:'code',label:'Code'};const section=node('section','rw-round-section rw-code-section');const key='code:root';const open=state.expanded.has(key);section.classList.toggle('is-collapsed',!open);const header=node('div','rw-round-header');const caret=node('button','v2-round-row-leading rw-round-caret rw-tree-caret','>');caret.type='button';caret.setAttribute('aria-label','Toggle Code');caret.addEventListener('click',()=>{open?state.expanded.delete(key):state.expanded.add(key);renderExplorer();});const title=node('button','rw-round-select');title.type='button';title.append(node('span','v2-round-row-title rw-round-title','Code'));title.addEventListener('click',()=>{open?state.expanded.delete(key):state.expanded.add(key);renderExplorer();});header.append(caret,title);section.append(header);const tree=node('div','rw-file-tree');codeChildren.forEach(child=>tree.append(renderTreeNode(child,owner,0)));section.append(tree);els.list.append(section);}
+    if(codeChildren.length){const owner={sourceScope:'code',label:'Code'};const section=node('section','rw-round-section rw-code-section');const key='code:root';const open=state.expanded.has(key);section.classList.toggle('is-collapsed',!open);const header=node('div','rw-round-header');const caret=disclosureCaret('button','v2-round-row-leading rw-round-caret rw-tree-caret');caret.type='button';caret.setAttribute('aria-label','Toggle Code');caret.addEventListener('click',()=>{open?state.expanded.delete(key):state.expanded.add(key);renderExplorer();});const title=node('button','rw-round-select');title.type='button';title.append(node('span','v2-round-row-title rw-round-title','Code'));title.addEventListener('click',()=>{open?state.expanded.delete(key):state.expanded.add(key);renderExplorer();});header.append(caret,title);section.append(header);const tree=node('div','rw-file-tree');codeChildren.forEach(child=>tree.append(renderTreeNode(child,owner,0)));section.append(tree);els.list.append(section);}
   }
 
   async function loadExplorer(options) {

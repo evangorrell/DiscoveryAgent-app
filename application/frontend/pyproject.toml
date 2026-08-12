@@ -28,5 +28,8 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["da_selection_ui", "AIR"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"da_selection_ui/guides/AUDIT_UI.md" = "da_selection_ui/guides/AUDIT_UI.md"
+
 [tool.uv.sources]
 AIR = { path = "./AIR", editable = true}

@@ -77,6 +77,7 @@ from .project_storage import (
     new_project_id, write_project_metadata,
 )
 from .legacy_project_migration import migrate_checkout_legacy_store
+from .guide_resources import read_audit_guide_markdown
 from .utils.memory_monitor import (
     get_memory_mb,
     get_memory_info,
@@ -10243,13 +10244,7 @@ def project_audit_agent(project_slug):
             'research_paper_pdf', project=project['url_slug'],
         )
 
-    audit_guide_html = None
-    audit_guide_path = Path(__file__).resolve().parent.parent / 'guides' / 'AUDIT_UI.md'
-    if audit_guide_path.is_file():
-        try:
-            audit_guide_html = render_markdown_to_html(audit_guide_path.read_text(encoding='utf-8'))
-        except Exception:
-            audit_guide_html = None
+    audit_guide_html = _load_audit_guide_html()
 
     _write_interaction_log('audit_session_start', {
         'checkpoint_dir': checkpoint_dir,
@@ -11121,6 +11116,17 @@ def render_markdown_to_html(md_text: str) -> str:
         return "\n".join(paragraphs)
 
 
+def _load_audit_guide_html() -> str | None:
+    """Render the packaged Audit Agent guide without making routes fragile."""
+    guide_markdown = read_audit_guide_markdown()
+    if guide_markdown is None:
+        return None
+    try:
+        return render_markdown_to_html(guide_markdown)
+    except Exception:
+        return None
+
+
 def _path_within_root(candidate: Path, root: Path) -> bool:
     try:
         candidate.resolve().relative_to(root.resolve())
@@ -11735,13 +11741,7 @@ def audit_home():
     })
     log_event('audit_session_start', {'checkpoint_dir': checkpoint_dir})
 
-    audit_guide_html = None
-    audit_guide_path = Path(__file__).resolve().parent.parent / 'guides' / 'AUDIT_UI.md'
-    if audit_guide_path.is_file():
-        try:
-            audit_guide_html = render_markdown_to_html(audit_guide_path.read_text(encoding='utf-8'))
-        except Exception:
-            audit_guide_html = None
+    audit_guide_html = _load_audit_guide_html()
 
     return render_template(
         'audit_home.html',

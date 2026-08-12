@@ -1861,7 +1861,7 @@ def test_report_uses_standard_viewer_and_activity_action_only():
 
     assert "item.primary_output" in js and "rw-primary-star" in js
     assert "const disclosure = node('span', 'rw-tree-disclosure-slot')" in js
-    assert "disclosure.append(node('span', 'rw-tree-caret', '>'))" in js
+    assert "disclosure.append(disclosureCaret())" in js
     assert "disclosure.setAttribute('aria-hidden','true')" in js
     assert "<svg viewBox=\"0 0 16 16\" width=\"10\" height=\"10\"" in js
     assert ".rw-tree-node.is-file>.rw-tree-row{display:flex;align-items:center;height:25px;min-height:25px;line-height:16px}" in css
@@ -2707,6 +2707,12 @@ def test_workspace_keeps_disclosure_column_while_studio_title_aligns_to_caret_ax
     assert "v2-round-row-leading rw-round-caret rw-tree-caret" in workspace_js
     assert "v2-round-row-title rw-round-title" in workspace_js
     assert "v2-round-row-status rw-round-status" in workspace_js
+    assert "const caret = node(tag, className);" in workspace_js
+    assert 'class="rw-tree-caret-icon"' in workspace_js
+    assert ".rw-tree-caret-icon{display:block;flex:0 0 auto;width:10px;height:10px" in workspace_css
+    assert ".rw-tree-caret{display:inline-flex;align-items:center;justify-content:center;flex:0 0 12px;width:12px}" in workspace_css
+    assert ".is-collapsed>.rw-round-header .rw-tree-caret-icon" in workspace_css
+    assert ".rw-tree-caret{display:inline-flex;align-items:center;justify-content:center;flex:0 0 12px;width:12px;transform" not in workspace_css
     assert "v2-round-row-leading hs-round-leading" not in studio_js
     assert "v2-round-row-title hs-round-item-name" in studio_js
     assert "v2-round-row-status hs-round-item-trailing" in studio_js
