@@ -22,6 +22,21 @@ opens Paperclip browser sign-in once if needed. Later, normal use is simply:
 discoveryagent
 ```
 
+The installed lifecycle commands are:
+
+```bash
+discoveryagent
+discoveryagent launch
+discoveryagent version
+discoveryagent update
+discoveryagent uninstall
+```
+
+Updates use verified immutable release artifacts and will not run while a
+research round is active. Uninstall removes the application, manager, owned
+runtimes, and recorded command while preserving projects under Application
+Support and Paperclip credentials under `~/.paperclip`.
+
 The terminal that owns the frontend can stop it with Ctrl-C. The installer
 permanently configures future login shells when necessary; the inline `export`
 above makes the command available immediately in the terminal running the
@@ -108,10 +123,9 @@ shim are complete.
 python3 -m unittest discover -s tests -v
 ```
 
-Update and uninstall are intentionally deferred to later phases. The public
-shell bootstrap delegates installation to the same production engine used by
-the local-release installer; development bootstrap and manager-refresh tools
-remain maintainer-facing.
+The public shell bootstrap and `discoveryagent update` delegate installation to
+the same production engine used by the local-release installer; development
+bootstrap and manager-refresh tools remain maintainer-facing.
 
 ## Build the public install artifact
 
@@ -120,6 +134,17 @@ machine-readable manifest with:
 
 ```bash
 python3 tools/build_install_artifact.py --output-dir /absolute/output/directory
+```
+
+Build the deterministic stable update-channel manifest from that artifact
+manifest without duplicating its hash:
+
+```bash
+python3 tools/build_update_manifest.py \
+  --artifact-manifest /absolute/output/discoveryagent-<release>-macos-arm64.tar.gz.json \
+  --release-tag <immutable-github-release-tag> \
+  --artifact-url https://github.com/owencqueen/DiscoveryAgent-app/releases/download/<tag>/<artifact> \
+  --output /absolute/output/discoveryagent-update.json
 ```
 
 Before publication, set `RELEASE_TAG` in `install.sh`, publish the generated

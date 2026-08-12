@@ -27,3 +27,19 @@ class BootstrapError(ManagerError):
 
 class LaunchRuntimeError(ManagerError):
     """The packaged frontend could not be launched or reached safely."""
+
+
+class MaintenanceError(ManagerError):
+    """Update or uninstall could not proceed safely."""
+
+
+class ActiveResearchError(MaintenanceError):
+    """A live or potentially live research round prevents maintenance."""
+
+
+class UpdateError(MaintenanceError):
+    """An installed application update failed safely."""
+
+
+class UninstallError(MaintenanceError):
+    """The installed application could not be removed safely."""

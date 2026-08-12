@@ -4,10 +4,10 @@ set -eu
 umask 077
 
 RELEASE_TAG="REPLACE_WITH_RELEASE_TAG"
-RELEASE_ID="dev-f01931978b4c-d547cedabc0d"
+RELEASE_ID="dev-5a87ee0d0270-d547cedabc0d"
 ARTIFACT_NAME="discoveryagent-${RELEASE_ID}-macos-arm64.tar.gz"
 PUBLIC_ARTIFACT_URL="https://github.com/owencqueen/DiscoveryAgent-app/releases/download/${RELEASE_TAG}/${ARTIFACT_NAME}"
-PUBLIC_ARTIFACT_SHA256="8be410d18b8f272a3445709b6b4bb4c386cd185c50624b57886cfd80f6ad3256"
+PUBLIC_ARTIFACT_SHA256="fdbfe2bd7af2230c75052148c5ebfb48a15a252d6c262df42f4022d647fbe579"
 UV_URL="https://releases.astral.sh/github/uv/releases/download/0.11.17/uv-aarch64-apple-darwin.tar.gz"
 UV_SHA256="2a162f6b90ff3691a2f9cae1622e066a3ce592e110f66670cdcc841324b28226"
 

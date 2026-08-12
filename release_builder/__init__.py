@@ -11,6 +11,7 @@ from .install_artifact import (
     build_install_artifact,
     verify_install_artifact,
 )
+from .update_manifest import UpdateManifestBuildError, build_update_manifest
 
 __all__ = [
     "InstallArtifact",
@@ -19,5 +20,7 @@ __all__ = [
     "SourceRequest",
     "build_install_artifact",
     "build_release",
+    "build_update_manifest",
+    "UpdateManifestBuildError",
     "verify_install_artifact",
 ]

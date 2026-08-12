@@ -252,3 +252,107 @@ def configure_cli_path(
         previous_mode=previous_mode,
         applied=True,
     )
+
+
+@dataclass(frozen=True)
+class PathRemovalResult:
+    removed: bool
+    warning: str | None = None
+
+
+@dataclass
+class PreparedPathRemoval:
+    profile: Path | None = None
+    expected: Path | None = None
+    replacement: Path | None = None
+    warning: str | None = None
+
+    def cleanup(self) -> None:
+        for path in (self.expected, self.replacement):
+            if path is not None:
+                path.unlink(missing_ok=True)
+
+
+def _prepared_profile_file(profile: Path, contents: bytes, *, mode: int, label: str) -> Path:
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{profile.name}.discoveryagent-{label}.", dir=profile.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        os.fchmod(descriptor, mode)
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(contents)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+    return temporary
+
+
+def prepare_managed_cli_path_removal(
+    cli_state: CliState,
+    *,
+    uid: int | None = None,
+) -> PreparedPathRemoval:
+    """Prepare same-filesystem profile files without changing the live profile."""
+    if not cli_state.path_change_added:
+        return PreparedPathRemoval()
+    if not cli_state.modified_profile:
+        return PreparedPathRemoval(
+            warning="the managed PATH entry was left in place because its profile is not recorded"
+        )
+    profile = Path(cli_state.modified_profile)
+    selected_uid = os.getuid() if uid is None else uid
+    try:
+        contents = _validated_profile_contents(profile, uid=selected_uid)
+        if not _has_exact_managed_stanza(contents, profile):
+            return PreparedPathRemoval(
+                warning=f"the managed PATH entry was left in place because {profile} changed"
+            )
+        mode = stat.S_IMODE(profile.stat().st_mode)
+        expected = _prepared_profile_file(profile, contents, mode=mode, label="expected")
+        try:
+            replacement = _prepared_profile_file(
+                profile,
+                contents.replace(PATH_STANZA, b"", 1),
+                mode=mode,
+                label="replacement",
+            )
+        except Exception:
+            expected.unlink(missing_ok=True)
+            raise
+    except (BootstrapError, OSError) as exc:
+        return PreparedPathRemoval(
+            warning=f"the managed PATH entry was left in place: {exc}"
+        )
+    return PreparedPathRemoval(profile, expected, replacement)
+
+
+def remove_managed_cli_path(
+    cli_state: CliState,
+    *,
+    uid: int | None = None,
+) -> PathRemovalResult:
+    """Remove only the exact recorded stanza, preserving unsafe profiles."""
+    prepared = prepare_managed_cli_path_removal(cli_state, uid=uid)
+    if prepared.warning:
+        return PathRemovalResult(False, prepared.warning)
+    if prepared.profile is None or prepared.expected is None or prepared.replacement is None:
+        return PathRemovalResult(False)
+    try:
+        if prepared.profile.read_bytes() != prepared.expected.read_bytes():
+            return PathRemovalResult(
+                False,
+                f"the managed PATH entry was left in place because {prepared.profile} changed",
+            )
+        os.replace(prepared.replacement, prepared.profile)
+        prepared.replacement = None
+    except OSError as exc:
+        return PathRemovalResult(
+            False,
+            f"the managed PATH entry was left in place: {exc}",
+        )
+    finally:
+        prepared.cleanup()
+    return PathRemovalResult(True)
