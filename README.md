@@ -1,154 +1,189 @@
 # DiscoveryAgent
 
-DiscoveryAgent is a local application for autonomous scientific research.
+DiscoveryAgent is a local application for semi-autonomous scientific research. Scientists define the research direction while a coordinated team of AI agents investigates questions, analyzes evidence, and develops research hypotheses.
 
-## Install on Apple Silicon macOS
+## Requirements
 
-The public release URL is centralized in this command. Replace
-`REPLACE_WITH_RELEASE_TAG` with the published immutable release tag when the
-first release is cut:
+DiscoveryAgent currently supports **Apple Silicon Macs**.
+
+To use DiscoveryAgent, you need:
+
+- an Anthropic API key
+- a Paperclip account
+- an internet connection
+- access to the DiscoveryAgent GitHub repository
+- GitHub CLI (`gh`), authenticated with an account that has access to this repository
+
+DiscoveryAgent installs and manages its own Python runtime and application dependencies. You do not need to separately install Python, uv, Node.js, npm, or Claude Code.
+
+## Install
+
+DiscoveryAgent is currently distributed through a private GitHub repository. Authenticate GitHub CLI on your Mac before installing:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/owencqueen/DiscoveryAgent-app/REPLACE_WITH_RELEASE_TAG/install.sh | sh \
-  && export PATH="$HOME/.local/bin:$PATH" \
-  && discoveryagent
+gh auth login
 ```
 
-DiscoveryAgent installs entirely for the current user. On first launch it
-securely asks for an Anthropic API key if one is not already exported, then
-opens Paperclip browser sign-in once if needed. Later, normal use is simply:
+If you are already authenticated, you can verify access with:
+
+```bash
+gh auth status
+```
+
+Then install and launch DiscoveryAgent:
+
+```bash
+(installer_dir=$(mktemp -d) && trap 'rm -rf "$installer_dir"' EXIT && gh release download --repo evangorrell/DiscoveryAgent-app --pattern install.sh --dir "$installer_dir" && sh "$installer_dir/install.sh") && "$HOME/.local/bin/discoveryagent"
+```
+
+The installer downloads DiscoveryAgent, verifies the release, and installs everything required to run it locally on your Mac.
+
+## First launch
+
+The install command launches DiscoveryAgent automatically after installation.
+
+### Anthropic API key
+
+DiscoveryAgent requires an Anthropic API key to run its research agents.
+
+If `ANTHROPIC_API_KEY` is already available in your environment, DiscoveryAgent uses it automatically.
+
+Otherwise, DiscoveryAgent securely prompts you to enter your API key in Terminal.
+
+A key entered through this prompt is available only to the current DiscoveryAgent process and is not persisted to disk by DiscoveryAgent. You will therefore be prompted again on a future fresh launch unless `ANTHROPIC_API_KEY` is already configured in your environment.
+
+### Paperclip
+
+DiscoveryAgent uses Paperclip for deep research and literature retrieval.
+
+If Paperclip has not previously been authenticated on your Mac, DiscoveryAgent guides you through the Paperclip login process on first launch.
+
+Paperclip manages and persists its own authentication credentials. Once authenticated, subsequent DiscoveryAgent launches normally reuse the existing Paperclip login.
+
+### Opening DiscoveryAgent
+
+After authentication is complete, DiscoveryAgent starts locally and automatically opens the application in your browser.
+
+Keep the Terminal window open while using DiscoveryAgent.
+
+To stop the local DiscoveryAgent frontend, return to Terminal and press:
+
+```text
+Ctrl+C
+```
+
+## Launch DiscoveryAgent
+
+After installation, start DiscoveryAgent at any time with:
 
 ```bash
 discoveryagent
 ```
 
-The installed lifecycle commands are:
+This is equivalent to:
 
 ```bash
-discoveryagent
 discoveryagent launch
-discoveryagent version
+```
+
+If an Anthropic API key is not already available in your environment, DiscoveryAgent prompts for it before launching.
+
+## Commands
+
+| Command | Description |
+| --- | --- |
+| `discoveryagent` | Launch DiscoveryAgent |
+| `discoveryagent launch` | Launch DiscoveryAgent |
+| `discoveryagent version` | Show the installed DiscoveryAgent version |
+| `discoveryagent update` | Update DiscoveryAgent to the latest available release |
+| `discoveryagent uninstall` | Uninstall DiscoveryAgent |
+
+DiscoveryAgent refuses an update or uninstall while an active research round is running.
+
+## Project data
+
+DiscoveryAgent stores research projects separately from the installed application.
+
+On macOS, project data is stored at:
+
+```text
+~/Library/Application Support/DiscoveryAgent
+```
+
+Updating or uninstalling DiscoveryAgent does not delete this project data.
+
+## Update
+
+To update DiscoveryAgent:
+
+```bash
 discoveryagent update
+```
+
+DiscoveryAgent installs the new release while preserving existing research projects.
+
+## Uninstall
+
+To uninstall DiscoveryAgent:
+
+```bash
 discoveryagent uninstall
 ```
 
-Updates use verified immutable release artifacts and will not run while a
-research round is active. Uninstall removes the application, manager, owned
-runtimes, and recorded command while preserving projects under Application
-Support and Paperclip credentials under `~/.paperclip`.
+Uninstalling removes the DiscoveryAgent application, its managed runtime, and the `discoveryagent` command.
 
-The terminal that owns the frontend can stop it with Ctrl-C. The installer
-permanently configures future login shells when necessary; the inline `export`
-above makes the command available immediately in the terminal running the
-installation.
+Research projects are preserved.
 
-## Distribution architecture
+Paperclip authentication credentials are also preserved because they are managed separately by Paperclip.
 
-This is the distribution and release repository for DiscoveryAgent. The
-standalone frontend and backend repositories remain the development sources of
-truth. This repository records one deterministic, committed source pair under:
+## Troubleshooting
 
-* `application/frontend/` — frontend Git snapshot
-* `application/backend/` — backend Git snapshot
-* `release.json` — deterministic source and integrity metadata
-* `release_builder/` and `tools/build_release.py` — snapshot tooling
-* `manager/discoveryagent_cli/` — standard-library installed-application manager
+### GitHub authentication
 
-## Build a development snapshot
-
-The builder reads Git objects, never repository working trees. Both selected
-commits must exist locally and be reachable from an already-known `origin/*`
-remote-tracking ref.
+If installation cannot access the DiscoveryAgent release, verify that GitHub CLI is authenticated with an account that has access to this repository:
 
 ```bash
-python3 tools/build_release.py \
-  --mode development \
-  --frontend-repo /path/to/DA_selection_ui \
-  --frontend-sha <commit> \
-  --backend-repo /path/to/discoveryagent \
-  --backend-sha <commit>
+gh auth status
 ```
 
-Production mode applies the additional guard that each selected commit must be
-an ancestor of its repository's already-known `refs/remotes/origin/main`:
+If necessary:
 
 ```bash
-python3 tools/build_release.py --mode production ...
+gh auth login
 ```
 
-The builder does not fetch, checkout, switch branches, stash, install
-dependencies, or modify either source repository.
+Then retry the installation command.
 
-## Manager foundation
+### `discoveryagent: command not found`
 
-The manager is intentionally separate from both application snapshots. At
-runtime it derives an explicit installation root containing `state.json`,
-`manager/`, `runtime/`, `releases/`, and `cache/`. `state.json` selects a
-versioned release; the manager never uses a `current` symlink or falls back to
-the development repository's top-level `application/` tree.
+The installer configures your shell so that `discoveryagent` is available in future Terminal sessions.
 
-The stable manager validates the selected release and its app-owned runtime,
-launches or reuses the packaged frontend, and performs first-use Anthropic and
-Paperclip onboarding before a new frontend starts. Anthropic keys inherited by
-the command are used silently; securely prompted keys remain only in that
-process tree. Paperclip continues to own its saved OAuth credentials under
-`~/.paperclip`, so configured users do not need a recurring network check or
-login on routine launches.
-
-## Exercise the production installer engine
-
-The maintainer-facing installer builds a complete local installation from only
-the committed `application/`, `release.json`, and `manager/` payload:
+If necessary, open a new Terminal window and run:
 
 ```bash
-python3 tools/install_local_release.py
+discoveryagent
 ```
 
-On macOS its defaults are `~/.local/share/discoveryagent` for the application,
-`~/.local/bin/discoveryagent` for the command, and
-`~/Library/Application Support/DiscoveryAgent` for durable project data. Tests
-can supply absolute `--install-root`, `--cli-path`, and `--data-root` paths.
-Canonical installation configures future-shell PATH when needed; custom CLI
-paths remain maintainer-only. Installation does not launch the frontend or
-perform authentication.
+### DiscoveryAgent asks for my Anthropic API key again
 
-Completed releases are immutable. Reinstalling the same release validates and
-reuses it; installing a different release builds it beside prior releases and
-publishes the new active release only after its environments, manager, and CLI
-shim are complete.
+This is expected if the key was entered through DiscoveryAgent's secure prompt.
 
-## Test the distribution tooling
+DiscoveryAgent does not persist a prompted Anthropic API key. Enter it again when prompted, or independently configure `ANTHROPIC_API_KEY` in your environment.
 
-```bash
-python3 -m unittest discover -s tests -v
+### Paperclip asks me to authenticate
+
+Complete the Paperclip authentication flow shown in Terminal. Once authentication succeeds, Paperclip normally reuses its saved credentials on subsequent launches.
+
+### Stop DiscoveryAgent
+
+Return to the Terminal window in which DiscoveryAgent is running and press:
+
+```text
+Ctrl+C
 ```
 
-The public shell bootstrap and `discoveryagent update` delegate installation to
-the same production engine used by the local-release installer; development
-bootstrap and manager-refresh tools remain maintainer-facing.
+## Development
 
-## Build the public install artifact
+This repository packages DiscoveryAgent for installation and distribution.
 
-Build the deterministic macOS arm64 GitHub Release asset, checksum, and
-machine-readable manifest with:
-
-```bash
-python3 tools/build_install_artifact.py --output-dir /absolute/output/directory
-```
-
-Build the deterministic stable update-channel manifest from that artifact
-manifest without duplicating its hash:
-
-```bash
-python3 tools/build_update_manifest.py \
-  --artifact-manifest /absolute/output/discoveryagent-<release>-macos-arm64.tar.gz.json \
-  --release-tag <immutable-github-release-tag> \
-  --artifact-url https://github.com/owencqueen/DiscoveryAgent-app/releases/download/<tag>/<artifact> \
-  --output /absolute/output/discoveryagent-update.json
-```
-
-Before publication, set `RELEASE_TAG` in `install.sh`, publish the generated
-archive under that immutable GitHub Release tag, verify its committed
-`PUBLIC_ARTIFACT_SHA256`, and replace the matching README install tag. The shell
-bootstrap requires only standard macOS utilities; it downloads its own pinned
-uv and Python before handing off to the production installer engine.
+The DiscoveryAgent application is composed from versioned frontend and research-engine releases and is installed locally on the user's machine.

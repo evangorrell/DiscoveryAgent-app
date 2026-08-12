@@ -9,12 +9,13 @@ from typing import Any, Mapping
 from urllib.parse import unquote, urlsplit
 
 from .errors import UpdateError
+from .github_releases import GITHUB_HOST, GITHUB_RELEASE_REPOSITORY
 from .paths import validate_release_id
 
 
 UPDATE_SCHEMA_VERSION = 1
 PUBLIC_UPDATE_MANIFEST_URL = (
-    "https://github.com/owencqueen/DiscoveryAgent-app/releases/latest/download/"
+    f"https://{GITHUB_HOST}/{GITHUB_RELEASE_REPOSITORY}/releases/latest/download/"
     "discoveryagent-update.json"
 )
 INTERNAL_UPDATE_MANIFEST_URL_ENV = "DISCOVERYAGENT_INTERNAL_UPDATE_MANIFEST_URL"
@@ -57,7 +58,7 @@ def _string(value: Any, label: str) -> str:
 
 def _validate_immutable_url(url: str, *, tag: str, filename: str) -> None:
     parsed = urlsplit(url)
-    if parsed.scheme != "https" or parsed.netloc != "github.com":
+    if parsed.scheme != "https" or parsed.netloc != GITHUB_HOST:
         raise UpdateError("Production update artifacts must use GitHub HTTPS URLs")
     if parsed.query or parsed.fragment or unquote(parsed.path).split("/")[-3:] != [
         "download",

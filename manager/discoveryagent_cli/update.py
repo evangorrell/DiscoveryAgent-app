@@ -16,6 +16,7 @@ from pathlib import Path, PurePosixPath
 from typing import Callable, Mapping, TextIO
 
 from .errors import ManagerError, UpdateError
+from .github_releases import GITHUB_HOST, GitHubReleaseAsset, github_release_asset
 from .installation import ReleaseMetadata, load_active_release
 from .installer import validate_packaged_payload
 from .maintenance import require_idle_research, stop_idle_frontend
@@ -33,13 +34,97 @@ MAXIMUM_MANIFEST_BYTES = 1024 * 1024
 ARTIFACT_ROOT = PurePosixPath("discoveryagent-install")
 
 
+def _github_cli() -> str:
+    executable = shutil.which("gh")
+    if executable is None:
+        raise UpdateError(
+            "Private release access requires GitHub CLI. Install it, then run: gh auth login"
+        )
+    try:
+        authentication = subprocess.run(
+            [executable, "auth", "status", "--hostname", GITHUB_HOST],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        raise UpdateError(
+            "Could not run GitHub CLI. Verify it is installed, then run: gh auth login"
+        ) from exc
+    if authentication.returncode != 0:
+        raise UpdateError("GitHub CLI is not authenticated. Run: gh auth login")
+    return executable
+
+
+def _github_download_command(
+    executable: str,
+    asset: GitHubReleaseAsset,
+    *,
+    output: str,
+) -> list[str]:
+    command = [executable, "release", "download"]
+    if asset.tag is not None:
+        command.append(asset.tag)
+    command.extend(
+        [
+            "--repo",
+            asset.repository,
+            "--pattern",
+            asset.filename,
+            "--output",
+            output,
+        ]
+    )
+    return command
+
+
+def _private_release_bytes(asset: GitHubReleaseAsset) -> bytes:
+    executable = _github_cli()
+    try:
+        result = subprocess.run(
+            _github_download_command(executable, asset, output="-"),
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        raise UpdateError(
+            "Could not run GitHub CLI to download the private DiscoveryAgent release"
+        ) from exc
+    if result.returncode != 0:
+        raise UpdateError("Could not download the private DiscoveryAgent release with GitHub CLI")
+    return result.stdout
+
+
+def _private_release_file(asset: GitHubReleaseAsset, destination: Path) -> None:
+    executable = _github_cli()
+    try:
+        result = subprocess.run(
+            _github_download_command(executable, asset, output=str(destination)),
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        destination.unlink(missing_ok=True)
+        raise UpdateError(
+            "Could not run GitHub CLI to download the private DiscoveryAgent release"
+        ) from exc
+    if result.returncode != 0 or not destination.is_file():
+        destination.unlink(missing_ok=True)
+        raise UpdateError("Could not download the private DiscoveryAgent release with GitHub CLI")
+
+
 def fetch_manifest(url: str) -> bytes:
     request = urllib.request.Request(url, headers={"User-Agent": "DiscoveryAgent-manager"})
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
             contents = response.read(MAXIMUM_MANIFEST_BYTES + 1)
     except (OSError, urllib.error.URLError) as exc:
-        raise UpdateError(f"Could not download the update manifest: {exc}") from exc
+        asset = github_release_asset(url)
+        if asset is None:
+            raise UpdateError(f"Could not download the update manifest: {exc}") from exc
+        contents = _private_release_bytes(asset)
     if len(contents) > MAXIMUM_MANIFEST_BYTES:
         raise UpdateError("Update manifest is unexpectedly large")
     return contents
@@ -57,7 +142,23 @@ def download_artifact(url: str, destination: Path) -> str:
                 digest.update(chunk)
                 stream.write(chunk)
     except (OSError, urllib.error.URLError) as exc:
-        raise UpdateError(f"Could not download the DiscoveryAgent update: {exc}") from exc
+        destination.unlink(missing_ok=True)
+        asset = github_release_asset(url)
+        if asset is None:
+            raise UpdateError(f"Could not download the DiscoveryAgent update: {exc}") from exc
+        _private_release_file(asset, destination)
+        digest = hashlib.sha256()
+        try:
+            with destination.open("rb") as stream:
+                while True:
+                    chunk = stream.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+        except OSError as read_error:
+            raise UpdateError(
+                f"Could not verify the downloaded DiscoveryAgent update: {read_error}"
+            ) from read_error
     return digest.hexdigest()
 
 

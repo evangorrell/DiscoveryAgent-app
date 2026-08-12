@@ -32,7 +32,7 @@ class UpdateManifestBuilderTests(unittest.TestCase):
         self.temporary.cleanup()
 
     def test_output_is_deterministic_exact_and_machine_path_free(self) -> None:
-        url = f"https://github.com/owencqueen/DiscoveryAgent-app/releases/download/v1.0.0/{self.filename}"
+        url = f"https://github.com/evangorrell/DiscoveryAgent-app/releases/download/v1.0.0/{self.filename}"
         first = build_update_manifest(
             self.artifact,
             release_tag="v1.0.0",
