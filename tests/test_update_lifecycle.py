@@ -6,7 +6,6 @@ import json
 import tarfile
 import tempfile
 import unittest
-import urllib.error
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,9 +16,7 @@ from manager.discoveryagent_cli.state import InstalledReleaseState, load_state, 
 from manager.discoveryagent_cli.testing import create_fake_installation
 from manager.discoveryagent_cli.update import (
     UpdateDependencies,
-    download_artifact,
     extract_install_artifact,
-    fetch_manifest,
     run_new_installer,
     update_installed_application,
 )
@@ -44,7 +41,7 @@ class UpdateManifestTests(unittest.TestCase):
             "platforms": {
                 "macos-arm64": {
                     "artifact_filename": filename,
-                    "artifact_url": url or f"https://github.com/evangorrell/DiscoveryAgent-app/releases/download/v1.2.3/{filename}",
+                    "artifact_url": url or f"https://github.com/owencqueen/DiscoveryAgent-app/releases/download/v1.2.3/{filename}",
                     "artifact_sha256": "a" * 64,
                 }
             },
@@ -70,96 +67,8 @@ class UpdateManifestTests(unittest.TestCase):
         parse_update_manifest(self.manifest(release_type="development"), internal=True)
         with self.assertRaisesRegex(UpdateError, "immutable"):
             parse_update_manifest(
-                self.manifest(url="https://github.com/evangorrell/DiscoveryAgent-app/releases/latest/download/discoveryagent-prod-new-macos-arm64.tar.gz")
+                self.manifest(url="https://github.com/owencqueen/DiscoveryAgent-app/releases/latest/download/discoveryagent-prod-new-macos-arm64.tar.gz")
             )
-
-
-class PrivateGitHubReleaseTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.commands = []
-        self.url_error = mock.patch(
-            "manager.discoveryagent_cli.update.urllib.request.urlopen",
-            side_effect=urllib.error.URLError("private"),
-        )
-        self.url_error.start()
-        self.which = mock.patch(
-            "manager.discoveryagent_cli.update.shutil.which", return_value="/usr/bin/gh"
-        )
-        self.which.start()
-
-    def tearDown(self) -> None:
-        self.which.stop()
-        self.url_error.stop()
-
-    def runner(self, command, **_kwargs):
-        self.commands.append(command)
-        if command[1:3] == ["auth", "status"]:
-            return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
-        if command[1:3] == ["release", "download"]:
-            output = command[command.index("--output") + 1]
-            if output == "-":
-                return SimpleNamespace(returncode=0, stdout=b'{"schema_version": 1}', stderr=b"")
-            Path(output).write_bytes(b"private artifact")
-            return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
-        self.fail(f"unexpected command: {command}")
-
-    def test_manifest_and_artifact_use_authenticated_gh_without_tokens(self) -> None:
-        manifest_url = PUBLIC_UPDATE_MANIFEST_URL
-        artifact_url = (
-            "https://github.com/evangorrell/DiscoveryAgent-app/releases/download/"
-            "v1.2.3/discoveryagent-prod-new-macos-arm64.tar.gz"
-        )
-        with mock.patch(
-            "manager.discoveryagent_cli.update.subprocess.run", side_effect=self.runner
-        ):
-            self.assertEqual(fetch_manifest(manifest_url), b'{"schema_version": 1}')
-            with tempfile.TemporaryDirectory() as temporary_name:
-                destination = Path(temporary_name) / "artifact.tar.gz"
-                digest = download_artifact(artifact_url, destination)
-                self.assertEqual(
-                    digest,
-                    hashlib.sha256(b"private artifact").hexdigest(),
-                )
-        flattened = " ".join(" ".join(command) for command in self.commands)
-        self.assertIn("auth status --hostname github.com", flattened)
-        self.assertIn("release download --repo", flattened)
-        self.assertIn("release download v1.2.3 --repo", flattened)
-        self.assertNotIn("token", flattened.lower())
-
-    def test_missing_and_unauthenticated_gh_are_actionable(self) -> None:
-        with mock.patch(
-            "manager.discoveryagent_cli.update.shutil.which", return_value=None
-        ), self.assertRaisesRegex(UpdateError, "gh auth login"):
-            fetch_manifest(PUBLIC_UPDATE_MANIFEST_URL)
-
-        with mock.patch(
-            "manager.discoveryagent_cli.update.subprocess.run",
-            return_value=SimpleNamespace(returncode=1),
-        ), self.assertRaisesRegex(UpdateError, "gh auth login"):
-            fetch_manifest(PUBLIC_UPDATE_MANIFEST_URL)
-
-    def test_non_github_failure_does_not_invoke_gh(self) -> None:
-        with mock.patch(
-            "manager.discoveryagent_cli.update.subprocess.run"
-        ) as runner, self.assertRaisesRegex(UpdateError, "update manifest"):
-            fetch_manifest("https://example.invalid/update.json")
-        runner.assert_not_called()
-
-
-class ReadmeInstallContractTests(unittest.TestCase):
-    def test_private_install_command_uses_supported_gh_release_flags(self) -> None:
-        root = Path(__file__).resolve().parents[1]
-        readme = (root / "README.md").read_text(encoding="utf-8")
-        installer = (root / "install.sh").read_text(encoding="utf-8")
-        command = (
-            "gh release download --repo evangorrell/DiscoveryAgent-app "
-            "--pattern install.sh --dir \"$installer_dir\""
-        )
-        self.assertIn(command, readme)
-        self.assertIn('sh "$installer_dir/install.sh"', readme)
-        self.assertIn('RELEASE_REPOSITORY="evangorrell/DiscoveryAgent-app"', installer)
-        self.assertIn("gh release download \"$RELEASE_TAG\"", installer)
-        self.assertNotIn("gh auth token", readme + installer)
 
 
 class UpdateFlowTests(unittest.TestCase):

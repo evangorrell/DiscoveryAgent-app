@@ -11,32 +11,26 @@ To use DiscoveryAgent, you need:
 - an Anthropic API key
 - a Paperclip account
 - an internet connection
-- access to the DiscoveryAgent GitHub repository
-- GitHub CLI (`gh`), authenticated with an account that has access to this repository
 
 DiscoveryAgent installs and manages its own Python runtime and application dependencies. You do not need to separately install Python, uv, Node.js, npm, or Claude Code.
 
 ## Install
 
-DiscoveryAgent is currently distributed through a private GitHub repository. Authenticate GitHub CLI on your Mac before installing:
+DiscoveryAgent is currently distributed through a private GitHub repository.
+
+1. Open the latest DiscoveryAgent Release in GitHub while signed into an account with access to the repository.
+2. Download both release files:
+   - `install.sh`
+   - the macOS Apple Silicon DiscoveryAgent `.tar.gz` artifact
+3. Put both files in the same folder.
+4. Open Terminal in that folder.
+5. Run:
 
 ```bash
-gh auth login
+sh install.sh && "$HOME/.local/bin/discoveryagent"
 ```
 
-If you are already authenticated, you can verify access with:
-
-```bash
-gh auth status
-```
-
-Then install and launch DiscoveryAgent:
-
-```bash
-(installer_dir=$(mktemp -d) && trap 'rm -rf "$installer_dir"' EXIT && gh release download --repo evangorrell/DiscoveryAgent-app --pattern install.sh --dir "$installer_dir" && sh "$installer_dir/install.sh") && "$HOME/.local/bin/discoveryagent"
-```
-
-The installer downloads DiscoveryAgent, verifies the release, and installs everything required to run it locally on your Mac.
+The installer verifies the local release artifact before installing DiscoveryAgent and everything required to run it locally on your Mac.
 
 ## First launch
 
@@ -137,22 +131,6 @@ Research projects are preserved.
 Paperclip authentication credentials are also preserved because they are managed separately by Paperclip.
 
 ## Troubleshooting
-
-### GitHub authentication
-
-If installation cannot access the DiscoveryAgent release, verify that GitHub CLI is authenticated with an account that has access to this repository:
-
-```bash
-gh auth status
-```
-
-If necessary:
-
-```bash
-gh auth login
-```
-
-Then retry the installation command.
 
 ### `discoveryagent: command not found`
 

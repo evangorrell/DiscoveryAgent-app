@@ -4,11 +4,10 @@ set -eu
 umask 077
 
 RELEASE_TAG="v0.1.0"
-RELEASE_REPOSITORY="evangorrell/DiscoveryAgent-app"
 RELEASE_ID="dev-5a87ee0d0270-d547cedabc0d"
 ARTIFACT_NAME="discoveryagent-${RELEASE_ID}-macos-arm64.tar.gz"
 PUBLIC_ARTIFACT_URL="https://github.com/evangorrell/DiscoveryAgent-app/releases/download/${RELEASE_TAG}/${ARTIFACT_NAME}"
-PUBLIC_ARTIFACT_SHA256="116b7df0f2b73d6a6d6cb1012bc47f84768d490aefa2fb996e668f1d76ad212b"
+PUBLIC_ARTIFACT_SHA256="fdbfe2bd7af2230c75052148c5ebfb48a15a252d6c262df42f4022d647fbe579"
 UV_URL="https://releases.astral.sh/github/uv/releases/download/0.11.17/uv-aarch64-apple-darwin.tar.gz"
 UV_SHA256="2a162f6b90ff3691a2f9cae1622e066a3ce592e110f66670cdcc841324b28226"
 
@@ -26,6 +25,13 @@ architecture=${DISCOVERYAGENT_INTERNAL_ARCHITECTURE:-$(uname -m)}
 if [ "$platform" != "Darwin" ] || [ "$architecture" != "arm64" ]; then
     fail "DiscoveryAgent currently supports Apple Silicon macOS."
 fi
+
+case $0 in
+    */*) script_directory=${0%/*}; [ -n "$script_directory" ] || script_directory=/ ;;
+    *) script_directory=. ;;
+esac
+script_directory=$(CDPATH= cd "$script_directory" && pwd) || fail "could not locate install.sh"
+local_artifact="$script_directory/$ARTIFACT_NAME"
 
 artifact_url=${DISCOVERYAGENT_INTERNAL_ARTIFACT_URL:-$PUBLIC_ARTIFACT_URL}
 artifact_sha256=${DISCOVERYAGENT_INTERNAL_ARTIFACT_SHA256:-$PUBLIC_ARTIFACT_SHA256}
@@ -45,25 +51,6 @@ verify_sha256() {
     actual=$(shasum -a 256 "$file") || fail "could not calculate a download checksum"
     actual=${actual%% *}
     [ "$actual" = "$expected" ] || fail "download integrity verification failed"
-}
-
-download_release_artifact() {
-    destination=$1
-    if curl -fsSL "$artifact_url" -o "$destination" 2>/dev/null; then
-        return
-    fi
-    rm -f "$destination"
-    [ "$artifact_url" = "$PUBLIC_ARTIFACT_URL" ] || \
-        fail "could not download the DiscoveryAgent release"
-    command -v gh >/dev/null 2>&1 || \
-        fail "private release access requires GitHub CLI. Install it, then run: gh auth login"
-    gh auth status --hostname github.com >/dev/null 2>&1 || \
-        fail "GitHub CLI is not authenticated. Run: gh auth login"
-    gh release download "$RELEASE_TAG" \
-        --repo "$RELEASE_REPOSITORY" \
-        --pattern "$ARTIFACT_NAME" \
-        --output "$destination" >/dev/null || \
-        fail "could not download the private DiscoveryAgent release with GitHub CLI"
 }
 
 validate_archive_paths() {
@@ -99,8 +86,12 @@ validate_archive_paths() {
 
 printf '%s\n\n' "Installing DiscoveryAgent..."
 
-artifact="$temporary_root/$ARTIFACT_NAME"
-download_release_artifact "$artifact"
+if [ -f "$local_artifact" ]; then
+    artifact=$local_artifact
+else
+    artifact="$temporary_root/$ARTIFACT_NAME"
+    curl -fsSL "$artifact_url" -o "$artifact" || fail "could not download the DiscoveryAgent release"
+fi
 verify_sha256 "$artifact_sha256" "$artifact"
 validate_archive_paths "$artifact" "discoveryagent-install"
 payload_root="$temporary_root/payload"
