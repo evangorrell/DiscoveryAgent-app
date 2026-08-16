@@ -67,36 +67,51 @@ always per-install.
 
 ## Launch the server from your working tree
 
-This is the normal development loop. Start the frontend yourself, pointing it
-at your checkout:
+This is the normal development loop:
 
 ```bash
 cd /path/to/DiscoveryAgent-app
 export ANTHROPIC_API_KEY=...           # required to start a round
 
-DEV=~/da-dev
-REL=$(echo "$DEV"/releases/*)          # the release inside the dev install
-
-DISCOVERYAGENT_DATA_DIR="$HOME/Library/Application Support/DiscoveryAgent" \
-DISCOVERYAGENT_BACKEND_ROOT="$PWD/application/backend" \
-DISCOVERYAGENT_BACKEND_PYTHON="$REL/envs/backend/bin/python" \
-PYTHONPATH="$PWD/application/frontend" \
-PYTHONNOUSERSITE=1 \
-"$REL/envs/frontend/bin/python" -m da_selection_ui --port 8765
+tools/dev_server.sh                    # or: tools/dev_server.sh 9000
 ```
 
 Then open <http://127.0.0.1:8765> — unlike `discoveryagent launch`, this does
 not open a browser for you. `Ctrl+C` stops the server.
 
-What each variable does:
+The script finds the development install at `~/da-dev` (override with
+`DISCOVERYAGENT_DEV_ROOT`) and runs:
+
+```bash
+DISCOVERYAGENT_BACKEND_ROOT="$PWD/application/backend" \
+DISCOVERYAGENT_BACKEND_PYTHON="$DEV/releases/*/envs/backend/bin/python" \
+PYTHONPATH="$PWD/application/frontend" \
+PYTHONDONTWRITEBYTECODE=1 \
+PYTHONNOUSERSITE=1 \
+"$DEV"/releases/*/envs/frontend/bin/python -m da_selection_ui --port 8765
+```
+
+Run that directly if you want to vary something the script doesn't expose. What
+each variable does:
 
 | Variable | Effect |
 | --- | --- |
 | `PYTHONPATH=…/application/frontend` | Frontend code is imported from your checkout instead of the venv's copy |
 | `DISCOVERYAGENT_BACKEND_ROOT=…/application/backend` | Rounds run your checkout's `scripts/run_hb_sherlock.py`, and the runner prepends this directory to the round's `PYTHONPATH`, so `AIR` also comes from your checkout |
 | `DISCOVERYAGENT_BACKEND_PYTHON` | The interpreter whose site-packages supply anthropic, pandas, and the rest |
-| `DISCOVERYAGENT_DATA_DIR` | Where projects, checkpoints, and logs are read and written |
+| `PYTHONDONTWRITEBYTECODE=1` | Keeps `__pycache__` out of `application/` — see the note below |
 | `PYTHONNOUSERSITE=1` | Keeps `~/.local` packages out of the run, matching production |
+
+`DISCOVERYAGENT_DATA_DIR` is not set: on macOS it already defaults to
+`~/Library/Application Support/DiscoveryAgent`. Set it only to point somewhere
+else.
+
+**Don't let the run litter the tree.** Running Python from `application/`
+writes `__pycache__` directories there, and both the development bootstrap and
+the artifact build compare the tree byte-for-byte and refuse when it contains
+them. `PYTHONDONTWRITEBYTECODE=1` (already in the script) prevents it; if you
+launch by hand without it, clean up with the `find` command under
+[Troubleshooting](#troubleshooting).
 
 **When edits take effect:** frontend changes need a server restart. Backend
 changes need nothing — each round is a fresh subprocess, so the next round you
@@ -207,9 +222,11 @@ containing `scripts/run_hb_sherlock.py`.
 `DISCOVERYAGENT_BACKEND_PYTHON` is unset or wrong. Point it at the dev install's
 `envs/backend/bin/python`; the repository has no virtualenv of its own.
 
-**`Installed application snapshot is not byte-identical`**
+**`Installed application snapshot is not byte-identical`**, or
+**`Canonical application contains forbidden state: application/…/__pycache__`**
 Stray build artifacts in `application/` — usually `__pycache__` directories left
-by running Python inside the tree:
+by running Python inside the tree, or a `.venv` symlink. Both the bootstrap and
+`build_install_artifact.py` reject them:
 
 ```bash
 find application -name __pycache__ -type d -exec rm -rf {} +
