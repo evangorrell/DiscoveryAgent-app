@@ -130,7 +130,14 @@ the environment at runtime can live there instead of your shell:
 ANTHROPIC_API_KEY=sk-ant-...
 DISCOVERYAGENT_BACKEND_ROOT=/abs/path/to/DiscoveryAgent-app/application/backend
 DISCOVERYAGENT_BACKEND_PYTHON=/abs/path/to/da-dev/releases/<release-id>/envs/backend/bin/python
+DISCOVERYAGENT_DATA_DIR=/abs/path/to/some/data-root
 ```
+
+`DISCOVERYAGENT_DATA_DIR` works here because the data root is resolved per call
+rather than cached at import — handy for pointing a source run at scratch data
+while leaving your real projects alone. Note it applies to source launches only:
+`discoveryagent launch` overwrites it with the `--data-root` recorded in the
+install's `state.json`.
 
 Rules worth knowing:
 
