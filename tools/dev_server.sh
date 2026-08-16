@@ -14,16 +14,24 @@
 set -eu
 
 repository=$(CDPATH= cd "$(dirname "$0")/.." && pwd)
-install_root=${DISCOVERYAGENT_DEV_ROOT:-$HOME/da-dev}
 port=${1:-8765}
 
-release=$(ls -d "$install_root"/releases/*/ 2>/dev/null | head -1 || true)
+# Any DiscoveryAgent install supplies the virtualenvs; only the code comes from
+# this checkout. Prefer a development install, fall back to the installed app.
+release=
+for candidate in ${DISCOVERYAGENT_DEV_ROOT:-} "$HOME/da-dev" "$HOME/.local/share/discoveryagent"; do
+    [ -n "$candidate" ] || continue
+    found=$(ls -d "$candidate"/releases/*/ 2>/dev/null | head -1 || true)
+    if [ -n "$found" ]; then
+        release=${found%/}
+        break
+    fi
+done
 if [ -z "$release" ]; then
-    printf '%s\n' "No development install under $install_root." >&2
+    printf '%s\n' "No DiscoveryAgent install found (looked in \$DISCOVERYAGENT_DEV_ROOT, ~/da-dev, ~/.local/share/discoveryagent)." >&2
     printf '%s\n' "Run tools/bootstrap_development_install.py first (see docs/development_server_launch.md)." >&2
     exit 1
 fi
-release=${release%/}
 
 if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
     printf '%s\n' "Warning: ANTHROPIC_API_KEY is unset — the UI will load but rounds cannot start." >&2

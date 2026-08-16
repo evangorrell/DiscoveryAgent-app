@@ -35,8 +35,11 @@ supported ways to run your own code are below.
 
 ## One-time setup
 
-Build a development install. It supplies the runtime and the two virtualenvs
-(third-party dependencies); the code you run comes from your checkout.
+You need one DiscoveryAgent install for its runtime and two virtualenvs
+(third-party dependencies); the code you run comes from your checkout. **If the
+app is already installed at `~/.local/share/discoveryagent`, you can skip this
+step** — `tools/dev_server.sh` falls back to it. Otherwise, or to keep
+development separate from the installed app:
 
 ```bash
 cd /path/to/DiscoveryAgent-app
@@ -79,8 +82,10 @@ tools/dev_server.sh                    # or: tools/dev_server.sh 9000
 Then open <http://127.0.0.1:8765> — unlike `discoveryagent launch`, this does
 not open a browser for you. `Ctrl+C` stops the server.
 
-The script finds the development install at `~/da-dev` (override with
-`DISCOVERYAGENT_DEV_ROOT`) and runs:
+The script takes the virtualenvs from the first install it finds —
+`$DISCOVERYAGENT_DEV_ROOT`, then `~/da-dev`, then `~/.local/share/discoveryagent`
+(the installed app). Any of them works: only the code comes from your checkout.
+It then runs:
 
 ```bash
 DISCOVERYAGENT_BACKEND_ROOT="$PWD/application/backend" \
