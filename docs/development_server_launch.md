@@ -120,6 +120,34 @@ start already runs the edited code. Nothing needs rebuilding either way.
 Pick any free port; `--port 0` picks one for you and prints it in the
 `DISCOVERYAGENT_FRONTEND_STARTUP=` line.
 
+### Putting settings in a `.env`
+
+A `.env` at the **repository root** is read by the frontend at import time
+(`da_selection_ui/db.py` calls `load_dotenv()`), so anything Python reads from
+the environment at runtime can live there instead of your shell:
+
+```
+ANTHROPIC_API_KEY=sk-ant-...
+DISCOVERYAGENT_BACKEND_ROOT=/abs/path/to/DiscoveryAgent-app/application/backend
+DISCOVERYAGENT_BACKEND_PYTHON=/abs/path/to/da-dev/releases/<release-id>/envs/backend/bin/python
+```
+
+Rules worth knowing:
+
+- **Repository root only.** A `.env` inside `application/` breaks both the
+  development bootstrap (`Installed application snapshot is not byte-identical`)
+  and the artifact build (`Canonical application contains forbidden state`), the
+  same way `__pycache__` does. The backend does load
+  `application/backend/.env` when present — don't use it for this reason.
+- **Only found when you launch from the repository root**, since discovery walks
+  up from the working directory.
+- **Your shell wins.** Values are loaded with `override=False`, so an exported
+  variable takes precedence over the file.
+- **`PYTHONPATH`, `PYTHONDONTWRITEBYTECODE`, and `PYTHONNOUSERSITE` cannot go
+  in `.env`** — the interpreter reads them before any Python code runs. Keep
+  them on the command line, or just use `tools/dev_server.sh`, which sets them.
+- `.env` is gitignored. Keep it that way; it holds your API key.
+
 ### Confirming you're running your working tree
 
 ```bash
