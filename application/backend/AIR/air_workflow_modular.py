@@ -577,6 +577,13 @@ class AIRWorkflowModular:
                 # Reset retry counter on success
                 tool_invocation_retry_count = 0
             else:
+                # Record what actually came back — an empty completion and a malformed
+                # one both land here, and the retry feedback below can only guess.
+                self.logger.log_error(
+                    f"Query {query_num}: no XML tool invocation found in director output.\n"
+                    f"raw_output_chars={len(query)}\n"
+                    f"raw_output={query[:1000]!r}"
+                )
                 # If multiturn, prompt the hypothesis agent to try again and restart loop
                 if self.multiturn_hypothesis:
                     tool_invocation_retry_count += 1

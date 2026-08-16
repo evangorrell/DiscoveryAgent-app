@@ -32,6 +32,11 @@ from ..utils.token_utils import (
     count_openai_tokens_messages,
     count_anthropic_tokens,
 )
+from ..utils.llm_diagnostics import (
+    describe_response,
+    log_api_exception,
+    log_api_exchange,
+)
 
 # Prompt for judge LLM to select most interesting hypothesis
 # TODO: Change this to be more specific to the given task
@@ -375,7 +380,11 @@ Your hypotheses should advance scientific understanding and be actionable throug
                 if getattr(block, "type", None) == "text" and hasattr(block, "text"):
                     text_parts.append(block.text)
             return "\n".join(part for part in text_parts if part)
-        except Exception:
+        except Exception as e:
+            self.logger.log_error(
+                f"Failed to extract text from response: {type(e).__name__}: {e}\n"
+                f"response: {describe_response(response)}"
+            )
             return ""
 
     def _extract_text_and_citations(self, response) -> (str, List[dict]):
@@ -443,8 +452,10 @@ Your hypotheses should advance scientific understanding and be actionable throug
                         text, citations = self._extract_text_and_citations(response)
                         self.last_response_citations = citations
                         self.last_response_documents = documents or []
-                        return text
-                    return self._extract_text_from_anthropic_response(response)
+                    else:
+                        text = self._extract_text_from_anthropic_response(response)
+                    log_api_exchange(self.logger, "HypothesisGenAgent", api_params, response, text)
+                    return text
 
             except (anthropic.InternalServerError, anthropic.APIError, openai.APIError) as e:
                 last_error = e
@@ -461,15 +472,21 @@ Your hypotheses should advance scientific understanding and be actionable throug
                         time.sleep(wait_time)
                         continue
                     else:
-                        self.logger.log_error(f"Max retries ({max_retries}) reached. Last error: {error_msg}")
+                        self.logger.log_error(f"Max retries ({max_retries}) reached.")
+                        log_api_exception(self.logger, e, source="HypothesisGenAgent",
+                                          api_params=api_params, retryable=False)
                         raise Exception(f"API call failed after {max_retries} retries: {error_msg}")
                 else:
                     # Non-retryable error, raise immediately
+                    log_api_exception(self.logger, e, source="HypothesisGenAgent",
+                                      api_params=api_params, retryable=False)
                     raise
 
             except Exception as e:
                 # For unexpected errors, raise immediately without retry
                 last_error = e
+                log_api_exception(self.logger, e, source="HypothesisGenAgent",
+                                  api_params=api_params, retryable=False)
                 raise
 
         # If we somehow exit the loop without returning or raising

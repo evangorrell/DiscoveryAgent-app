@@ -5,7 +5,6 @@ This module provides a minimal agent that performs a single web search round-tri
 in one API call. It is intended for simple, one-off search queries.
 """
 
-import traceback
 from dataclasses import dataclass
 from typing import Optional, List, Dict, Any
 from pathlib import Path
@@ -15,6 +14,10 @@ import anthropic
 
 from ..config import LLMConfig
 from ..utils.logger import Logger
+from ..utils.llm_diagnostics import (
+    format_api_exception,
+    summarize_response_blocks as _summarize_response_blocks,
+)
 from .base import BaseAgent, AgentToolConfig
 from .mcp_academic_utils import build_academic_mcp_servers
 
@@ -61,26 +64,6 @@ def _extract_text_from_anthropic_response(response: Any, debug: bool = False, on
     return "\n".join(part for part in text_parts if part)
 
 
-def _summarize_response_blocks(response: Any) -> str:
-    """Return a compact summary of Anthropic response blocks for debugging."""
-    blocks = []
-    for i, block in enumerate(getattr(response, "content", [])):
-        block_type = getattr(block, "type", None) or "unknown"
-        extras = []
-        name = getattr(block, "name", None)
-        if name:
-            extras.append(f"name={name}")
-        if block_type == "text":
-            text = (getattr(block, "text", "") or "").strip().replace("\n", " ")
-            if text:
-                extras.append(f"text_preview={text[:120]!r}")
-        elif block_type == "web_search_tool_result":
-            extras.append(f"id={getattr(block, 'id', None)}")
-        details = f" ({', '.join(extras)})" if extras else ""
-        blocks.append(f"{i}:{block_type}{details}")
-    return "; ".join(blocks) if blocks else "<no content blocks>"
-
-
 def _format_anthropic_exception(
     exc: Exception,
     *,
@@ -90,39 +73,16 @@ def _format_anthropic_exception(
     include_traceback: bool = False,
 ) -> str:
     """Build an Anthropic SDK error string for user-facing output or logs."""
-    lines = [
-        "Single web search failed.",
-        f"Exception: {type(exc).__name__}: {exc}",
-        f"Model: {model_name}",
-        f"Query preview: {query[:200]}",
-        f"Using MCP servers: {'yes' if using_mcp else 'no'}",
-    ]
-
-    status_code = getattr(exc, "status_code", None)
-    if status_code is not None:
-        lines.append(f"HTTP status: {status_code}")
-
-    request_id = getattr(exc, "request_id", None)
-    if request_id:
-        lines.append(f"Request ID: {request_id}")
-
-    body = getattr(exc, "body", None)
-    if body:
-        lines.append(f"Response body: {body}")
-
-    response = getattr(exc, "response", None)
-    if response is not None:
-        resp_status = getattr(response, "status_code", None)
-        if resp_status is not None and resp_status != status_code:
-            lines.append(f"Response status: {resp_status}")
-        text = getattr(response, "text", None)
-        if text:
-            lines.append(f"Response text: {text[:1000]}")
-
-    if include_traceback:
-        lines.append("Traceback:")
-        lines.append(traceback.format_exc().rstrip())
-    return "\n".join(lines)
+    return format_api_exception(
+        exc,
+        headline="Single web search failed.",
+        context={
+            "Model": model_name,
+            "Query preview": query[:200],
+            "Using MCP servers": "yes" if using_mcp else "no",
+        },
+        include_traceback=include_traceback,
+    )
 
 
 @dataclass
