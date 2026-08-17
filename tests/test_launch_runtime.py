@@ -40,6 +40,7 @@ from manager.discoveryagent_cli.runtime_state import (
     load_frontend_record,
     write_frontend_record_atomic,
 )
+from manager.discoveryagent_cli.state import load_state
 from manager.discoveryagent_cli.testing import create_fake_installation
 
 
@@ -504,6 +505,41 @@ class LaunchRuntimeTests(unittest.TestCase):
         self.assertNotIn("Connecting Paperclip", stdout)
         persisted = self.paths.state_file.read_text(encoding="utf-8") + stdout + stderr
         self.assertNotIn(token, persisted)
+
+    def test_first_launch_data_root_choice_is_persisted_and_handed_to_the_frontend(self) -> None:
+        chosen = self.root / "Science" / "DiscoveryAgent"
+        configured = Path(self.state.data_root)
+        # setUp validates the fixture, which creates the configured root; a
+        # genuine first launch has not created one yet.
+        configured.rmdir()
+        self.assertFalse(chosen.exists())
+
+        self.launch(
+            dependencies=self.dependencies(
+                input_is_interactive=lambda: True,
+                text_input=lambda _prompt: str(chosen),
+            ),
+        )
+
+        self.assertEqual(load_state(self.paths.state_file).data_root, str(chosen))
+        _command, kwargs = self.popen_calls[0]
+        self.assertEqual(kwargs["env"]["DISCOVERYAGENT_DATA_DIR"], str(chosen))
+        self.assertTrue(chosen.is_dir())
+        self.assertFalse(configured.exists())
+
+    def test_an_established_data_root_is_used_without_prompting(self) -> None:
+        Path(self.state.data_root).mkdir(parents=True, exist_ok=True)
+
+        self.launch(
+            dependencies=self.dependencies(
+                input_is_interactive=lambda: True,
+                text_input=lambda _prompt: (_ for _ in ()).throw(
+                    AssertionError("an established data root must not be re-asked")
+                ),
+            ),
+        )
+
+        self.assertEqual(load_state(self.paths.state_file).data_root, self.state.data_root)
 
     def test_browser_opens_only_after_readiness(self) -> None:
         trace: list[str] = []

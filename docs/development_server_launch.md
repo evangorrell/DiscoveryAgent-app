@@ -48,7 +48,7 @@ git checkout <your-branch>
 DEV=~/da-dev            # any absolute path outside the repository
 python3 tools/bootstrap_development_install.py \
   --install-root "$DEV" \
-  --data-root "$HOME/Library/Application Support/DiscoveryAgent"
+  --data-root "$HOME/DiscoveryAgent"
 ```
 
 ~30s the first time (it downloads uv and CPython 3.11.11). It does not touch
@@ -60,7 +60,8 @@ your PATH and does not disturb an existing `~/.local` install.
 
 | Value | Effect |
 | --- | --- |
-| `~/Library/Application Support/DiscoveryAgent` | Shares projects and logs with the production install. Your existing projects are there. **Don't run both installs against it at once.** |
+| `~/DiscoveryAgent` | Shares projects and logs with the production install (its default since the first-launch prompt landed). Your existing projects are there. **Don't run both installs against it at once.** |
+| `~/Library/Application Support/DiscoveryAgent` | Where installs made before the first-launch prompt kept their projects. Use it if that is where yours still live. |
 | Anything else (e.g. `~/da-dev-data`) | Fully isolated. Starts with no projects. |
 
 Everything else — app code, virtualenvs, runtime, CLI shim, `state.json` — is
@@ -107,9 +108,12 @@ each variable does:
 | `PYTHONDONTWRITEBYTECODE=1` | Keeps `__pycache__` out of `application/` — see the note below |
 | `PYTHONNOUSERSITE=1` | Keeps `~/.local` packages out of the run, matching production |
 
-`DISCOVERYAGENT_DATA_DIR` is not set: on macOS it already defaults to
-`~/Library/Application Support/DiscoveryAgent`. Set it only to point somewhere
-else.
+`DISCOVERYAGENT_DATA_DIR` is not set: a source launch falls back to the
+platform default (`~/Library/Application Support/DiscoveryAgent` on macOS,
+which is what `project_storage.get_data_root` returns when nothing overrides
+it). A packaged launch instead uses the root recorded in `state.json` — the one
+the first launch prompted for, defaulting to `~/DiscoveryAgent`. Set this
+variable to point a source run at either of them, or at scratch data.
 
 **Don't let the run litter the tree.** Running Python from `application/`
 writes `__pycache__` directories there, and both the development bootstrap and
@@ -190,7 +194,7 @@ DEV=~/da-dev
 rm -rf "$DEV/releases"
 python3 tools/bootstrap_development_install.py \
   --install-root "$DEV" \
-  --data-root "$HOME/Library/Application Support/DiscoveryAgent"
+  --data-root "$HOME/DiscoveryAgent"
 
 "$DEV/bin/discoveryagent"
 ```

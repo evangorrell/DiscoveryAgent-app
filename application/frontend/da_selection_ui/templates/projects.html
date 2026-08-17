@@ -100,7 +100,6 @@
 
         <div class="v2-modal-body" id="np-modal-body">
             <div id="np-project-state">
-                <p class="v2-modal-step" id="np-step-one-indicator">Step 1 of 2</p>
 
             <form class="v2-modal-form" id="np-form" novalidate>
             <div class="v2-field">
@@ -133,6 +132,32 @@
                 <p class="v2-field-note">DiscoveryAgent will save this as the project&rsquo;s README.md and use it as persistent context during research.</p>
             </div>
 
+            <div class="v2-field" id="np-create-data-field">
+                <label class="v2-field-label" for="np-data-folder">DATA FOLDER</label>
+                <p class="v2-field-help">
+                    Point DiscoveryAgent at the folder that already holds your data. It reads that folder
+                    in place &mdash; nothing in it is copied, moved, renamed, or deleted. Leave this blank
+                    and DiscoveryAgent will create a data folder for you, and show you its path.
+                </p>
+                <div class="v2-path-picker">
+                    <input class="v2-input v2-path-input" type="text" id="np-data-folder" name="data_folder"
+                           placeholder="Leave blank to let DiscoveryAgent manage one"
+                           autocomplete="off" spellcheck="false">
+                    <button type="button" class="v2-btn v2-btn-secondary v2-path-choose" id="np-data-folder-choose">
+                        Choose&hellip;
+                    </button>
+                </div>
+                <div class="v2-data-scan" id="np-data-folder-preview" aria-live="polite" hidden>
+                    <div class="v2-data-scan-head">
+                        <span>FILES IN THIS FOLDER</span>
+                        <span class="v2-muted" id="np-data-folder-count"></span>
+                    </div>
+                    <p class="v2-data-empty" id="np-data-folder-empty" hidden>This folder is empty. You can still use it and add files later.</p>
+                    <ul class="v2-file-list" id="np-data-folder-list"></ul>
+                </div>
+                <p class="v2-modal-form-error" id="np-data-folder-error" hidden></p>
+            </div>
+
             <div class="v2-field" id="np-edit-data-field" hidden>
                 <h3 class="v2-section-label v2-modal-section-label">DATA</h3>
                 <p class="v2-field-help">Add any files or folders DiscoveryAgent should use for this project. Changes to the Data Folder appear here automatically.</p>
@@ -143,48 +168,27 @@
                             Open Data Folder <span aria-hidden="true">&#8599;</span>
                         </button>
                     </div>
+                    <div class="v2-path-row" id="np-edit-data-path-row" hidden>
+                        <code class="v2-path" id="np-edit-data-path"></code>
+                        <button type="button" class="v2-data-folder-action" id="np-edit-copy-data-path">Copy path</button>
+                    </div>
                     <p class="v2-data-empty" id="np-edit-data-empty" hidden>No dataset files yet. Add files to the folder and they will appear here automatically.</p>
                     <ul class="v2-file-list" id="np-file-list"></ul>
                     <p class="v2-modal-form-error" id="np-edit-data-error" hidden></p>
                 </div>
-                <p class="v2-field-note">Paths below are relative to <code>code/data/</code>. Project Context is stored in the root <code>README.md</code>; nested README files are treated as data.</p>
+                <p class="v2-field-note" id="np-edit-data-note">Copy files into the folder above and they appear here automatically. Project Context is stored in the root <code>README.md</code>; nested README files are treated as data.</p>
             </div>
 
                 <p class="v2-modal-form-error" id="np-form-error" hidden></p>
             </form>
             </div>
 
-            <section class="v2-add-data" id="np-add-data-state" aria-labelledby="np-title" hidden>
-                <p class="v2-modal-step">Step 2 of 2</p>
-                <h3 class="v2-section-label v2-modal-section-label">ADD DATA</h3>
-                <p class="v2-field-help v2-add-data-description">
-                    Add any files or folders DiscoveryAgent should use for this project. Changes to the Data Folder appear here automatically.
-                </p>
-                <div class="v2-data-scan" aria-live="polite">
-                    <div class="v2-data-scan-head">
-                        <span>DATA FOLDER</span>
-                        <button type="button" class="v2-data-folder-action" id="np-open-data-folder">
-                            Open Data Folder <span aria-hidden="true">&#8599;</span>
-                        </button>
-                    </div>
-                    <p class="v2-data-empty" id="np-data-empty" hidden>No dataset files yet. Add files to the folder and they will appear here automatically.</p>
-                    <ul class="v2-file-list" id="np-data-file-list"></ul>
-                </div>
-                <p class="v2-field-note">The root <code>README.md</code> is managed by DiscoveryAgent. Nested README files are treated as data.</p>
-                <p class="v2-modal-form-error" id="np-data-error" hidden></p>
-            </section>
         </div>
 
         <div class="v2-modal-footer" id="np-project-footer">
             <button type="button" class="v2-btn v2-btn-secondary" id="np-cancel">Cancel</button>
             <button type="submit" form="np-form" class="v2-btn v2-btn-primary" id="np-submit">
                 Create project <span class="v2-arrow" aria-hidden="true">&rarr;</span>
-            </button>
-        </div>
-        <div class="v2-modal-footer" id="np-data-footer" hidden>
-            <button type="button" class="v2-btn v2-btn-secondary" id="np-data-back">Back</button>
-            <button type="button" class="v2-btn v2-btn-primary" id="np-continue-project">
-                Continue <span class="v2-arrow" aria-hidden="true">&rarr;</span>
             </button>
         </div>
     </div>

@@ -40,12 +40,15 @@ def test_creation_finishes_before_add_data_and_preserves_metadata(monkeypatch, t
     assert record["task_description"] == "Find robust cohort-specific mechanisms."
     assert record["dataset_context"] == "Cohort and assay context."
 
+    # Creating a project is one page and one submit: it lands on Project Home,
+    # which shows the data folder's path, instead of a second "Add data" step.
     source = PROJECTS_JS.read_text(encoding="utf-8")
-    assert "showAddDataState(data)" in source
-    assert source.index("const resp = await fetch(endpoint") < source.index("showAddDataState(data)")
     submit_flow = source[source.index("async function submitForm"):source.index("// ---- wiring")]
-    assert "window.location.href" not in submit_flow
-    assert 'id="np-add-data-state"' in PROJECTS_TEMPLATE.read_text(encoding="utf-8")
+    assert "window.location.href = data.destination" in submit_flow
+    template = PROJECTS_TEMPLATE.read_text(encoding="utf-8")
+    assert 'id="np-add-data-state"' not in template
+    assert "Step 1 of 2" not in template
+    assert "Step 2 of 2" not in template
 
 
 def test_project_context_is_canonical_root_data_readme(monkeypatch, tmp_path):
@@ -205,82 +208,71 @@ def test_primary_create_uses_no_browser_multipart_upload():
     assert 'type="file"' not in template
 
 
-def test_step_two_continue_uses_existing_project_home_destination_without_duplicate_creation(monkeypatch, tmp_path):
+def test_continue_route_still_reaches_project_home_without_duplicate_creation(monkeypatch, tmp_path):
     client = _client(monkeypatch, tmp_path)
     created = _create(client)
     response = client.post(f"/api/projects/{created['project_id']}/continue")
 
     assert response.status_code == 200
     assert response.get_json()["destination"] == created["destination"] == "/projects/local-data"
-    source = PROJECTS_JS.read_text(encoding="utf-8")
-    assert "+ '/continue'" in source
-    assert "window.location.href = data.destination" in source
-    continue_flow = source[source.index("async function continueToProjectHome"):source.index("function clearInvalid")]
-    assert continue_flow.count("fetch(") == 1
-    assert "showAddDataState" not in continue_flow
     projects = json.loads((tmp_path / "v2_projects.json").read_text(encoding="utf-8"))["projects"]
     assert len(projects) == 1
 
 
-def test_create_modal_labels_both_states_as_one_two_step_flow():
+def test_create_modal_is_one_page_that_asks_where_the_data_lives():
     template = PROJECTS_TEMPLATE.read_text(encoding="utf-8")
     source = PROJECTS_JS.read_text(encoding="utf-8")
-    step_one_footer = template[template.index('<div class="v2-modal-footer" id="np-project-footer">'):template.index('<div class="v2-modal-footer" id="np-data-footer"')]
-    step_two_footer = template[template.index('<div class="v2-modal-footer" id="np-data-footer"'):template.index('</div>\n    </div>\n</div>', template.index('<div class="v2-modal-footer" id="np-data-footer"'))]
 
     assert '<h2 class="v2-modal-title" id="np-title">Create a new DiscoveryAgent project</h2>' in template
-    assert "Step 1 of 2" in template
-    assert "PROJECT DETAILS" not in template
-    assert "Tell DiscoveryAgent" not in template
     assert 'id="np-cancel">Cancel</button>' in template
-    assert "Create project <span" in step_one_footer
-    assert "Next" not in step_one_footer
-    assert "Step 2 of 2" in template
-    assert '<h3 class="v2-section-label v2-modal-section-label">ADD DATA</h3>' in template
-    assert '<h3 class="v2-section-label v2-modal-section-label">DATA</h3>' in template
-    assert 'id="np-context"' in template
-    assert 'name="dataset_context"' in template
-    assert "PROJECT CONTEXT" in template
-    assert "Project Context" in template
-    assert "Project Context" in source
+    # One footer, one submit: the second step and its footer are gone.
+    assert template.count('class="v2-modal-footer"') == 1
+    assert 'id="np-data-footer"' not in template
+    assert 'id="np-continue-project"' not in template
+    assert 'id="np-data-back"' not in template
+    assert "backToProjectDetails" not in source
+    assert "continueToProjectHome" not in source
+    assert "showAddDataState" not in source
+
+    # Name, objective, context and data folder are all on the create page, in
+    # that order.
+    create_page = template[template.index('id="np-project-state"'):template.index('id="np-edit-data-field"')]
+    assert create_page.index('id="np-name"') < create_page.index('id="np-objective"')
+    assert create_page.index('id="np-objective"') < create_page.index('id="np-context"')
+    assert create_page.index('id="np-context"') < create_page.index('id="np-data-folder"')
+    assert 'id="np-data-folder-choose"' in create_page
+    assert "DATA FOLDER" in create_page
+    assert "nothing in it is copied, moved, renamed, or deleted" in create_page
+    assert "Leave this blank" in create_page
+
     submit_flow = source[source.index("async function submitForm"):source.index("// ---- wiring")]
-    assert "els.context" in source
     assert "dataset_context" in submit_flow
-    assert 'class="v2-data-folder-action" id="np-open-data-folder"' in template
-    assert "Open Data Folder" in template
-    step_two = template[template.index('id="np-add-data-state"'):template.index('id="np-data-footer"')]
-    assert "Add any files or folders DiscoveryAgent should use for this project." in step_two
-    assert "Changes to the Data Folder appear here automatically." in step_two
-    assert "The root <code>README.md</code> is managed by DiscoveryAgent." in step_two
-    assert "Nested README files are treated as data." in step_two
-    assert 'class="v2-field-help v2-add-data-description"' in step_two
-    assert step_two.index('v2-add-data-description') < step_two.index('class="v2-data-scan"')
-    assert step_two.index('class="v2-data-scan"') < step_two.index('class="v2-field-note"')
-    assert 'id="np-scan-status"' not in template
-    assert 'id="np-refresh-data"' not in template
-    assert template.index('id="np-data-back"') < template.index('id="np-continue-project"')
-    assert 'id="np-continue-project"' in template
-    assert "Continue <span" in step_two_footer
-    assert "Done" not in step_two_footer
-    assert "Create Project" not in step_two_footer
-    assert "els.title.textContent = 'Create a new DiscoveryAgent project'" in source
-    assert "els.submit.innerHTML = 'Create project " in source
-    assert "els.dataBack.addEventListener('click', backToProjectDetails)" in source
-    assert "els.continueProject.addEventListener('click', continueToProjectHome)" in source
+    assert "body.append('data_folder', els.dataFolder.value.trim())" in submit_flow
+    assert "els.title.textContent = isEdit" in source
+    assert "els.dataFolderChoose.addEventListener('click', chooseDataFolder)" in source
 
 
-def test_closing_step_one_before_create_creates_nothing(monkeypatch, tmp_path):
+def test_editing_a_project_shows_its_data_path_with_a_copy_action():
+    template = PROJECTS_TEMPLATE.read_text(encoding="utf-8")
+    source = PROJECTS_JS.read_text(encoding="utf-8")
+
+    assert 'id="np-edit-data-path"' in template
+    assert 'id="np-edit-copy-data-path"' in template
+    assert "Copy path" in template
+    assert "els.editCopyDataPath.addEventListener('click', copyEditDataPath)" in source
+    assert "renderEditDataFolder(data.project.data_folder)" in source
+
+
+def test_closing_the_create_modal_before_submitting_creates_nothing(monkeypatch, tmp_path):
     _client(monkeypatch, tmp_path)
     source = PROJECTS_JS.read_text(encoding="utf-8")
-    open_create = source[source.index("function openCreate()"):source.index("async function openEdit")]
     close_flow = source[source.index("function closeModal()"):source.index("function setFormError")]
 
-    assert "createdProject = null" in open_create
     assert "fetch(" not in close_flow
     assert not (tmp_path / "v2_projects.json").exists()
 
 
-def test_create_steps_share_one_stable_modal_scroll_boundary():
+def test_create_page_keeps_one_stable_modal_scroll_boundary():
     css = PROJECTS_CSS.read_text(encoding="utf-8")
     template = PROJECTS_TEMPLATE.read_text(encoding="utf-8")
     source = PROJECTS_JS.read_text(encoding="utf-8")
@@ -307,15 +299,8 @@ def test_create_steps_share_one_stable_modal_scroll_boundary():
     step_one_form = css[css.index("#np-project-state > .v2-modal-form {"):css.index("}", css.index("#np-project-state > .v2-modal-form {"))]
     assert "padding: 0" in step_one_form
     assert "margin-top: 0" in step_one_form
-    step_two_step = css[css.index("#np-add-data-state > .v2-modal-step {"):css.index("}", css.index("#np-add-data-state > .v2-modal-step {"))]
     section_label = css[css.index(".v2-section-label {"):css.index("}", css.index(".v2-section-label {"))]
-    modal_section_label = css[css.index("#np-add-data-state > .v2-modal-section-label,"):css.index("}", css.index("#np-add-data-state > .v2-modal-section-label,"))]
-    step_two_description = css[css.index("#np-add-data-state > .v2-add-data-description {"):css.index("}", css.index("#np-add-data-state > .v2-add-data-description {"))]
-    step_two_note = css[css.index("#np-add-data-state > .v2-field-note {"):css.index("}", css.index("#np-add-data-state > .v2-field-note {"))]
-    step_two_folder = css[css.index("#np-add-data-state > .v2-data-scan {"):css.index("}", css.index("#np-add-data-state > .v2-data-scan {"))]
-    step_two_error = css[css.index("#np-add-data-state > .v2-modal-form-error {"):css.index("}", css.index("#np-add-data-state > .v2-modal-form-error {"))]
-    assert "margin: 0 0 7px" in step_two_step
-    assert "font: 600 0.68rem/1.4 var(--v2-sans)" in step_two_step
+    modal_section_label = css[css.index("#np-edit-data-field > .v2-modal-section-label {"):css.index("}", css.index("#np-edit-data-field > .v2-modal-section-label {"))]
     assert "text-transform: uppercase" in section_label
     assert "letter-spacing: 0.14em" in section_label
     assert "font-family: var(--v2-sans)" in section_label
@@ -323,11 +308,9 @@ def test_create_steps_share_one_stable_modal_scroll_boundary():
     field_help = css[css.index(".v2-field-help {"):css.index("}", css.index(".v2-field-help {"))]
     assert "font-size: 0.85rem" in field_help
     assert "color: var(--v2-muted)" in field_help
-    assert "margin: 0 0 18px" in step_two_description
-    assert "margin: 10px 0 0" in step_two_note
-    assert "margin-top: 0" in step_two_folder
-    assert "padding-right: 0" in step_two_error
-    assert "padding-left: 0" in step_two_error
+    # The removed second step leaves no orphan rules behind.
+    assert "#np-add-data-state" not in css
+    assert ".v2-add-data" not in css
     project_footer = css[css.index(".v2-project-modal-shell > .v2-modal-footer {"):css.index("}", css.index(".v2-project-modal-shell > .v2-modal-footer {"))]
     assert "flex: 0 0 auto" in project_footer
     assert "align-items: center" in project_footer
@@ -343,9 +326,8 @@ def test_create_steps_share_one_stable_modal_scroll_boundary():
     file_list = next(line for line in css.splitlines() if line.startswith(".v2-file-list "))
     assert "overflow" not in file_list
 
-    body = template[template.index('<div class="v2-modal-body">'):template.index('<div class="v2-modal-footer" id="np-project-footer">')]
+    body = template[template.index('<div class="v2-modal-body" id="np-modal-body">'):template.index('<div class="v2-modal-footer" id="np-project-footer">')]
     assert 'id="np-project-state"' in body
-    assert 'id="np-add-data-state"' in body
     assert "els.modal.style" not in source
     assert 'id="np-refresh-data"' not in template
     assert "dataScanTimer = window.setInterval(rescanDataFolder, 2000)" in source
@@ -370,17 +352,16 @@ def test_project_modal_always_opens_at_the_top_of_its_scroll_boundary():
     assert "projects.js') }}?v=20260808-edit-scroll-top-1" in template
 
 
-def test_closing_step_two_leaves_created_project_intact(monkeypatch, tmp_path):
+def test_closing_the_modal_never_removes_a_created_project(monkeypatch, tmp_path):
     client = _client(monkeypatch, tmp_path)
     created = _create(client)
     project_id = created["project_id"]
 
-    # Closing is a client-only dismissal: it stops polling and refreshes the
-    # project list. It must not call a delete/rollback route.
+    # Closing is a client-only dismissal: it stops polling and nothing else. It
+    # must not call a delete/rollback route.
     source = PROJECTS_JS.read_text(encoding="utf-8")
     close_flow = source[source.index("function closeModal()"):source.index("function setFormError")]
     assert "stopDataPolling()" in close_flow
-    assert "loadProjects()" in close_flow
     assert "DELETE" not in close_flow
 
     projects = json.loads((tmp_path / "v2_projects.json").read_text(encoding="utf-8"))["projects"]
@@ -389,7 +370,7 @@ def test_closing_step_two_leaves_created_project_intact(monkeypatch, tmp_path):
     assert (tmp_path / project_id / "code" / "data" / "README.md").is_file()
 
 
-def test_step_two_back_updates_existing_project_instead_of_creating_another(monkeypatch, tmp_path):
+def test_editing_updates_the_existing_project_instead_of_creating_another(monkeypatch, tmp_path):
     client = _client(monkeypatch, tmp_path)
     created = _create(client)
     project_id = created["project_id"]
@@ -404,8 +385,3 @@ def test_step_two_back_updates_existing_project_instead_of_creating_another(monk
     assert len(projects) == 1
     assert projects[0]["id"] == project_id
     assert projects[0]["display_name"] == "Revised Local Data"
-
-    source = PROJECTS_JS.read_text(encoding="utf-8")
-    assert "function backToProjectDetails()" in source
-    assert "modalMode = 'created'" in source
-    assert "encodeURIComponent(createdProject.id) + '/edit'" in source

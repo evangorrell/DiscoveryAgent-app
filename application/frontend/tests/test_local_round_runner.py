@@ -464,6 +464,173 @@ def test_fresh_round_zero_uses_exploratory_query_budget(monkeypatch, project, ba
     assert config["num_queries"] == runner.EXPLORATORY_ROUND_QUERY_BUDGET
 
 
+def test_round_options_override_the_preset_budget_and_agent_roster(monkeypatch, project, backend):
+    config_file = Path(project["checkpoint_dir"]) / "config.json"
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess())
+    monkeypatch.setattr(runner.threading, "Thread", NoopThread)
+
+    options = runner.normalize_round_options({
+        "num_queries": 17,
+        "deep_research": False,
+        "web_search": True,
+    })
+    runner.start_round(project, env=launch_env(backend), options=options)
+
+    config = json.loads(config_file.read_text(encoding="utf-8"))["config"]
+    assert config["num_queries"] == 17
+    assert config["omit_deepresearch"] is True
+    assert config["omit_singlesearch"] is False
+
+
+def test_agents_needing_outside_authorization_cannot_be_switched_on(monkeypatch, project, backend):
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess())
+    monkeypatch.setattr(runner.threading, "Thread", NoopThread)
+
+    # Each of these needs an MCP server or a CENSUS_API_KEY plus optional
+    # Python extras the packaged backend does not install, so a round that
+    # enabled one would fail at launch.
+    options = runner.normalize_round_options({
+        "opentargets": True, "acs": True, "census": True,
+    })
+    assert options == {}
+
+    runner.start_round(project, env=launch_env(backend), options=options)
+
+    config = json.loads((Path(project["checkpoint_dir"]) / "config.json").read_text(encoding="utf-8"))["config"]
+    for key in ("use_opentargets_agent", "use_acs_agent", "use_census_agent"):
+        assert key not in config
+
+
+@pytest.mark.parametrize("attempt", [{}, {"sub_agents": False}, {"sub_agent_architecture": False}])
+def test_the_sub_agent_architecture_is_always_on_and_cannot_be_turned_off(
+    monkeypatch, project, backend, attempt,
+):
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess())
+    monkeypatch.setattr(runner.threading, "Thread", NoopThread)
+
+    runner.start_round(
+        project,
+        env=launch_env(backend),
+        options=runner.normalize_round_options(attempt),
+    )
+
+    config = json.loads((Path(project["checkpoint_dir"]) / "config.json").read_text(encoding="utf-8"))["config"]
+    assert config["sub_agent_architecture"] is True
+
+
+def test_a_continuation_round_also_runs_the_sub_agent_architecture(monkeypatch, project, backend):
+    source, _selection = make_continuation(project)
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess())
+    monkeypatch.setattr(runner.threading, "Thread", NoopThread)
+
+    runner.start_round(project, env=launch_env(backend), options={})
+
+    target = source.parent / "round_4" / "config.json"
+    config = json.loads(target.read_text(encoding="utf-8"))["config"]
+    assert config["sub_agent_architecture"] is True
+
+
+def test_chosen_models_reach_the_reasoning_and_execution_config_keys(monkeypatch, project, backend):
+    monkeypatch.setattr(
+        runner.model_catalog, "known_model_ids",
+        lambda: {"claude-opus-9", "claude-haiku-4-5-20251001"},
+    )
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess())
+    monkeypatch.setattr(runner.threading, "Thread", NoopThread)
+
+    options = runner.normalize_round_options({
+        "reasoning_model": "claude-opus-9",
+        "execution_model": "claude-haiku-4-5-20251001",
+    })
+    runner.start_round(project, env=launch_env(backend), options=options)
+
+    config = json.loads((Path(project["checkpoint_dir"]) / "config.json").read_text(encoding="utf-8"))["config"]
+    # One choice drives both reasoning agents; execution is its own knob.
+    assert config["hypothesis_model"] == "claude-opus-9"
+    assert config["director_model"] == "claude-opus-9"
+    assert config["execution_model"] == "claude-haiku-4-5-20251001"
+
+
+def test_a_model_the_installation_cannot_use_is_refused(monkeypatch):
+    monkeypatch.setattr(runner.model_catalog, "known_model_ids", lambda: {"claude-opus-5"})
+
+    with pytest.raises(runner.RoundLaunchError) as refused:
+        runner.normalize_round_options({"reasoning_model": "gpt-4"})
+
+    assert refused.value.code == "invalid_round_options"
+    assert "gpt-4" in refused.value.message
+
+
+def test_omitted_models_leave_the_backend_defaults_alone(monkeypatch):
+    monkeypatch.setattr(runner.model_catalog, "known_model_ids", lambda: {"claude-opus-5"})
+
+    assert runner.normalize_round_options({"reasoning_model": "", "num_queries": 3}) == {"num_queries": 3}
+
+
+def test_option_defaults_preselect_the_projects_saved_reasoning_model():
+    defaults = runner.round_option_defaults(0, {"hypothesis_model": "claude-opus-9"})
+    assert defaults["reasoning_model"] == "claude-opus-9"
+
+    fallback = runner.round_option_defaults(0, {})
+    assert fallback["reasoning_model"] == runner.DEFAULT_REASONING_MODEL
+    assert fallback["execution_model"] == runner.DEFAULT_EXECUTION_MODEL
+
+
+def test_round_options_only_accept_known_switches_and_sane_counts():
+    assert runner.normalize_round_options(None) == {}
+    assert runner.normalize_round_options({"no_sandbox": True, "working_directory": "/etc"}) == {}
+    assert runner.normalize_round_options({"num_queries": "6"}) == {"num_queries": 6}
+
+    for rejected in (0, -1, runner.MAXIMUM_ROUND_QUERIES + 1, "many"):
+        with pytest.raises(runner.RoundLaunchError) as refused:
+            runner.normalize_round_options({"num_queries": rejected})
+        assert refused.value.code == "invalid_round_options"
+
+
+def test_a_chosen_data_folder_becomes_a_read_only_sandbox_exception(monkeypatch, project, backend, tmp_path):
+    chosen = tmp_path / "scientists data"
+    chosen.mkdir()
+    (chosen / "counts.csv").write_text("gene,count\n", encoding="utf-8")
+    link = Path(project["code_dir"]) / "data"
+    link.rmdir()
+    link.symlink_to(chosen, target_is_directory=True)
+    project = dict(project, external_data=True, data_dir=str(chosen))
+
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess())
+    monkeypatch.setattr(runner.threading, "Thread", NoopThread)
+    runner.start_round(project, env=launch_env(backend))
+
+    config = json.loads((Path(project["checkpoint_dir"]) / "config.json").read_text(encoding="utf-8"))["config"]
+    assert config["allowed_read_paths"] == str(chosen.resolve())
+    # Reads only: writes stay confined to the project's own working directory.
+    assert config["no_sandbox"] is False
+    assert (chosen / "counts.csv").read_text(encoding="utf-8") == "gene,count\n"
+
+
+def test_a_managed_project_grants_no_extra_read_paths(monkeypatch, project, backend):
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess())
+    monkeypatch.setattr(runner.threading, "Thread", NoopThread)
+
+    runner.start_round(project, env=launch_env(backend))
+
+    config = json.loads((Path(project["checkpoint_dir"]) / "config.json").read_text(encoding="utf-8"))["config"]
+    assert "allowed_read_paths" not in config
+
+
+def test_an_unavailable_chosen_folder_is_named_in_the_launch_error(project, backend, tmp_path):
+    chosen = tmp_path / "on a detached drive"
+    link = Path(project["code_dir"]) / "data"
+    link.rmdir()
+    link.symlink_to(chosen, target_is_directory=True)
+    project = dict(project, external_data=True, data_dir=str(chosen))
+
+    with pytest.raises(runner.RoundLaunchError) as unavailable:
+        runner.start_round(project, env=launch_env(backend))
+
+    assert unavailable.value.code == "data_folder_unavailable"
+    assert str(chosen) in unavailable.value.message
+
+
 @pytest.mark.parametrize(
     ("source_round", "source_budget"),
     [(0, 5), (1, 12)],
@@ -819,16 +986,39 @@ def test_resume_preserves_existing_query_budget(monkeypatch, project, backend, q
     assert target_config.read_text(encoding="utf-8") == original_config
 
 
-def test_backend_cli_num_queries_default_remains_five():
-    parser_source = (
+def backend_arg_parser_source() -> str:
+    return (
         Path(runner.__file__).resolve().parents[2]
-        / "discoveryagent" / "AIR" / "utils" / "arg_parsers.py"
+        / "backend" / "AIR" / "utils" / "arg_parsers.py"
     ).read_text(encoding="utf-8")
 
+
+def test_backend_cli_num_queries_default_remains_five():
     assert re.search(
         r'add_argument\("--num_queries",\s*type=int,\s*default=5,',
-        parser_source,
+        backend_arg_parser_source(),
     )
+
+
+def test_backend_cli_execution_agent_runs_until_it_finishes():
+    # 0 means the SDK is given no --max-turns, so the agent stops when the task
+    # is done rather than at an arbitrary step count.
+    assert re.search(
+        r'add_argument\("--execution_max_turns",\s*type=int,\s*default=0,',
+        backend_arg_parser_source(),
+    )
+
+
+def test_backend_cli_director_model_default_is_opus_4_6():
+    # The director plans the round; it runs on an Opus-tier model by default
+    # rather than inheriting the older Sonnet snapshot.
+    assert re.search(
+        r'add_argument\("--director_model",\s*type=str,\s*default="claude-opus-4-6"',
+        backend_arg_parser_source(),
+    )
+    # The dialog's preselected reasoning model agrees with that backend default,
+    # so an untouched round and a confirmed one run the same director model.
+    assert runner.DEFAULT_REASONING_MODEL == "claude-opus-4-6"
 
 
 def test_latest_native_checkpoint_matches_backend_numeric_semantics(project):

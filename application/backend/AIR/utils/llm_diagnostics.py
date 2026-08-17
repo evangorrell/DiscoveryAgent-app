@@ -110,6 +110,54 @@ def describe_response(response: Any) -> str:
     return " ".join(parts)
 
 
+#: Shown to the user whenever Anthropic declines a request. Refusals are decided
+#: by Anthropic's service, are non-deterministic, and are not a bug in this app —
+#: so the only useful advice is "run it again".
+REFUSAL_ADVICE = (
+    "Anthropic's API declined this request. This is decided by Anthropic's "
+    "safety systems, not by DiscoveryAgent, and it is not deterministic — "
+    "running the round again will often succeed."
+)
+
+
+def refusal_notice(response: Any) -> Optional[str]:
+    """Return a user-facing refusal message, or None if the model did not refuse.
+
+    A refusal arrives as stop_reason="refusal" with no content blocks (or with
+    the output cut off mid-sentence), which every caller would otherwise
+    misread as a truncated or malformed completion.
+    """
+    try:
+        if getattr(response, "stop_reason", None) != "refusal":
+            return None
+    except Exception:
+        return None
+    category = None
+    try:
+        details = getattr(response, "stop_details", None)
+        if isinstance(details, dict):
+            category = details.get("category")
+        elif details is not None:
+            category = getattr(details, "category", None)
+    except Exception:
+        pass
+    suffix = f" (category: {category})" if category else ""
+    return f"[REFUSAL] Model declined to respond{suffix}. {REFUSAL_ADVICE}"
+
+
+def first_refusal(*agents: Any) -> Optional[str]:
+    """Return the refusal notice from the last call on any of `agents`, if any.
+
+    Lets a workflow ask "did the API just refuse?" without reaching into
+    response objects it never sees.
+    """
+    for agent in agents:
+        notice = getattr(agent, "last_refusal", None)
+        if notice:
+            return notice
+    return None
+
+
 def log_api_exchange(logger, source: str, api_params: Optional[Dict[str, Any]],
                      response: Any, text: Optional[str]) -> None:
     """Log one line per API exchange, escalating to ERROR when no text came back.
@@ -124,7 +172,12 @@ def log_api_exchange(logger, source: str, api_params: Optional[Dict[str, Any]],
             f"response: {describe_response(response)}\n"
             f"extracted_text_chars={len(text or '')}"
         )
-        if text and text.strip():
+        refusal = refusal_notice(response)
+        if refusal:
+            # A refusal can still carry partial text (cut off mid-stream), so it
+            # is reported ahead of the empty/non-empty split.
+            logger.log_error(f"{refusal}\n{detail}")
+        elif text and text.strip():
             logger.log_action("api_exchange", detail)
         else:
             logger.log_error(
@@ -217,6 +270,30 @@ def demo() -> None:
     assert "stop_reason=max_tokens" in logger.errors[0]
     assert "max_tokens=4096" in logger.errors[0]
     assert "thinking" in logger.errors[0]
+
+    # The observed refusal: no content blocks, stop_reason="refusal".
+    refused = _Block(model="claude-sonnet-4-5-20250929", stop_reason="refusal",
+                     stop_details={"type": "refusal", "category": "bio"},
+                     content=[], usage=None)
+    logger = _Logger()
+    log_api_exchange(logger, "DirectorAgent", {"model": "m"}, refused, "")
+    assert len(logger.errors) == 1 and "[REFUSAL]" in logger.errors[0]
+    assert "category: bio" in logger.errors[0]
+    assert "running the round again" in logger.errors[0]
+
+    # A mid-stream refusal keeps its partial text but must still report as refusal.
+    cut_off = _Block(model="m", stop_reason="refusal", stop_details=None,
+                     content=[_Block(type="text", text="**Thought**: <execution_")], usage=None)
+    logger = _Logger()
+    log_api_exchange(logger, "DirectorAgent", {"model": "m"}, cut_off, "**Thought**: <execution_")
+    assert not logger.actions, "a refusal must not log as a normal action"
+    assert "[REFUSAL]" in logger.errors[0] and "category" not in logger.errors[0]
+
+    assert refusal_notice(_Block(stop_reason="end_turn")) is None
+    assert refusal_notice(object()) is None
+
+    assert first_refusal(_Block(last_refusal=None), _Block(last_refusal="x")) == "x"
+    assert first_refusal(object(), _Block(last_refusal=None)) is None
 
     # A healthy response logs once, at action level.
     ok = _Block(model="m", stop_reason="end_turn",

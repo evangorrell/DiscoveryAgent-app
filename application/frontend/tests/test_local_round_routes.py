@@ -15,7 +15,7 @@ def test_start_route_returns_monitor_redirect(monkeypatch):
     monkeypatch.setattr(
         app_module.local_round_runner,
         "start_round",
-        lambda actual: {"project_id": actual["id"], "round": 0, "status": "starting", "pid": 10},
+        lambda actual, options=None: {"project_id": actual["id"], "round": 0, "status": "starting", "pid": 10},
     )
     response = client.post("/api/rounds/start", json={"project_root": "/untrusted/client/path"})
     assert response.status_code == 202
@@ -28,10 +28,86 @@ def test_start_route_returns_monitor_redirect(monkeypatch):
     }
 
 
+def test_start_route_forwards_only_recognized_round_options(monkeypatch):
+    client, _project = client_with_project(monkeypatch)
+    seen = {}
+
+    def record(actual, options=None):
+        seen["options"] = options
+        return {"project_id": actual["id"], "round": 0, "status": "starting", "pid": 10}
+
+    monkeypatch.setattr(app_module.local_round_runner, "start_round", record)
+    response = client.post("/api/rounds/start", json={
+        "num_queries": 9,
+        "deep_research": False,
+        # Agents that need outside authorization, and a setting that is no
+        # longer a choice — all dropped rather than forwarded.
+        "opentargets": True,
+        "sub_agents": False,
+        # Neither a round setting nor something a browser may dictate.
+        "working_directory": "/untrusted/client/path",
+        "no_sandbox": True,
+    })
+
+    assert response.status_code == 202
+    assert seen["options"] == {
+        "num_queries": 9,
+        "omit_deepresearch": True,
+    }
+
+
+def test_options_route_relays_the_live_model_list(monkeypatch):
+    client, _project = client_with_project(monkeypatch)
+    monkeypatch.setattr(app_module.local_round_runner, "next_round_number", lambda _project: 0)
+    monkeypatch.setattr(app_module.model_catalog, "available_models", lambda: {
+        "models": [{"id": "claude-opus-9", "display_name": "Claude Opus 9"}],
+        "source": "anthropic",
+        "error": None,
+    })
+
+    payload = client.get("/api/rounds/options").get_json()
+
+    assert payload["ok"] is True
+    assert payload["models"] == [{"id": "claude-opus-9", "display_name": "Claude Opus 9"}]
+    assert payload["models_source"] == "anthropic"
+    assert payload["defaults"]["reasoning_model"]
+    assert payload["defaults"]["execution_model"]
+
+
+def test_options_route_says_when_the_list_is_the_builtin_fallback(monkeypatch):
+    client, _project = client_with_project(monkeypatch)
+    monkeypatch.setattr(app_module.local_round_runner, "next_round_number", lambda _project: 0)
+    monkeypatch.setattr(app_module.model_catalog, "available_models", lambda: {
+        "models": [{"id": "claude-opus-5", "display_name": "Claude Opus 5"}],
+        "source": "builtin",
+        "error": "offline",
+    })
+
+    payload = client.get("/api/rounds/options").get_json()
+
+    assert payload["models_source"] == "builtin"
+    # The reason the live call failed is not shown to the browser.
+    assert "error" not in payload
+
+
+def test_start_route_rejects_an_out_of_range_query_count(monkeypatch):
+    client, _project = client_with_project(monkeypatch)
+    monkeypatch.setattr(
+        app_module.local_round_runner,
+        "start_round",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not launch")),
+    )
+
+    response = client.post("/api/rounds/start", json={"num_queries": 500})
+
+    assert response.status_code == 400
+    assert response.get_json()["code"] == "invalid_round_options"
+
+
 def test_start_route_returns_actionable_runner_error(monkeypatch):
     client, _project = client_with_project(monkeypatch)
 
-    def fail(_project):
+    def fail(_project, options=None):
         raise app_module.local_round_runner.RoundLaunchError("anthropic_api_key_missing", "Set it and restart.")
 
     monkeypatch.setattr(app_module.local_round_runner, "start_round", fail)
@@ -43,7 +119,7 @@ def test_start_route_returns_actionable_runner_error(monkeypatch):
 def test_start_and_resume_routes_return_missing_key_as_expected_validation(monkeypatch):
     client, _project = client_with_project(monkeypatch)
 
-    def fail(_project):
+    def fail(_project, options=None):
         raise app_module.local_round_runner.RoundLaunchError(
             "anthropic_api_key_missing",
             app_module.local_round_runner.MISSING_KEY_MESSAGE,

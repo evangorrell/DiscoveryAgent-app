@@ -63,7 +63,14 @@ class BootstrapResult:
 
 
 def default_data_root() -> Path:
-    return (Path.home() / "Library" / "Application Support" / "DiscoveryAgent").resolve()
+    """Suggest a data root the scientist can actually find and copy files into.
+
+    Application Support is hidden from Finder by default and awkward to reach
+    from a shell, which made the projects DiscoveryAgent creates effectively
+    unreachable. The first packaged launch confirms this location before any
+    project exists (see ``resolve_data_root``).
+    """
+    return (Path.home() / "DiscoveryAgent").resolve()
 
 
 def _read_release_metadata(path: Path) -> ReleaseMetadata:
@@ -496,6 +503,33 @@ exec {quoted_python} -c 'import sys; from pathlib import Path; root=Path(sys.arg
 """
 
 
+def _refuse_foreign_cli_path(cli_path: Path) -> None:
+    """Never replace a file at --cli-path that DiscoveryAgent did not write.
+
+    The shim is published with os.replace, which silently overwrites whatever
+    occupies the destination. A scientist who points --cli-path at an existing
+    tool (or a name that another package already owns) must get an error rather
+    than lose that file.
+    """
+    if not os.path.lexists(cli_path):
+        return
+    if cli_path.is_symlink() or not cli_path.is_file():
+        raise BootstrapError(
+            f"Refusing to replace an existing non-regular file at {cli_path}"
+        )
+    try:
+        existing = cli_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise BootstrapError(
+            f"Refusing to replace an unreadable existing file at {cli_path}: {exc}"
+        ) from exc
+    if "discoveryagent_cli" not in existing:
+        raise BootstrapError(
+            f"Refusing to overwrite an existing file that DiscoveryAgent did not "
+            f"create: {cli_path}. Choose another --cli-path, or move that file aside."
+        )
+
+
 def install_cli_shim(
     cli_path: Path,
     *,
@@ -503,6 +537,7 @@ def install_cli_shim(
     python: Path,
 ) -> Path:
     """Atomically install the external production CLI shim."""
+    _refuse_foreign_cli_path(cli_path)
     cli_path.parent.mkdir(parents=True, exist_ok=True)
     expected = production_wrapper_contents(python, install_root=install_root)
     descriptor, temporary_name = tempfile.mkstemp(
@@ -529,12 +564,13 @@ def install_cli_shim(
 def bootstrap_development_install(
     config: BootstrapConfig,
     *,
+    reporter: Callable[[str], None] | None = None,
     runtime_acquirer: RuntimeAcquirer = acquire_runtimes,
     environment_syncer: Callable[[Path, Path, Path, Path, Path], Path] = sync_environment,
     release_validator: Callable[[Path, Path], EnvironmentValidation] = validate_installed_release,
 ) -> BootstrapResult:
     selected = config.normalized()
-    from .installer import ProductionInstallConfig, install_production_release
+    from .installer import ProductionInstallConfig, _silent_reporter, install_production_release
 
     return install_production_release(
         ProductionInstallConfig(
@@ -543,6 +579,7 @@ def bootstrap_development_install(
             cli_path=selected.install_root / "bin" / "discoveryagent",
             data_root=selected.data_root,
         ),
+        reporter=_silent_reporter if reporter is None else reporter,
         runtime_acquirer=runtime_acquirer,
         environment_syncer=environment_syncer,
         release_validator=release_validator,

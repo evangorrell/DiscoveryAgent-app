@@ -46,7 +46,8 @@ def main() -> int:
                 repository_root=REPOSITORY_ROOT,
                 install_root=arguments.install_root,
                 data_root=arguments.data_root,
-            )
+            ),
+            reporter=(lambda message: print(f"==> {message}", flush=True)),
         )
     except ManagerError as exc:
         print(f"DiscoveryAgent bootstrap error: {exc}", file=sys.stderr)

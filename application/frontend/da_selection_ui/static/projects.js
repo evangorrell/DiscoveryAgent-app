@@ -24,14 +24,14 @@
         cancel: $('np-cancel'), form: $('np-form'), name: $('np-name'), objective: $('np-objective'), context: $('np-context'),
         fileList: $('np-file-list'), formError: $('np-form-error'), submit: $('np-submit'),
         title: $('np-title'), projectState: $('np-project-state'), projectFooter: $('np-project-footer'),
-        stepOneIndicator: $('np-step-one-indicator'),
         editDataField: $('np-edit-data-field'), editOpenDataFolder: $('np-edit-open-data-folder'),
         editDataEmpty: $('np-edit-data-empty'), editDataError: $('np-edit-data-error'),
-        addDataState: $('np-add-data-state'),
-        dataFooter: $('np-data-footer'), openDataFolder: $('np-open-data-folder'),
-        dataBack: $('np-data-back'), continueProject: $('np-continue-project'),
-        dataFileList: $('np-data-file-list'), dataEmpty: $('np-data-empty'),
-        dataError: $('np-data-error'),
+        editDataPathRow: $('np-edit-data-path-row'), editDataPath: $('np-edit-data-path'),
+        editCopyDataPath: $('np-edit-copy-data-path'), editDataNote: $('np-edit-data-note'),
+        createDataField: $('np-create-data-field'), dataFolder: $('np-data-folder'),
+        dataFolderChoose: $('np-data-folder-choose'), dataFolderPreview: $('np-data-folder-preview'),
+        dataFolderList: $('np-data-folder-list'), dataFolderEmpty: $('np-data-folder-empty'),
+        dataFolderCount: $('np-data-folder-count'), dataFolderError: $('np-data-folder-error'),
         deleteOverlay: $('delete-project-overlay'), deleteName: $('delete-project-name'),
         deleteError: $('delete-project-error'), deleteCancel: $('delete-project-cancel'),
         deleteConfirm: $('delete-project-confirm'),
@@ -208,8 +208,9 @@
     let modalMode = 'create';
     let editingProjectId = null;
     let pendingEditProjectId = null;
-    let createdProject = null;
     let dataScanTimer = null;
+    let dataFolderToken = 0;      // discards stale folder-inspection responses
+    const DATA_FOLDER_PREVIEW_LIMIT = 25;
 
     function humanSize(bytes) {
         if (bytes == null) return '';
@@ -245,35 +246,139 @@
         });
     }
 
-    function setDataError(message) {
-        els.dataError.textContent = message || '';
-        els.dataError.hidden = !message;
+    // ---- data folder chosen at creation --------------------------------------
+
+    function setDataFolderError(message) {
+        els.dataFolderError.textContent = message || '';
+        els.dataFolderError.hidden = !message;
     }
 
-    function renderDiscoveredFiles(files) {
-        els.dataFileList.innerHTML = '';
-        const datasetFiles = (files || []).filter((file) => !file.managed);
-        els.dataEmpty.hidden = datasetFiles.length > 0;
-        (files || []).forEach((file) => {
-            const li = el('li', 'v2-file-row' + (file.managed ? ' v2-file-row-managed' : ''));
+    function renderDataFolderPreview(files) {
+        if (files == null) {
+            els.dataFolderPreview.hidden = true;
+            els.dataFolderList.innerHTML = '';
+            els.dataFolderCount.textContent = '';
+            return;
+        }
+        els.dataFolderList.innerHTML = '';
+        els.dataFolderPreview.hidden = false;
+        els.dataFolderEmpty.hidden = files.length > 0;
+        els.dataFolderCount.textContent = files.length
+            ? files.length + (files.length === 1 ? ' file' : ' files')
+            : '';
+        files.slice(0, DATA_FOLDER_PREVIEW_LIMIT).forEach((file) => {
+            const li = el('li', 'v2-file-row');
             li.appendChild(el('span', 'v2-file-icon', fileIcon(file.name)));
             li.appendChild(el('span', 'v2-file-name', esc(file.name)));
-            if (file.managed) li.appendChild(el('span', 'v2-file-managed', 'Project Context'));
             li.appendChild(el('span', 'v2-file-size', esc(humanSize(file.size))));
-            els.dataFileList.appendChild(li);
+            els.dataFolderList.appendChild(li);
         });
+        if (files.length > DATA_FOLDER_PREVIEW_LIMIT) {
+            const more = el('li', 'v2-file-row v2-file-row-managed');
+            more.appendChild(el('span', 'v2-file-name',
+                esc('and ' + (files.length - DATA_FOLDER_PREVIEW_LIMIT) + ' more')));
+            els.dataFolderList.appendChild(more);
+        }
+    }
+
+    // The server validates the path and lists it; the browser never reads disk.
+    async function inspectDataFolder() {
+        const raw = els.dataFolder.value.trim();
+        dataFolderToken += 1;
+        const token = dataFolderToken;
+        if (!raw) {
+            setDataFolderError(null);
+            renderDataFolderPreview(null);
+            return;
+        }
+        try {
+            const resp = await fetch('/api/data-folder/inspect', {
+                method: 'POST', credentials: 'include',
+                headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: raw }),
+            });
+            const data = await readJson(resp);
+            if (token !== dataFolderToken) return;
+            if (!(resp.ok && data && data.success)) {
+                renderDataFolderPreview(null);
+                setDataFolderError((data && data.error) || 'That folder could not be used.');
+                return;
+            }
+            setDataFolderError(null);
+            renderDataFolderPreview(data.files || []);
+        } catch (err) {
+            if (token !== dataFolderToken) return;
+            renderDataFolderPreview(null);
+            setDataFolderError(err && err.message ? err.message : 'That folder could not be checked.');
+        }
+    }
+
+    async function chooseDataFolder() {
+        els.dataFolderChoose.disabled = true;
+        try {
+            const resp = await fetch('/api/data-folder/choose', {
+                method: 'POST', credentials: 'include', headers: { 'Accept': 'application/json' },
+            });
+            const data = await readJson(resp);
+            if (!(resp.ok && data && data.success)) {
+                throw new Error((data && data.error) || 'The folder chooser could not be opened.');
+            }
+            if (data.cancelled) return;
+            els.dataFolder.value = data.path || '';
+            dataFolderToken += 1;
+            setDataFolderError(null);
+            renderDataFolderPreview(data.files || []);
+        } catch (err) {
+            setDataFolderError(err && err.message ? err.message : 'The folder chooser could not be opened.');
+        } finally {
+            els.dataFolderChoose.disabled = false;
+        }
+    }
+
+    function resetDataFolderField() {
+        dataFolderToken += 1;
+        els.dataFolder.value = '';
+        setDataFolderError(null);
+        renderDataFolderPreview(null);
+    }
+
+    // ---- data folder of an existing project ----------------------------------
+
+    function renderEditDataFolder(folder) {
+        const path = folder && folder.path;
+        els.editDataPathRow.hidden = !path;
+        els.editDataPath.textContent = path || '';
+        if (!path) return;
+        els.editDataNote.textContent = folder.external
+            ? 'This is your own folder. DiscoveryAgent reads it in place and never changes what is in it.'
+            : 'Copy files into the folder above and they appear here automatically.';
+    }
+
+    async function copyEditDataPath() {
+        const path = els.editDataPath.textContent || '';
+        if (!path) return;
+        const original = els.editCopyDataPath.textContent;
+        try {
+            await navigator.clipboard.writeText(path);
+            els.editCopyDataPath.textContent = 'Copied';
+        } catch (err) {
+            els.editCopyDataPath.textContent = 'Press ⌘C';
+            const range = document.createRange();
+            range.selectNodeContents(els.editDataPath);
+            const selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+        }
+        setTimeout(() => { els.editCopyDataPath.textContent = original; }, 1600);
     }
 
     function activeDataProjectId() {
-        if (modalMode === 'edit' && editingProjectId) return editingProjectId;
-        if (!els.addDataState.hidden && createdProject) return createdProject.id;
-        return null;
+        return (modalMode === 'edit' && editingProjectId) ? editingProjectId : null;
     }
 
     function setActiveDataError(message) {
-        const target = modalMode === 'edit' ? els.editDataError : els.dataError;
-        target.textContent = message || '';
-        target.hidden = !message;
+        els.editDataError.textContent = message || '';
+        els.editDataError.hidden = !message;
     }
 
     async function rescanDataFolder() {
@@ -287,12 +392,8 @@
             if (!(resp.ok && data && data.success)) {
                 throw new Error((data && data.error) || 'Could not scan the data folder.');
             }
-            if (modalMode === 'edit') {
-                existingFiles = data.files || [];
-                renderFileList();
-            } else {
-                renderDiscoveredFiles(data.files || []);
-            }
+            existingFiles = data.files || [];
+            renderFileList();
             setActiveDataError(null);
         } catch (err) {
             setActiveDataError(err && err.message ? err.message : 'Could not scan the data folder.');
@@ -310,53 +411,20 @@
         dataScanTimer = window.setInterval(rescanDataFolder, 2000);
     }
 
-    function showProjectFormState() {
-        stopDataPolling();
+    function applyMode() {
         els.projectState.hidden = false;
         els.projectFooter.hidden = false;
-        els.addDataState.hidden = true;
-        els.dataFooter.hidden = true;
-    }
-
-    function showAddDataState(project) {
-        createdProject = {
-            id: project.project_id || project.id,
-            destination: project.destination || (createdProject && createdProject.destination),
-        };
-        els.title.textContent = 'Create a new DiscoveryAgent project';
-        els.projectState.hidden = true;
-        els.projectFooter.hidden = true;
-        els.addDataState.hidden = false;
-        els.dataFooter.hidden = false;
-        renderDiscoveredFiles([]);
-        setDataError(null);
-        startDataPolling();
-        setTimeout(() => els.openDataFolder.focus(), 30);
-    }
-
-    function backToProjectDetails() {
-        if (!createdProject || !createdProject.id) return;
-        modalMode = 'created';
-        resetSubmitState();
-        setFormError(null);
-        setTimeout(() => els.name.focus(), 30);
-    }
-
-    function applyMode() {
-        showProjectFormState();
         const isEdit = modalMode === 'edit';
+        // One page in both modes: creating chooses a data folder, editing shows
+        // the folder the project already uses.
         els.editDataField.hidden = !isEdit;
-        els.stepOneIndicator.hidden = isEdit;
-        if (isEdit) {
-            els.title.textContent = 'Edit DiscoveryAgent project';
-            els.submit.innerHTML = 'Save Changes';
-        } else if (modalMode === 'created') {
-            els.title.textContent = 'Create a new DiscoveryAgent project';
-            els.submit.innerHTML = 'Create project <span class="v2-arrow" aria-hidden="true">&rarr;</span>';
-        } else {
-            els.title.textContent = 'Create a new DiscoveryAgent project';
-            els.submit.innerHTML = 'Create project <span class="v2-arrow" aria-hidden="true">&rarr;</span>';
-        }
+        els.createDataField.hidden = isEdit;
+        els.title.textContent = isEdit
+            ? 'Edit DiscoveryAgent project'
+            : 'Create a new DiscoveryAgent project';
+        els.submit.innerHTML = isEdit
+            ? 'Save Changes'
+            : 'Create project <span class="v2-arrow" aria-hidden="true">&rarr;</span>';
     }
 
     function resetSubmitState() {
@@ -367,9 +435,10 @@
 
     function openCreate() {
         modalMode = 'create'; editingProjectId = null;
-        createdProject = null;
+        stopDataPolling();
         existingFiles = [];
         els.form.reset();
+        resetDataFolderField();
         resetSubmitState();
         renderFileList();
         setFormError(null);
@@ -378,10 +447,12 @@
 
     async function openEdit(project) {
         modalMode = 'edit'; editingProjectId = project.id;
-        createdProject = null;
+        stopDataPolling();
         existingFiles = [];
         els.form.reset();
+        resetDataFolderField();
         resetSubmitState();
+        renderEditDataFolder(null);
         setFormError(null);
         setActiveDataError(null);
         // Prefill from the row immediately, then hydrate full detail and files.
@@ -401,6 +472,7 @@
                 els.context.value = data.project.dataset_context || '';
                 existingFiles = data.project.files || [];
                 renderFileList();
+                renderEditDataFolder(data.project.data_folder);
             }
         } catch (err) { /* keep the row prefill on failure */ }
         if (editingProjectId === project.id && !els.overlay.hidden) startDataPolling();
@@ -490,13 +562,10 @@
 
     function closeModal() {
         if (els.submit.classList.contains('is-busy')) return;
-        const shouldReload = Boolean(createdProject);
         stopDataPolling();
         els.overlay.hidden = true;
         resetProjectModalScroll();
         document.body.classList.remove('v2-modal-open');
-        createdProject = null;
-        if (shouldReload) loadProjects();
         if (lastFocused && lastFocused.focus) lastFocused.focus();
     }
 
@@ -528,25 +597,6 @@
             setActiveDataError(err && err.message ? err.message : 'Could not open the data folder.');
         } finally {
             button.disabled = false;
-        }
-    }
-
-    async function continueToProjectHome() {
-        if (!createdProject || !createdProject.id) return;
-        els.continueProject.disabled = true;
-        try {
-            const resp = await fetch('/api/projects/' + encodeURIComponent(createdProject.id) + '/continue', {
-                method: 'POST', credentials: 'include', headers: { 'Accept': 'application/json' },
-            });
-            const data = await readJson(resp);
-            if (!(resp.ok && data && data.success && data.destination)) {
-                throw new Error((data && data.error) || 'Could not continue to the project.');
-            }
-            stopDataPolling();
-            window.location.href = data.destination;
-        } catch (err) {
-            setDataError(err && err.message ? err.message : 'Could not continue to the project.');
-            els.continueProject.disabled = false;
         }
     }
 
@@ -590,11 +640,13 @@
             body.append('project_name', name);
             body.append('task_description', objective);
             body.append('dataset_context', context);
+            if (modalMode === 'create') {
+                // Blank means "DiscoveryAgent manages one"; the server decides.
+                body.append('data_folder', els.dataFolder.value.trim());
+            }
             const endpoint = modalMode === 'edit'
                 ? '/api/projects/' + encodeURIComponent(editingProjectId) + '/edit'
-                : modalMode === 'created'
-                    ? '/api/projects/' + encodeURIComponent(createdProject.id) + '/edit'
-                    : '/api/projects';
+                : '/api/projects';
             const resp = await fetch(endpoint, { method: 'POST', credentials: 'include', body: body });
             const data = await readJson(resp);
             if (!(resp.ok && data && data.success)) {
@@ -607,17 +659,10 @@
                     loadProjects();
                     return;
                 }
-                if (modalMode === 'created') {
-                    const savedProject = {
-                        id: createdProject.id,
-                        destination: createdProject.destination,
-                    };
-                    resetSubmitState();
-                    showAddDataState(savedProject);
-                    return;
-                }
-                resetSubmitState();
-                showAddDataState(data);
+                // Creation already activated the project: go straight to Project
+                // Home, which shows the data folder's exact path.
+                stopDataPolling();
+                window.location.href = data.destination;
                 return;
             }
         } catch (err) {
@@ -653,10 +698,15 @@
         });
         document.addEventListener('click', () => closeAllMenus());
         els.form.addEventListener('submit', submitForm);
-        els.openDataFolder.addEventListener('click', openDataFolder);
         els.editOpenDataFolder.addEventListener('click', openDataFolder);
-        els.dataBack.addEventListener('click', backToProjectDetails);
-        els.continueProject.addEventListener('click', continueToProjectHome);
+        els.editCopyDataPath.addEventListener('click', copyEditDataPath);
+        els.dataFolderChoose.addEventListener('click', chooseDataFolder);
+        let inspectTimer = null;
+        els.dataFolder.addEventListener('input', () => {
+            if (inspectTimer) window.clearTimeout(inspectTimer);
+            inspectTimer = window.setTimeout(inspectDataFolder, 400);
+        });
+        els.dataFolder.addEventListener('change', inspectDataFolder);
         [els.name, els.objective, els.context].forEach((el) => {
             if (el) el.addEventListener('input', () => clearInvalid(el));
         });

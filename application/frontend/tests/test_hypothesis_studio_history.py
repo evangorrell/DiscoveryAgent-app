@@ -1087,7 +1087,7 @@ def test_round_launch_failure_after_selection_preserves_pending_selection(monkey
     assert selected.get_json()["success"] is True
     before_launch = rd.joinpath("selected_hypothesis.md").read_text(encoding="utf-8")
 
-    def fail_launch(_project):
+    def fail_launch(_project, options=None):
         raise app_module.local_round_runner.RoundLaunchError(
             "anthropic_api_key_missing",
             "Anthropic API key not detected. Set ANTHROPIC_API_KEY and try again.",

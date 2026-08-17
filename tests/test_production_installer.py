@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from manager.discoveryagent_cli.bootstrap import EnvironmentValidation
+from manager.discoveryagent_cli.bootstrap import EnvironmentValidation, install_cli_shim
 from manager.discoveryagent_cli.errors import BootstrapError
 from manager.discoveryagent_cli.installer import (
     InstallationLock,
@@ -157,9 +157,8 @@ class ProductionInstallerTests(unittest.TestCase):
             defaults.install_root, home / ".local/share/discoveryagent"
         )
         self.assertEqual(defaults.cli_path, home / ".local/bin/discoveryagent")
-        self.assertEqual(
-            defaults.data_root, home / "Library/Application Support/DiscoveryAgent"
-        )
+        # Reachable from Finder and from a shell, unlike Application Support.
+        self.assertEqual(defaults.data_root, home / "DiscoveryAgent")
         with self.assertRaisesRegex(BootstrapError, "--install-root"):
             ProductionInstallConfig(
                 self.payload,
@@ -445,6 +444,58 @@ class ProductionInstallerTests(unittest.TestCase):
             )
         self.assertFalse((home / ".zprofile").exists())
         self.assertFalse((self.install / "state.json").exists())
+
+
+class CliShimSafetyTests(unittest.TestCase):
+    """--cli-path is user-supplied, so publishing the shim must never clobber."""
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.install_root = self.root / "installed"
+        self.python = self.root / "python"
+        self.python.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    def shim(self, cli_path: Path) -> Path:
+        return install_cli_shim(
+            cli_path,
+            install_root=self.install_root,
+            python=self.python,
+        )
+
+    def test_unrelated_existing_command_is_preserved(self) -> None:
+        cli = self.root / "bin" / "discoveryagent"
+        cli.parent.mkdir()
+        cli.write_text("#!/bin/sh\necho someone else's tool\n", encoding="utf-8")
+
+        with self.assertRaisesRegex(BootstrapError, "did not create"):
+            self.shim(cli)
+
+        self.assertEqual(
+            cli.read_text(encoding="utf-8"), "#!/bin/sh\necho someone else's tool\n"
+        )
+
+    def test_symlink_at_the_cli_path_is_refused_without_following_it(self) -> None:
+        target = self.root / "important"
+        target.write_text("irreplaceable", encoding="utf-8")
+        cli = self.root / "link"
+        cli.symlink_to(target)
+
+        with self.assertRaisesRegex(BootstrapError, "non-regular file"):
+            self.shim(cli)
+
+        self.assertEqual(target.read_text(encoding="utf-8"), "irreplaceable")
+        self.assertTrue(cli.is_symlink())
+
+    def test_reinstall_replaces_a_shim_discoveryagent_wrote(self) -> None:
+        cli = self.root / "bin" / "discoveryagent"
+
+        first = self.shim(cli)
+        second = self.shim(cli)
+
+        self.assertEqual(first, second)
+        self.assertIn("discoveryagent_cli", cli.read_text(encoding="utf-8"))
 
 
 class InstallationLockTests(unittest.TestCase):

@@ -62,6 +62,7 @@ from .db import (
     EventLog,
 )
 from . import local_round_runner
+from . import model_catalog
 from .interaction_storage import (
     append_jsonl_line,
     migrate_legacy_interactions,
@@ -1615,6 +1616,11 @@ _ROUND_ACTIVITY_EVENT_LABELS = {
     'memory_report_saved': 'Memory report saved.',
 }
 
+# Round-level events whose own `message` is shown verbatim: the backend writes a
+# specific explanation (which call was refused, why the round stopped) that no
+# fixed label could carry.
+_ROUND_ACTIVITY_MESSAGE_EVENTS = {'model_refusal', 'early_stopping'}
+
 
 def _read_round_activity_jsonl(round_dir: Path, max_lines: int = ROUND_ACTIVITY_JSONL_MAX_LINES) -> list[dict]:
     """
@@ -1675,6 +1681,8 @@ def _build_round_activity_jsonl_events(round_dir: Path, max_events: int = 150) -
 
         if event_type in _ROUND_ACTIVITY_EVENT_LABELS:
             message = _ROUND_ACTIVITY_EVENT_LABELS[event_type]
+        elif event_type in _ROUND_ACTIVITY_MESSAGE_EVENTS and message_field:
+            message = message_field
         elif (
             event_type == 'query_step' and query_name and message_field
             and _is_meaningful_description_candidate(message_field)
@@ -7752,7 +7760,13 @@ def _v2_build_project_state() -> dict:
     title = session.get('project_label') or 'DiscoveryAgent Project'
     research_goal = project_cfg.get('task_description') or (_v2_read_research_goal(checkpoint_dir_raw) if checkpoint_dir_raw else None)
     project_slug = session.get('v2_active_project_slug') or ''
-    return _v2_project_state_for(checkpoint_dir_raw, title, research_goal, project_slug)
+    state = _v2_project_state_for(checkpoint_dir_raw, title, research_goal, project_slug)
+    # Project Home is where a scientist looks for "where do my files go?", so it
+    # carries the project's real data path (see _v2_data_folder_payload).
+    active = _v2_get_project(session.get('v2_active_project_id') or '')
+    if active:
+        state['data_folder'] = _v2_data_folder_payload(active)
+    return state
 
 
 def _v2_active_round_dir_for(checkpoint_dir: Path) -> Path:
@@ -10037,6 +10051,30 @@ def _active_v2_project_for_round_execution() -> dict | None:
     return _v2_get_project(project_id)
 
 
+@app.route('/api/rounds/options', methods=['GET'])
+def api_local_round_options():
+    """Describe the settings the round dialog offers for the next round."""
+    project = _active_v2_project_for_round_execution()
+    if project is None:
+        return jsonify({
+            'ok': False,
+            'code': 'no_active_project',
+            'message': 'Open a local project before starting a research round.',
+        }), 400
+    try:
+        round_number = local_round_runner.next_round_number(project)
+    except local_round_runner.RoundLaunchError as exc:
+        return jsonify({'ok': False, 'code': exc.code, 'message': exc.message}), exc.http_status
+    catalog = model_catalog.available_models()
+    return jsonify({
+        'ok': True,
+        'round': round_number,
+        'defaults': local_round_runner.round_option_defaults(round_number, project),
+        'models': catalog['models'],
+        'models_source': catalog['source'],
+    })
+
+
 @app.route('/api/rounds/start', methods=['POST'])
 def api_start_local_round():
     """Start the active project's backend-native next autonomous round."""
@@ -10048,7 +10086,8 @@ def api_start_local_round():
             'message': 'Open a local project before starting a research round.',
         }), 400
     try:
-        result = local_round_runner.start_round(project)
+        options = local_round_runner.normalize_round_options(request.get_json(silent=True))
+        result = local_round_runner.start_round(project, options=options)
     except local_round_runner.RoundLaunchError as exc:
         return jsonify({'ok': False, 'code': exc.code, 'message': exc.message}), exc.http_status
     return jsonify({
@@ -10580,6 +10619,14 @@ def api_projects_create():
             'error': 'Please complete the required fields: ' + ', '.join(missing_fields) + '.',
         }), 400
 
+    # An empty data folder field keeps the managed code/data directory.
+    external_data_folder: Path | None = None
+    if (request.form.get('data_folder') or '').strip():
+        try:
+            external_data_folder = _v2_validate_external_data_folder(request.form.get('data_folder'))
+        except ValueError as exc:
+            return jsonify({'success': False, 'error': str(exc)}), 400
+
     files = request.files.getlist('files')
 
     record: dict | None = None
@@ -10598,14 +10645,25 @@ def api_projects_create():
         created = False
         try:
             code_dir.mkdir(parents=True, exist_ok=False)
-            data_dir.mkdir(parents=True, exist_ok=False)
+            if external_data_folder is None:
+                data_dir.mkdir(parents=True, exist_ok=False)
+            else:
+                # The scientist's own folder is linked in, never copied or moved.
+                _v2_link_external_data_folder(code_dir, external_data_folder)
+                data_dir = external_data_folder
             round0.mkdir(parents=True, exist_ok=False)
             created = True
 
             # DiscoveryAgent's canonical dataset root is working_directory/data.
             # Its root README.md is the persistent Project Context document;
-            # nested README files remain ordinary dataset inputs.
-            readme_path = data_dir / 'README.md' if dataset_context else None
+            # nested README files remain ordinary dataset inputs. A chosen data
+            # folder keeps that README in the project's own code directory so
+            # nothing is ever written into the scientist's folder.
+            readme_path = _v2_project_readme_path({
+                'code_dir': str(code_dir),
+                'data_dir': str(data_dir),
+                'external_data': external_data_folder is not None,
+            }) if dataset_context else None
             if readme_path:
                 readme_path.write_text(f"# {project_name}\n\n{dataset_context}\n", encoding='utf-8')
 
@@ -10645,6 +10703,7 @@ def api_projects_create():
                 'project_root': str(root),
                 'code_dir': str(code_dir),
                 'data_dir': str(data_dir),
+                'external_data': external_data_folder is not None,
                 'checkpoint_dir': str(round0),
                 'readme_path': str(readme_path) if readme_path else None,
                 'hypothesis_model': DEFAULT_HYPOTHESIS_MODEL,
@@ -10771,7 +10830,12 @@ def _v2_existing_files(project: dict, *, include_managed_readme: bool = False) -
             relative = PurePosixPath(rel)
             if not _v2_file_manager_visible_relative_path(files_path, relative, visibility_cache):
                 continue
-            is_managed_readme = rel in {'README.md', 'README.txt'}
+            # A chosen data folder holds no managed README, so a README the
+            # scientist already keeps there is an ordinary dataset input.
+            is_managed_readme = (
+                rel in {'README.md', 'README.txt'}
+                and not _v2_project_uses_external_data(project)
+            )
             if is_managed_readme and not include_managed_readme:
                 continue
             # Modern projects have a dedicated data_dir, so everything below
@@ -10854,14 +10918,91 @@ def _v2_file_manager_command(data_dir: Path, platform_name: str | None = None) -
     raise RuntimeError(f'Opening the data folder is not supported on {platform_name}.')
 
 
+def _v2_project_uses_external_data(project: dict) -> bool:
+    """Report whether this project reads a data folder the scientist chose."""
+    return bool(isinstance(project, dict) and project.get('external_data'))
+
+
+def _v2_validate_external_data_folder(raw: str) -> Path:
+    """Validate a scientist-supplied data folder without changing anything in it.
+
+    DiscoveryAgent links this folder into the project and reads from it. It is
+    never created, moved, emptied, or written to here, so the only failures are
+    refusals: the caller either gets a usable directory or an explanation.
+    """
+    text = str(raw or '').strip()
+    if not text:
+        raise ValueError('Choose a folder, or leave this blank to let DiscoveryAgent manage one.')
+    candidate = Path(text).expanduser()
+    if not candidate.is_absolute():
+        raise ValueError('Enter the full path to the folder, starting with / or ~.')
+    if not candidate.exists():
+        raise ValueError(f'There is no folder at {candidate}.')
+    if not candidate.is_dir():
+        raise ValueError(f'{candidate} is a file, not a folder.')
+
+    # Follow the link once, up front: the sandbox resolves real paths, so the
+    # project must record the location the agent will actually read.
+    resolved = candidate.resolve()
+    if resolved == Path(resolved.anchor) or resolved == Path.home().resolve():
+        raise ValueError(
+            'Choose a specific data folder rather than your whole home folder or disk.'
+        )
+    if not os.access(resolved, os.R_OK | os.X_OK):
+        raise ValueError(f'DiscoveryAgent cannot read {resolved}.')
+    projects_root = _v2_projects_root().resolve()
+    if resolved == projects_root or resolved.is_relative_to(projects_root):
+        raise ValueError(
+            'That folder is inside the projects folder DiscoveryAgent manages. '
+            'Choose a folder outside it, or leave this blank.'
+        )
+    return resolved
+
+
+def _v2_link_external_data_folder(code_dir: Path, data_folder: Path) -> Path:
+    """Publish the chosen folder at the project's canonical ``code/data`` path.
+
+    The backend runner and the sandbox both address data as
+    ``working_directory/data``; a symlink satisfies both without copying the
+    scientist's files or moving them out of the folder they chose.
+    """
+    link = code_dir / 'data'
+    if os.path.lexists(link):
+        raise ValueError('The project already has a data directory.')
+    link.symlink_to(data_folder, target_is_directory=True)
+    return link
+
+
+def _v2_project_readme_path(project: dict) -> Path | None:
+    """Return where this project's managed Project Context README belongs.
+
+    A chosen data folder belongs to the scientist, so the managed README is
+    kept in the project's own ``code`` directory instead. Projects that use the
+    managed data directory keep writing it there, unchanged.
+    """
+    if _v2_project_uses_external_data(project):
+        code_dir = project.get('code_dir')
+        return (Path(code_dir) / 'README.md') if code_dir else None
+    files_dir = _v2_project_files_dir(project)
+    return (Path(files_dir) / 'README.md') if files_dir else None
+
+
 def _v2_canonical_data_dir(project: dict) -> Path:
-    """Resolve only the registered project's canonical ``code/data`` root."""
+    """Resolve the project's data root: managed ``code/data`` or a chosen folder."""
     code_raw = project.get('code_dir') if isinstance(project, dict) else None
     data_raw = project.get('data_dir') if isinstance(project, dict) else None
     if not code_raw or not data_raw:
         raise ValueError('This project does not have a canonical data directory.')
     code_dir = Path(code_raw)
     data_dir = Path(data_raw)
+    if _v2_project_uses_external_data(project):
+        # code/data is a link to the chosen folder; both must still agree.
+        link = code_dir / 'data'
+        if not link.is_symlink() or os.path.realpath(link) != os.path.realpath(data_dir):
+            raise ValueError('The chosen data folder is no longer linked to this project.')
+        if not data_dir.is_dir():
+            raise ValueError('The chosen data folder is unavailable.')
+        return data_dir.resolve()
     expected = code_dir / 'data'
     if os.path.abspath(data_dir) != os.path.abspath(expected):
         raise ValueError('The project data directory is not canonical.')
@@ -10905,7 +11046,94 @@ def api_projects_detail(project_id):
             'task_description': _v2_project_task_description(project),
             'dataset_context': project.get('dataset_context'),
             'files': _v2_existing_files(project),
+            'data_folder': _v2_data_folder_payload(project),
         },
+    })
+
+
+def _v2_data_folder_payload(project: dict) -> dict:
+    """Describe where this project's data lives, so the UI can show the path.
+
+    The absolute path is the point: a scientist who wants to ``cp`` files in
+    needs to see and copy the exact location, not just a button that opens it.
+    """
+    if not isinstance(project, dict):
+        return {'path': None, 'external': False, 'available': False}
+    external = _v2_project_uses_external_data(project)
+    raw = project.get('data_dir')
+    payload = {
+        'path': str(raw) if raw else None,
+        'external': external,
+        'available': False,
+        'managed_by': 'you' if external else 'discoveryagent',
+        'project_id': project.get('id'),
+    }
+    try:
+        payload['path'] = str(_v2_canonical_data_dir(project))
+        payload['available'] = True
+    except (OSError, ValueError):
+        pass
+    return payload
+
+
+@app.route('/api/data-folder/inspect', methods=['POST'])
+def api_data_folder_inspect():
+    """Validate a candidate data folder and list what is already in it."""
+    payload = request.get_json(silent=True) or {}
+    raw = payload.get('path') if isinstance(payload, dict) else None
+    try:
+        folder = _v2_validate_external_data_folder(raw or '')
+    except ValueError as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 400
+    return jsonify({
+        'success': True,
+        'path': str(folder),
+        'files': _v2_existing_files({'data_dir': str(folder), 'external_data': True}),
+    })
+
+
+def _v2_native_folder_picker_command(platform_name: str | None = None) -> list[str]:
+    """Return a shell-free native folder chooser for this platform."""
+    platform_name = platform_name or sys.platform
+    if platform_name == 'darwin':
+        return [
+            'osascript',
+            '-e',
+            'POSIX path of (choose folder with prompt "Choose the folder that holds your data")',
+        ]
+    raise RuntimeError('Choosing a folder is only supported on macOS; type the path instead.')
+
+
+@app.route('/api/data-folder/choose', methods=['POST'])
+def api_data_folder_choose():
+    """Open the OS folder chooser and return what the scientist picked."""
+    try:
+        command = _v2_native_folder_picker_command()
+    except RuntimeError as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 501
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return jsonify({'success': False, 'error': f'Could not open the folder chooser: {exc}'}), 500
+    chosen = (completed.stdout or '').strip()
+    if completed.returncode != 0 or not chosen:
+        # A cancelled chooser is an ordinary outcome, not a failure.
+        return jsonify({'success': True, 'cancelled': True})
+    try:
+        folder = _v2_validate_external_data_folder(chosen)
+    except ValueError as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 400
+    return jsonify({
+        'success': True,
+        'cancelled': False,
+        'path': str(folder),
+        'files': _v2_existing_files({'data_dir': str(folder), 'external_data': True}),
     })
 
 
@@ -10988,11 +11216,11 @@ def api_projects_edit(project_id):
             return jsonify({'success': False, 'error': 'Project not found.'}), 404
 
         project_name = requested_project_name or _v2_unique_default_project_name(projects, exclude_id=project_id)
-        files_dir = _v2_project_files_dir(record)
         try:
-            # Only the data-root README.md is managed Project Context. Nested
-            # README files are ordinary dataset inputs and are never touched.
-            readme_path = (Path(files_dir) / 'README.md') if files_dir else None
+            # Only the managed README.md is Project Context. Nested README
+            # files are ordinary dataset inputs and are never touched, and a
+            # chosen data folder never holds the managed README at all.
+            readme_path = _v2_project_readme_path(record)
             if dataset_context:
                 if not readme_path:
                     raise ValueError('Project data directory is not configured.')

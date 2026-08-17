@@ -95,7 +95,9 @@ class ExecutionAgentCCConfig(AgentToolConfig):
     log_dir: str = "."
     # Additional parameters for ExecutionAgentCC
     readme_truncate_length: Optional[int] = None
-    max_turns: int = 10
+    # None means the agent runs until it decides the task is done. The step cap
+    # existed because earlier models were poor at recognising completion.
+    max_turns: Optional[int] = None
     working_directory: Optional[str] = None
     manual_file_tracking: bool = False
     max_turns_query_execution: Optional[int] = None
@@ -142,6 +144,22 @@ class ExecutionAgentCC(BaseAgent):
         if isinstance(model_name, str) and model_name.strip():
             return model_name.strip()
         return None
+
+    def _step_budget_section(self) -> str:
+        """Tell the agent its step budget, but only when it actually has one.
+
+        With no cap there is nothing true to say, and telling a current model to
+        ration steps makes it stop early rather than finish the analysis — the
+        behaviour the cap was originally there to work around.
+        """
+        if not self.max_turns_query_execution:
+            return ""
+        return (
+            "⏱️ BUDGET:\n"
+            f"You are only allowed to take a total of {self.max_turns_query_execution} steps to "
+            "complete this task. Please be efficient and mindful of this budget. Plan your "
+            "approach carefully to maximize the value of each step.\n"
+        )
 
     def _resolve_sub_agent_model_alias(self) -> str:
         """
@@ -330,7 +348,7 @@ class ExecutionAgentCC(BaseAgent):
         analysis_name = config.analysis_name
         log_dir = config.log_dir
         readme_truncate_length = getattr(config, 'readme_truncate_length', None)
-        max_turns = getattr(config, 'max_turns', 10)
+        max_turns = getattr(config, 'max_turns', None)
         working_directory = getattr(config, 'working_directory', None)
         manual_file_tracking = getattr(config, 'manual_file_tracking', False)
         max_turns_query_execution = getattr(config, 'max_turns_query_execution', None)
@@ -343,7 +361,9 @@ class ExecutionAgentCC(BaseAgent):
         self.analysis_name = analysis_name
         self.log_dir = log_dir
         self.readme_truncate_length = readme_truncate_length
-        # Resolve per-step max turns with backward-compatible fallback
+        # Resolve per-step max turns with backward-compatible fallback. Both
+        # may be None, which means the agent runs until it finishes rather than
+        # being cut off at an arbitrary step count.
         self.max_turns_query_execution = max_turns_query_execution if max_turns_query_execution is not None else max_turns
         self.max_turns = self.max_turns_query_execution
         self.separate_report_step = separate_report_step
@@ -632,7 +652,6 @@ class ExecutionAgentCC(BaseAgent):
 
             claude_options_kwargs = {
                 "agents": modified_sub_agent_configs,
-                "max_turns": self.max_turns_query_execution,
                 "max_buffer_size": int(os.getenv("CLAUDE_CODE_MAX_BUFFER_SIZE", str(50 * 1024 * 1024))),
                 "system_prompt": system_prompt,
                 "cwd": self.working_directory,
@@ -645,6 +664,11 @@ class ExecutionAgentCC(BaseAgent):
             }
             if resolved_model:
                 claude_options_kwargs["model"] = resolved_model
+            # Omitted entirely when unset: the SDK only passes --max-turns to
+            # the CLI when this is truthy, so leaving it out is what lets the
+            # agent run until it decides the task is done.
+            if self.max_turns_query_execution:
+                claude_options_kwargs["max_turns"] = self.max_turns_query_execution
             if mcp_servers:
                 claude_options_kwargs["mcp_servers"] = mcp_servers
             if configured_skills_paths is not None:
@@ -681,7 +705,6 @@ class ExecutionAgentCC(BaseAgent):
                     allowed_tools.append(f"mcp__{server_name}__*")
 
             claude_options_kwargs = {
-                "max_turns": self.max_turns_query_execution,
                 "max_buffer_size": int(os.getenv("CLAUDE_CODE_MAX_BUFFER_SIZE", str(50 * 1024 * 1024))),
                 "system_prompt": system_prompt,
                 "cwd": self.working_directory,
@@ -694,6 +717,11 @@ class ExecutionAgentCC(BaseAgent):
             }
             if resolved_model:
                 claude_options_kwargs["model"] = resolved_model
+            # Omitted entirely when unset: the SDK only passes --max-turns to
+            # the CLI when this is truthy, so leaving it out is what lets the
+            # agent run until it decides the task is done.
+            if self.max_turns_query_execution:
+                claude_options_kwargs["max_turns"] = self.max_turns_query_execution
             if mcp_servers:
                 claude_options_kwargs["mcp_servers"] = mcp_servers
             if configured_skills_paths is not None:
@@ -797,10 +825,11 @@ class ExecutionAgentCC(BaseAgent):
         Get the system prompt for Claude Code autonomous analysis.
         """
 
+        budget_section = self._step_budget_section()
         if self.sub_agent_architecture:
-            base_prompt = EXECUTION_AGENT_SYSTEM_PROMPT_SUB_AGENTS.format(budget_steps=self.max_turns_query_execution)
+            base_prompt = EXECUTION_AGENT_SYSTEM_PROMPT_SUB_AGENTS.format(budget_section=budget_section)
         else:
-            base_prompt = EXECUTION_AGENT_SYSTEM_PROMPT.format(budget_steps=self.max_turns_query_execution)
+            base_prompt = EXECUTION_AGENT_SYSTEM_PROMPT.format(budget_section=budget_section)
         
         # Add resource information if running on SLURM
         resource_info = get_slurm_resource_info()
@@ -992,16 +1021,15 @@ class ExecutionAgentCC(BaseAgent):
         Returns:
             dict: Results containing messages and concise_report
         """        
-        # Construct the analysis prompt
+        # Construct the analysis prompt. The step budget appears only when one
+        # is configured (see _step_budget_section).
         analysis_prompt = f"""
 Here's a description of the dataset you're working with:
 {dataset_description}
 
 {query_text}
 
-⏱️ BUDGET:
-You have {self.max_turns_query_execution} steps to complete this task. Please be efficient and mindful of this budget. Plan your approach carefully to maximize the value of each step.
-"""
+{self._step_budget_section()}"""
 
         if self.sub_agent_architecture:
             analysis_prompt += "\nUse your sub-agents whenever possible to help you complete the analysis."
@@ -1663,7 +1691,7 @@ You have {self.max_turns_query_execution} steps to complete this task. Please be
             'existing_files_count': len(getattr(self, 'existing_files', set())),
             'config_info': {
                 'analysis_name': getattr(self, 'analysis_name', ''),
-                'max_turns_query_execution': getattr(self, 'max_turns_query_execution', 10),
+                'max_turns_query_execution': getattr(self, 'max_turns_query_execution', None),
                 'separate_report_step': getattr(self, 'separate_report_step', False),
                 'claude_md_generator': getattr(self, 'claude_md_generator', False),
                 'execute_context_persistence': getattr(self, 'execute_context_persistence', True),
@@ -1671,7 +1699,7 @@ You have {self.max_turns_query_execution} steps to complete this task. Please be
             },
             'claude_session_info': {
                 'session_active': self.claude_client is not None,
-                'max_turns': getattr(self, 'max_turns', 10)
+                'max_turns': getattr(self, 'max_turns', None)
             }
         }
     

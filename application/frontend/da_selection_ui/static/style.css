@@ -4867,32 +4867,8 @@ body.v2-modal-open { overflow: hidden; }
     letter-spacing: 0.1em;
     text-transform: uppercase;
 }
-/* Step 2 advances within the same modal geometry as Step 1. Keep every Add
-   Data element on the modal body's content plane and preserve the compact,
-   top-aligned rhythm before the shared footer. */
-#np-add-data-state > .v2-modal-step {
-    margin: 0 0 7px;
-    color: var(--v2-muted);
-    font: 600 0.68rem/1.4 var(--v2-sans);
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-}
-#np-add-data-state > .v2-modal-section-label,
 #np-edit-data-field > .v2-modal-section-label {
     margin: 0 0 10px;
-}
-#np-add-data-state > .v2-add-data-description {
-    margin: 0 0 18px;
-}
-#np-add-data-state > .v2-field-note {
-    margin: 10px 0 0;
-}
-#np-add-data-state > .v2-data-scan {
-    margin-top: 0;
-}
-#np-add-data-state > .v2-modal-form-error {
-    padding-right: 0;
-    padding-left: 0;
 }
 
 /* ---- Modal form ---- */
@@ -5041,7 +5017,70 @@ body.v2-modal-open { overflow: hidden; }
     color: var(--v2-accent);
     font: 600 0.68rem/1.4 var(--v2-sans);
 }
-.v2-add-data code { font-family: var(--v2-mono, ui-monospace, monospace); }
+
+/* ---- Data folder path: chosen at creation, shown everywhere after ---- */
+.v2-path-picker {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.v2-path-input {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-family: var(--v2-mono, ui-monospace, monospace);
+    font-size: 0.85rem;
+}
+.v2-path-choose { flex: 0 0 auto; }
+.v2-path-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 10px 0 0;
+}
+/* The path is the content here: it stays selectable and wraps rather than
+   truncating, because a scientist copies it into a shell. */
+.v2-path {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    padding: 7px 10px;
+    border: 1px solid var(--v2-border);
+    border-radius: 8px;
+    background: var(--v2-bg);
+    color: var(--v2-text);
+    font: 400 0.82rem/1.5 var(--v2-mono, ui-monospace, monospace);
+    user-select: all;
+}
+.v2-data-folder-section .v2-muted { margin: 10px 0 0; font-size: 0.85rem; }
+
+/* ---- Round settings dialog ---- */
+.v2-round-options { width: min(620px, calc(100vw - 48px)); }
+.v2-round-options .v2-input-number { width: 8ch; }
+.v2-round-options .v2-field { margin-bottom: 22px; }
+.v2-select {
+    width: 100%;
+    font-family: var(--v2-sans);
+    font-size: 0.9rem;
+}
+.v2-checkbox-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 7px 0;
+    cursor: pointer;
+}
+.v2-checkbox-row input { margin-top: 3px; flex: 0 0 auto; }
+.v2-checkbox-label {
+    display: block;
+    font: 500 0.92rem/1.4 var(--v2-sans);
+    color: var(--v2-text);
+}
+.v2-checkbox-hint {
+    display: block;
+    margin-top: 2px;
+    font: 400 0.82rem/1.45 var(--v2-sans);
+    color: var(--v2-muted);
+}
 
 /* ---- Modal footer ---- */
 .v2-modal-form-error {

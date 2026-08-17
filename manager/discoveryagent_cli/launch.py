@@ -27,7 +27,9 @@ from .frontend_process import (
 from .installation import ValidatedLaunch
 from .onboarding import (
     paperclip_auth_available_locally,
+    plain_text_input,
     resolve_anthropic_api_key,
+    resolve_data_root,
     run_paperclip_login,
     secure_api_key_input,
     standard_input_is_interactive,
@@ -44,7 +46,7 @@ from .runtime_state import (
     remove_frontend_record_if_owned,
     write_frontend_record_atomic,
 )
-from .state import ManagerState, load_state
+from .state import ManagerState, load_state, write_state_atomic
 from .installation import validate_launch_installation
 
 
@@ -70,6 +72,7 @@ class LaunchDependencies:
     terminate: Callable[..., None] = terminate_frontend
     wall_time: Callable[[], float] = time.time
     secure_input: Callable[[str], str] = secure_api_key_input
+    text_input: Callable[[str], str] = plain_text_input
     input_is_interactive: Callable[[], bool] = standard_input_is_interactive
     paperclip_auth_available: Callable[[Mapping[str, str]], bool] = (
         paperclip_auth_available_locally
@@ -234,10 +237,23 @@ def launch_installed_application(
     output = sys.stdout if stdout is None else stdout
     errors = sys.stderr if stderr is None else stderr
     inherited = os.environ if manager_environment is None else manager_environment
-    state: ManagerState = load_state(paths.state_file)
-    validated = validate_launch_installation(paths, state, platform_name=state.platform)
-
     selected = dependencies or LaunchDependencies()
+    state: ManagerState = load_state(paths.state_file)
+
+    # Confirm the data root before validation creates it, and before anything
+    # else can write below it.
+    chosen_data_root = resolve_data_root(
+        Path(state.data_root).expanduser(),
+        install_root=paths.root,
+        interactive=selected.input_is_interactive,
+        text_input=selected.text_input,
+        stdout=output,
+    )
+    if str(chosen_data_root) != state.data_root:
+        state = replace(state, data_root=str(chosen_data_root))
+        write_state_atomic(paths.state_file, state)
+
+    validated = validate_launch_installation(paths, state, platform_name=state.platform)
     paths.frontend_cwd.mkdir(parents=True, exist_ok=True)
     process: subprocess.Popen[str] | None = None
     capture: FrontendOutputCapture | None = None

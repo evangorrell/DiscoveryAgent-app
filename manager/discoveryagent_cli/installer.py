@@ -20,6 +20,7 @@ from .bootstrap import (
     _read_release_metadata,
     _tree_manifest,
     _validate_canonical_release_copy,
+    default_data_root,
     install_cli_shim,
     install_manager_atomic,
     sync_environment,
@@ -70,10 +71,11 @@ class ProductionDefaults:
 
 def production_default_paths(home: Path | None = None) -> ProductionDefaults:
     root = (Path.home() if home is None else home).expanduser().resolve()
+    data_root = default_data_root() if home is None else root / "DiscoveryAgent"
     return ProductionDefaults(
         install_root=root / ".local" / "share" / "discoveryagent",
         cli_path=root / ".local" / "bin" / "discoveryagent",
-        data_root=root / "Library" / "Application Support" / "DiscoveryAgent",
+        data_root=data_root,
     )
 
 
@@ -384,9 +386,14 @@ def _state_for_installation(
     )
 
 
+def _silent_reporter(_message: str) -> None:
+    """Default progress sink for callers that do not narrate."""
+
+
 def install_production_release(
     config: ProductionInstallConfig,
     *,
+    reporter: Callable[[str], None] = _silent_reporter,
     runtime_acquirer: RuntimeAcquirer = acquire_runtimes,
     environment_syncer: EnvironmentSyncer = sync_environment,
     release_validator: ReleaseValidator = validate_installed_release,
@@ -401,6 +408,7 @@ def install_production_release(
     assert selected.install_root is not None
     assert selected.cli_path is not None
     assert selected.data_root is not None
+    reporter("Verifying the release payload")
     metadata = validate_packaged_payload(selected.payload_root)
     source_release_json = (selected.payload_root / "release.json").read_bytes()
     source_manifest = _tree_manifest(selected.payload_root / "application")
@@ -419,8 +427,10 @@ def install_production_release(
             )
 
         if selected.bootstrap_runtime is None:
+            reporter(f"Installing Python {PYTHON_VERSION} and uv {UV_VERSION}")
             runtimes = runtime_acquirer(paths.runtime_root, paths.cache_root)
         else:
+            reporter(f"Adopting the verified Python {PYTHON_VERSION} runtime")
             runtimes = adopt_bootstrap_runtimes(
                 paths.runtime_root,
                 paths.cache_root,
@@ -429,6 +439,7 @@ def install_production_release(
         final_release = paths.release_root(metadata.release_id)
         reused_release = False
         if final_release.exists():
+            reporter(f"Reusing the installed release {metadata.release_id}")
             if not (final_release / "complete").is_file():
                 raise BootstrapError(
                     "Existing release is incomplete and will not be overwritten: "
@@ -444,7 +455,9 @@ def install_production_release(
             created_final = False
             try:
                 staging.mkdir()
+                reporter("Copying the DiscoveryAgent application")
                 _copy_canonical_release(selected.payload_root, staging)
+                reporter("Installing the frontend environment (a few minutes)")
                 environment_syncer(
                     runtimes.uv,
                     runtimes.python,
@@ -452,6 +465,7 @@ def install_production_release(
                     staging / "envs" / "frontend",
                     paths.cache_root,
                 )
+                reporter("Installing the backend environment (a few minutes)")
                 environment_syncer(
                     runtimes.uv,
                     runtimes.python,
@@ -459,6 +473,7 @@ def install_production_release(
                     staging / "envs" / "backend",
                     paths.cache_root,
                 )
+                reporter("Verifying the installed environments")
                 _validate_canonical_release_copy(
                     selected.payload_root, staging, metadata
                 )
@@ -480,6 +495,7 @@ def install_production_release(
             raise BootstrapError("Packaged application payload changed during installation")
         if (selected.payload_root / "release.json").read_bytes() != source_release_json:
             raise BootstrapError("Packaged release.json changed during installation")
+        reporter("Installing the discoveryagent command")
         manager_installer(selected.payload_root, paths)
         cli_path = cli_installer(
             selected.cli_path,

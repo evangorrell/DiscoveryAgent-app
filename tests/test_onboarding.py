@@ -18,6 +18,7 @@ from manager.discoveryagent_cli.onboarding import (
     paperclip_subprocess_environment,
     paperclip_verify_command,
     resolve_anthropic_api_key,
+    resolve_data_root,
     run_paperclip_login,
     verify_paperclip_login,
 )
@@ -220,6 +221,124 @@ class PaperclipOnboardingTests(unittest.TestCase):
             )
         self.assertNotIn(secret, str(login_error.exception))
         self.assertNotIn(secret, str(verify_error.exception))
+
+
+class DataRootOnboardingTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name).resolve()
+        self.install_root = self.root / "install"
+        self.install_root.mkdir()
+
+    def resolve(self, configured: Path, answers: list[str]) -> tuple[Path, str]:
+        output = io.StringIO()
+        remaining = list(answers)
+        chosen = resolve_data_root(
+            configured,
+            install_root=self.install_root,
+            interactive=lambda: True,
+            text_input=lambda _prompt: remaining.pop(0),
+            stdout=output,
+        )
+        return chosen, output.getvalue()
+
+    def test_existing_data_root_is_never_second_guessed(self) -> None:
+        configured = self.root / "already-here"
+        configured.mkdir()
+
+        chosen, printed = self.resolve(
+            configured,
+            ["/should/not/be/read"],
+        )
+
+        self.assertEqual(chosen, configured)
+        self.assertEqual(printed, "")
+
+    def test_non_interactive_launch_keeps_the_configured_default(self) -> None:
+        configured = self.root / "unwritten"
+        output = io.StringIO()
+
+        chosen = resolve_data_root(
+            configured,
+            install_root=self.install_root,
+            interactive=lambda: False,
+            text_input=lambda _prompt: (_ for _ in ()).throw(
+                AssertionError("a non-interactive launch must not prompt")
+            ),
+            stdout=output,
+        )
+
+        self.assertEqual(chosen, configured)
+        self.assertEqual(output.getvalue(), "")
+
+    def test_empty_answer_accepts_the_default_without_creating_anything(self) -> None:
+        configured = self.root / "unwritten"
+
+        chosen, _printed = self.resolve(configured, ["   "])
+
+        self.assertEqual(chosen, configured)
+        self.assertFalse(configured.exists())
+
+    def test_chosen_path_is_expanded_and_returned(self) -> None:
+        configured = self.root / "unwritten"
+        target = self.root / "Science" / "DiscoveryAgent"
+
+        chosen, printed = self.resolve(configured, [f"  {target}  "])
+
+        self.assertEqual(chosen, target)
+        self.assertIn(str(target), printed)
+        # Choosing a location must not create it; validation owns that step.
+        self.assertFalse(target.exists())
+
+    def test_populated_directory_is_accepted_with_an_explicit_non_destructive_promise(self) -> None:
+        configured = self.root / "unwritten"
+        target = self.root / "existing-work"
+        target.mkdir()
+        (target / "thesis.tex").write_text("untouched", encoding="utf-8")
+
+        chosen, printed = self.resolve(configured, [str(target)])
+
+        self.assertEqual(chosen, target)
+        self.assertIn("nothing already in it is moved, changed, or deleted", printed)
+        self.assertEqual((target / "thesis.tex").read_text(encoding="utf-8"), "untouched")
+
+    def test_an_existing_file_or_relative_path_is_refused_and_reprompted(self) -> None:
+        configured = self.root / "unwritten"
+        occupied = self.root / "notes.txt"
+        occupied.write_text("mine", encoding="utf-8")
+        accepted = self.root / "good"
+
+        chosen, printed = self.resolve(
+            configured,
+            [str(occupied), "relative/path", str(accepted)],
+        )
+
+        self.assertEqual(chosen, accepted)
+        self.assertIn("already exists and is not a folder", printed)
+        self.assertIn("absolute path", printed)
+        self.assertEqual(occupied.read_text(encoding="utf-8"), "mine")
+
+    def test_the_program_folder_is_refused_in_both_directions(self) -> None:
+        configured = self.root / "unwritten"
+        accepted = self.root / "good"
+
+        chosen, printed = self.resolve(
+            configured,
+            [str(self.install_root / "releases"), str(self.root), str(accepted)],
+        )
+
+        self.assertEqual(chosen, accepted)
+        self.assertIn("replaced on every update", printed)
+        self.assertIn("contains DiscoveryAgent's own program files", printed)
+
+    def test_repeated_bad_answers_fall_back_to_the_default(self) -> None:
+        configured = self.root / "unwritten"
+
+        chosen, printed = self.resolve(configured, ["a", "b", "c"])
+
+        self.assertEqual(chosen, configured)
+        self.assertIn("Keeping the default", printed)
 
 
 if __name__ == "__main__":

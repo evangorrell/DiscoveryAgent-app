@@ -50,8 +50,9 @@ def create_hb_sherlock_parser():
                         help="Optional path to dataset README to use instead of data/README.txt")
     parser.add_argument("--num_queries", type=int, default=5,
                         help="Number of queries to generate from hypothesis agent per branch (default: 5)")
-    parser.add_argument("--execution_max_turns", type=int, default=10,
-                        help="Maximum number of turns for the execution agent (default: 10)")
+    parser.add_argument("--execution_max_turns", type=int, default=0,
+                        help="Maximum number of turns for the execution agent. "
+                             "0 (the default) lets it run until it finishes the task.")
 
     # Models
     parser.add_argument("--execution_model", type=str, default="claude-sonnet-4-6",
@@ -64,8 +65,8 @@ def create_hb_sherlock_parser():
                         help="LLM model for the review optimization agent")
     parser.add_argument("--review_designer_model", type=str, default="claude-sonnet-4-5-20250929",
                         help="LLM model for the review designer agent")
-    parser.add_argument("--director_model", type=str, default="claude-sonnet-4-5-20250929",
-                        help="LLM model for the director agent")
+    parser.add_argument("--director_model", type=str, default="claude-opus-4-6",
+                        help="LLM model for the director agent (default: claude-opus-4-6)")
     parser.add_argument("--report_summarization_model", type=str, default="claude-haiku-4-5-20251001",
                         help="LLM model for report summarization (default: claude-haiku-4-5-20251001)")
     parser.add_argument("--single_search_model", type=str, default="claude-opus-4-6",

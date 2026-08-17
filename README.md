@@ -98,13 +98,37 @@ DiscoveryAgent refuses an update or uninstall while an active research round is 
 
 DiscoveryAgent stores research projects separately from the installed application.
 
-On macOS, project data is stored at:
+The first launch asks where to keep them and suggests:
 
 ```text
-~/Library/Application Support/DiscoveryAgent
+~/DiscoveryAgent
 ```
 
+Enter another path to use somewhere else. DiscoveryAgent only adds its own
+files to that folder; anything already there is left alone. Once the folder
+exists, DiscoveryAgent stops asking and keeps using it.
+
+Each project gets its own directory below that root, with `code/data` holding
+the project's dataset. Project Home shows the exact path so you can copy files
+into it directly.
+
+A project can also read a folder you already have: choose it when you create
+the project, and DiscoveryAgent reads it in place. It never copies, moves,
+renames, or deletes anything in a folder you chose.
+
 Updating or uninstalling DiscoveryAgent does not delete this project data.
+
+## Choosing models
+
+Every **Start round** opens a settings dialog where you pick the Claude models
+for that round:
+
+- **Reasoning model** — generates hypotheses and directs the round.
+- **Execution model** — writes and runs the analysis code.
+
+The list comes from Anthropic's Models API, so a newly released model appears
+without updating DiscoveryAgent. If that list can't be fetched (no API key, no
+network), the dialog falls back to a built-in list and says so.
 
 ## Update
 

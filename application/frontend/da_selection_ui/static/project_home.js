@@ -215,11 +215,68 @@
         return section;
     }
 
+    // Where this project's data lives. The exact path is the content: a
+    // scientist who wants to `cp` files in needs to read and copy it, not just
+    // press a button that opens a window.
+    function buildDataFolder(folder) {
+        if (!folder || !folder.path) return null;
+        const section = el('section', 'v2-section v2-data-folder-section');
+        section.appendChild(label('Data Folder'));
+
+        const row = el('div', 'v2-path-row');
+        const path = el('code', 'v2-path', esc(folder.path));
+        row.appendChild(path);
+
+        const copy = el('button', 'v2-data-folder-action', 'Copy path');
+        copy.type = 'button';
+        copy.addEventListener('click', async () => {
+            const original = copy.textContent;
+            try {
+                await navigator.clipboard.writeText(folder.path);
+                copy.textContent = 'Copied';
+            } catch (err) {
+                copy.textContent = 'Press ⌘C';
+                const range = document.createRange();
+                range.selectNodeContents(path);
+                const selection = window.getSelection();
+                selection.removeAllRanges();
+                selection.addRange(range);
+            }
+            setTimeout(() => { copy.textContent = original; }, 1600);
+        });
+        row.appendChild(copy);
+
+        const open = el('button', 'v2-data-folder-action', 'Open in Finder <span aria-hidden="true">&#8599;</span>');
+        open.type = 'button';
+        open.addEventListener('click', async () => {
+            open.disabled = true;
+            try {
+                await fetch('/api/projects/' + encodeURIComponent(folder.project_id) + '/open-data-folder', {
+                    method: 'POST', credentials: 'include', headers: { 'Accept': 'application/json' },
+                });
+            } finally {
+                open.disabled = false;
+            }
+        });
+        if (folder.project_id) row.appendChild(open);
+        section.appendChild(row);
+
+        section.appendChild(el('p', 'v2-muted', folder.external
+            ? esc('This is your own folder. DiscoveryAgent reads it in place and never changes what is in it.')
+            : esc('Copy files here and DiscoveryAgent will use them in the next round.')));
+        if (!folder.available) {
+            section.appendChild(el('p', 'v2-error-title',
+                esc('This folder is not reachable right now, so a round cannot start.')));
+        }
+        return section;
+    }
+
     // ---- top-level render ----------------------------------------------------
 
     function render(state) {
         const frag = document.createDocumentFragment();
         frag.appendChild(buildIdentity(state.project || {}));
+        const dataFolder = buildDataFolder(state.data_folder);
 
         if (state.mode === 'research_briefing') {
             // No permanent Current Research Direction section: the selected /
@@ -230,11 +287,15 @@
                 buildUnderstanding(state.research_understanding),
                 buildEvolution(state.evolution),
                 buildRecentRounds(state.recent_rounds),
+                dataFolder,
             ].forEach((node) => { if (node) frag.appendChild(node); });
         } else {
             // Pre-research uses the same Needs Your Attention component as
             // completed/review states so the page keeps one visual language.
             frag.appendChild(buildAttention(state.attention || {}));
+            // Before the first round, "where do my files go?" is the question
+            // the scientist actually has, so it sits directly under the CTA.
+            if (dataFolder) frag.appendChild(dataFolder);
         }
 
         els.content.innerHTML = '';

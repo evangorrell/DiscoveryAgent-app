@@ -97,9 +97,11 @@ class PublicInstallerShellTests(unittest.TestCase):
 import json, os, sys
 home = Path(os.environ["HOME"])
 arguments = sys.argv[1:]
-required = {"--bootstrap-uv", "--bootstrap-python-root", "--bootstrap-python", "--quiet"}
+required = {"--bootstrap-uv", "--bootstrap-python-root", "--bootstrap-python"}
 if not required.issubset(arguments):
     raise SystemExit("bootstrap arguments missing")
+if "--quiet" in arguments:
+    raise SystemExit("the public installer must let the engine narrate its steps")
 local_bin = home / ".local/bin"
 local_bin.mkdir(parents=True, exist_ok=True)
 command = local_bin / "discoveryagent"
@@ -177,6 +179,14 @@ exit 2
         first = self.run_installer()
         self.assertEqual(first.returncode, 0, first.stderr)
         self.assertIn("DiscoveryAgent installed successfully.", first.stdout)
+        # Every long phase announces itself, so the installer is never silent.
+        for narrated in (
+            "==> Downloading the DiscoveryAgent release",
+            "==> Verifying the release archive",
+            "==> Downloading uv 0.11.17",
+            "==> Downloading Python 3.11.11",
+        ):
+            self.assertIn(narrated, first.stdout)
         self.assertTrue((self.home / ".local/bin/discoveryagent").is_file())
         self.assertEqual((self.home / "installer-invocations").read_text(), "1")
         profile = self.home / ".zprofile"

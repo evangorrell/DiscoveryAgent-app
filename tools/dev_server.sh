@@ -8,7 +8,7 @@
 # DISCOVERYAGENT_DEV_ROOT). Create one first if you have not:
 #
 #   python3 tools/bootstrap_development_install.py --install-root ~/da-dev \
-#     --data-root "$HOME/Library/Application Support/DiscoveryAgent"
+#     --data-root "$HOME/DiscoveryAgent"
 #
 # See docs/development_server_launch.md.
 set -eu

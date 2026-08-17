@@ -19,10 +19,44 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from . import model_catalog
+
 
 SCHEMA_VERSION = 1
 EXPLORATORY_ROUND_QUERY_BUDGET = 5
 HYPOTHESIS_ROUND_QUERY_BUDGET = 12
+MINIMUM_ROUND_QUERIES = 1
+MAXIMUM_ROUND_QUERIES = 50
+
+# Which research agents the director may call, expressed the way the round
+# dialog offers them. Each entry maps a browser-facing switch to the backend
+# config key that run_hb_sherlock.py already understands, and records whether
+# the backend key is the negation of the switch.
+#
+# The Open Targets, ACS, and Census agents are deliberately absent: each needs
+# authorization DiscoveryAgent does not ask for (an MCP server, a
+# CENSUS_API_KEY) and optional Python extras the packaged backend does not
+# install, so offering them would only produce rounds that fail at launch.
+DIRECTOR_AGENT_SWITCHES: dict[str, tuple[str, bool]] = {
+    "deep_research": ("omit_deepresearch", True),
+    "web_search": ("omit_singlesearch", True),
+}
+
+# The sub-agent execution architecture is always on and is not a round setting.
+# It is the documented architecture, so every round runs it rather than leaving
+# a scientist to discover it.
+SUB_AGENT_ARCHITECTURE = True
+
+# Which model runs which part of a round. The two roles are split because they
+# want different things: the reasoning models plan and choose hypotheses, the
+# execution model writes and runs the analysis code. Each browser-facing switch
+# maps to the backend config keys run_hb_sherlock.py already understands.
+MODEL_ROLES: dict[str, tuple[str, ...]] = {
+    "reasoning_model": ("hypothesis_model", "director_model"),
+    "execution_model": ("execution_model",),
+}
+DEFAULT_REASONING_MODEL = "claude-opus-4-6"
+DEFAULT_EXECUTION_MODEL = "claude-sonnet-4-6"
 MISSING_KEY_MESSAGE = (
     "Anthropic API key not detected\n\n"
     "Set ANTHROPIC_API_KEY in your environment and restart DiscoveryAgent before "
@@ -64,6 +98,98 @@ def _safe_analysis_name(project: dict[str, Any]) -> str:
     raw = str(project.get("url_slug") or project.get("id") or "local_project")
     normalized = re.sub(r"[^A-Za-z0-9_-]+", "_", raw).strip("_")
     return normalized or "local_project"
+
+
+def normalize_round_options(raw: Any) -> dict[str, Any]:
+    """Translate the round dialog's choices into backend config keys.
+
+    Everything here arrives from a browser, so nothing is passed through: only
+    known switches are read, booleans are coerced, and the query count is
+    clamped. An absent key leaves the backend default in place.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    config: dict[str, Any] = {}
+
+    if "num_queries" in raw and raw["num_queries"] not in (None, ""):
+        try:
+            requested = int(raw["num_queries"])
+        except (TypeError, ValueError):
+            raise RoundLaunchError(
+                "invalid_round_options", "Enter a whole number of queries for this round."
+            )
+        if not MINIMUM_ROUND_QUERIES <= requested <= MAXIMUM_ROUND_QUERIES:
+            raise RoundLaunchError(
+                "invalid_round_options",
+                f"Choose between {MINIMUM_ROUND_QUERIES} and {MAXIMUM_ROUND_QUERIES} queries for this round.",
+            )
+        config["num_queries"] = requested
+
+    for switch, (config_key, negated) in DIRECTOR_AGENT_SWITCHES.items():
+        if switch not in raw:
+            continue
+        enabled = bool(raw[switch])
+        config[config_key] = (not enabled) if negated else enabled
+
+    for switch, config_keys in MODEL_ROLES.items():
+        if switch not in raw or raw[switch] in (None, ""):
+            continue
+        chosen = str(raw[switch]).strip()
+        # Only a model Anthropic offers this installation, so a browser cannot
+        # send an arbitrary string onward to the research run.
+        if chosen not in model_catalog.known_model_ids():
+            raise RoundLaunchError(
+                "invalid_round_options",
+                f"{chosen} is not a Claude model this installation can use.",
+            )
+        for config_key in config_keys:
+            config[config_key] = chosen
+
+    return config
+
+
+def next_round_number(project: dict[str, Any]) -> int:
+    """Report which round a start would run, without preparing that round."""
+    paths = _project_paths(project)
+    completed = [
+        index for index, directory in _native_round_dirs(paths["checkpoints_dir"])
+        if (directory / "memory_report.md").is_file()
+    ]
+    return (completed[-1] + 1) if completed else 0
+
+
+def round_option_defaults(
+    round_number: int, project: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Describe the settings a round would use if the scientist changes nothing."""
+    saved_reasoning = (project or {}).get("hypothesis_model")
+    return {
+        "num_queries": (
+            EXPLORATORY_ROUND_QUERY_BUDGET if round_number == 0
+            else HYPOTHESIS_ROUND_QUERY_BUDGET
+        ),
+        "minimum_queries": MINIMUM_ROUND_QUERIES,
+        "maximum_queries": MAXIMUM_ROUND_QUERIES,
+        "deep_research": True,
+        "web_search": True,
+        "reasoning_model": str(saved_reasoning or DEFAULT_REASONING_MODEL),
+        "execution_model": DEFAULT_EXECUTION_MODEL,
+    }
+
+
+def external_data_read_paths(project: dict[str, Any]) -> list[str]:
+    """Return the chosen data folder the sandbox must be allowed to read.
+
+    A managed project keeps its data inside the sandbox root and needs nothing
+    here; a project pointed at the scientist's own folder reads through a
+    symlink whose real path lies outside that root.
+    """
+    if not project.get("external_data"):
+        return []
+    raw = project.get("data_dir")
+    if not raw:
+        return []
+    return [str(Path(raw).expanduser().resolve())]
 
 
 def resolve_backend_runtime(env: dict[str, str] | None = None) -> tuple[Path, Path, Path]:
@@ -127,6 +253,13 @@ def _project_paths(project: dict[str, Any]) -> dict[str, Path]:
             "The active project's code or checkpoint path is outside its local project directory.",
         ) from exc
     if not code_dir.is_dir() or not (code_dir / "data").is_dir():
+        if project.get("external_data"):
+            raise RoundLaunchError(
+                "data_folder_unavailable",
+                "The data folder chosen for this project is no longer available at "
+                f"{project.get('data_dir')}. Reconnect the drive or restore the folder, then try again.",
+                503,
+            )
         raise RoundLaunchError(
             "invalid_local_configuration",
             "The active project's local code/data directory is missing.",
@@ -370,7 +503,11 @@ def _state_payload(
     }
 
 
-def _hydrate_round_zero_config(project: dict[str, Any], paths: dict[str, Path]) -> dict[str, Any]:
+def _hydrate_round_zero_config(
+    project: dict[str, Any],
+    paths: dict[str, Path],
+    options: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     existing: dict[str, Any] = {}
     try:
         loaded = json.loads(paths["config_file"].read_text(encoding="utf-8"))
@@ -417,11 +554,37 @@ def _hydrate_round_zero_config(project: dict[str, Any], paths: dict[str, Path]) 
         "no_sandbox": False,
         "deep_research_provider": existing.get("deep_research_provider") or "paperclip",
     })
+    # The scientist's choices for this round win over the preset above.
+    config.update(options or {})
+    # Not a choice: applied after the options so no request can turn it off.
+    config["sub_agent_architecture"] = SUB_AGENT_ARCHITECTURE
+    _apply_external_data_access(project, config)
     _atomic_write_json(paths["config_file"], {"config": config})
     return config
 
 
-def _hydrate_continuation_config(project: dict[str, Any], paths: dict[str, Path]) -> None:
+def _apply_external_data_access(project: dict[str, Any], config: dict[str, Any]) -> None:
+    """Let the sandbox read a chosen data folder that lives outside the project.
+
+    Reads only: the sandbox still confines every write to the project's own
+    working directory, so a round can never modify the scientist's files.
+    """
+    read_paths = external_data_read_paths(project)
+    if not read_paths:
+        return
+    configured = str(config.get("allowed_read_paths") or "").strip()
+    existing = [entry.strip() for entry in configured.split(",") if entry.strip()]
+    for path in read_paths:
+        if path not in existing:
+            existing.append(path)
+    config["allowed_read_paths"] = ",".join(existing)
+
+
+def _hydrate_continuation_config(
+    project: dict[str, Any],
+    paths: dict[str, Path],
+    options: dict[str, Any] | None = None,
+) -> None:
     """Create the target round's local config from its native predecessor."""
     source_file = paths["config_file"]
     target_config = paths["target_dir"] / "config.json"
@@ -469,6 +632,10 @@ def _hydrate_continuation_config(project: dict[str, Any], paths: dict[str, Path]
         "generate_plan": True,
         "no_sandbox": False,
     })
+    local_config.update(options or {})
+    # Not a choice: applied after the options so no request can turn it off.
+    local_config["sub_agent_architecture"] = SUB_AGENT_ARCHITECTURE
+    _apply_external_data_access(project, local_config)
     _atomic_write_json(target_config, {"config": local_config})
     paths["config_file"] = target_config
 
@@ -580,7 +747,11 @@ def _monitor_process(project: dict[str, Any], paths: dict[str, Path], process: s
 
 
 def _launch_round(
-    project: dict[str, Any], *, env: dict[str, str] | None = None, resume_only: bool = False,
+    project: dict[str, Any],
+    *,
+    env: dict[str, str] | None = None,
+    resume_only: bool = False,
+    options: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     source_env = os.environ if env is None else env
     if not _anthropic_key_is_present(source_env):
@@ -631,9 +802,9 @@ def _launch_round(
             if resume_only:
                 pass
             elif paths["round"] == 0:
-                _hydrate_round_zero_config(project, paths)
+                _hydrate_round_zero_config(project, paths, options)
             else:
-                _hydrate_continuation_config(project, paths)
+                _hydrate_continuation_config(project, paths, options)
             command = _build_command(
                 backend_python, launcher, paths["config_file"], paths["selected_hypothesis_file"]
             )
@@ -697,8 +868,13 @@ def _launch_round(
                     pass
 
 
-def start_round(project: dict[str, Any], *, env: dict[str, str] | None = None) -> dict[str, Any]:
-    return _launch_round(project, env=env, resume_only=False)
+def start_round(
+    project: dict[str, Any],
+    *,
+    env: dict[str, str] | None = None,
+    options: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return _launch_round(project, env=env, resume_only=False, options=options)
 
 
 def resume_round(project: dict[str, Any], *, env: dict[str, str] | None = None) -> dict[str, Any]:

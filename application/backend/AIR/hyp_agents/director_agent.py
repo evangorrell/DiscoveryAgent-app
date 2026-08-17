@@ -40,6 +40,7 @@ from ..utils.llm_diagnostics import (
     describe_response,
     log_api_exception,
     log_api_exchange,
+    refusal_notice,
 )
 
 # =============================================================================
@@ -383,6 +384,9 @@ class DirectorAgent:
         """
         # Track raw response content for compaction block preservation
         self._last_response_content = None
+        # Set when Anthropic declines this call, so callers can tell a refusal
+        # apart from a malformed completion (they look identical downstream).
+        self.last_refusal = None
 
         # Inject compaction parameters for Anthropic when enabled
         use_beta = bool(self.mcp_servers)
@@ -454,6 +458,7 @@ class DirectorAgent:
 
                     text = self._extract_text_from_anthropic_response(response)
                     log_api_exchange(self.logger, "DirectorAgent", call_params, response, text)
+                    self.last_refusal = refusal_notice(response)
                     return text
 
             except (anthropic.InternalServerError, anthropic.APIError, openai.APIError) as e:

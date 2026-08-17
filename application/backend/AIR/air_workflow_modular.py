@@ -22,6 +22,7 @@ import shutil
 from typing import Optional, List, Dict, Any
 from termcolor import colored
 from .utils.logger import Logger
+from .utils.llm_diagnostics import REFUSAL_ADVICE, first_refusal
 from .config import LLMConfig, ExecutionAgentConfig, HypothesisGenerationConfig, get_default_execution_config, get_default_hypothesis_config
 from .context_managers import NotebookManager, NotebookManagerXML, strip_code_markers
 from .tool_agents.execution_agent_cc import ExecutionAgentCC
@@ -577,23 +578,44 @@ class AIRWorkflowModular:
                 # Reset retry counter on success
                 tool_invocation_retry_count = 0
             else:
-                # Record what actually came back — an empty completion and a malformed
-                # one both land here, and the retry feedback below can only guess.
+                # An API refusal, an empty completion, and a genuinely malformed
+                # one all land here looking identical. Only the agent knows which.
+                refusal = first_refusal(self.director_agent, self.hypothesis_gen_agent)
                 self.logger.log_error(
-                    f"Query {query_num}: no XML tool invocation found in director output.\n"
+                    f"Query {query_num}: "
+                    f"{refusal or 'no XML tool invocation found in director output.'}\n"
                     f"raw_output_chars={len(query)}\n"
                     f"raw_output={query[:1000]!r}"
                 )
+                if refusal:
+                    print(f"⚠️ {refusal}")
                 # If multiturn, prompt the hypothesis agent to try again and restart loop
                 if self.multiturn_hypothesis:
                     tool_invocation_retry_count += 1
 
                     if tool_invocation_retry_count > self.max_tool_invocation_retries:
-                        error_msg = f"Max tool invocation retries ({self.max_tool_invocation_retries}) exceeded. Gracefully exiting query loop (early stopping)."
+                        error_msg = (
+                            f"Refused by the API on {self.max_tool_invocation_retries} "
+                            f"consecutive attempts. Gracefully exiting query loop (early "
+                            f"stopping). {REFUSAL_ADVICE}"
+                        ) if refusal else (
+                            f"Max tool invocation retries ({self.max_tool_invocation_retries}) exceeded. Gracefully exiting query loop (early stopping)."
+                        )
                         self.logger.log_error(error_msg)
                         self.logger.log_action("early_stopping", f"Query {query_num}: Max tool invocation retries exceeded - proceeding to summary generation")
                         print(f"⚠️ Max tool invocation retries exceeded - ending iterations early at query {query_num}")
                         break  # Exit while loop
+
+                    if refusal:
+                        # Nothing was malformed, so asking for a shorter query is
+                        # noise. Refusals are non-deterministic; just ask again.
+                        self.logger.log_error(
+                            f"Retrying after refusal (attempt {tool_invocation_retry_count}/"
+                            f"{self.max_tool_invocation_retries}). {REFUSAL_ADVICE}")
+                        self.logger.log_action("model_refusal",
+                            f"Query {query_num}: declined by the API. Retry attempt {tool_invocation_retry_count}")
+                        feedback = None
+                        continue
 
                     self.logger.log_error(f"Tool invocation did not match expected format (attempt {tool_invocation_retry_count}/{self.max_tool_invocation_retries}). Asking hypothesis agent to try again with shorter query.")
                     self.logger.log_action("tool_invocation_error", f"Query {query_num}: Tool invocation did not match expected format. Retry attempt {tool_invocation_retry_count}")

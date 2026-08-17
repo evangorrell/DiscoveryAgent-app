@@ -25,7 +25,7 @@ python run_air.py --working_directory <path> --analysis_name <name> [options]
 ### Optional Arguments
 
 - `--num_queries`: Number of queries to generate (default: 5)
-- `--execution_max_turns`: Maximum turns for execution agent (default: 10)
+- `--execution_max_turns`: Maximum turns for execution agent. `0` (the default) lets it run until it finishes the task
 - `--hypothesis_model`: Model for hypothesis generation (default: claude-sonnet-4-6)
 - `--omit_deepresearch`: Omit deep research agent
 - `--omit_singlesearch`: Omit single search agent
