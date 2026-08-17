@@ -79,10 +79,11 @@ def resolve_data_root(
     if not interactive():
         return configured
 
-    print("Where should DiscoveryAgent keep your projects and data?\n", file=stdout)
+    print("Where should DiscoveryAgent keep your projects?\n", file=stdout)
     print(
-        "This folder holds every project you create, including the data folders\n"
-        "you copy files into. Pick somewhere you can reach easily.\n",
+        "This folder holds each project's generated code, reports, checkpoints,\n"
+        "and other research outputs. Input folders registered in DiscoveryAgent\n"
+        "Data stay at their original locations. Pick somewhere you can reach easily.\n",
         file=stdout,
         flush=True,
     )

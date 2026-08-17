@@ -275,10 +275,14 @@ class DataRootOnboardingTests(unittest.TestCase):
     def test_empty_answer_accepts_the_default_without_creating_anything(self) -> None:
         configured = self.root / "unwritten"
 
-        chosen, _printed = self.resolve(configured, ["   "])
+        chosen, printed = self.resolve(configured, ["   "])
 
         self.assertEqual(chosen, configured)
         self.assertFalse(configured.exists())
+        self.assertIn("generated code, reports, checkpoints", printed)
+        self.assertIn("Input folders registered in DiscoveryAgent", printed)
+        self.assertIn("Data stay at their original locations", printed)
+        self.assertNotIn("data folders\nyou copy files into", printed)
 
     def test_chosen_path_is_expanded_and_returned(self) -> None:
         configured = self.root / "unwritten"

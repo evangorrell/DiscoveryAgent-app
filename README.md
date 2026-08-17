@@ -50,16 +50,17 @@ From the Projects page, create a new project and provide:
 - a project name
 - the research objective you want DiscoveryAgent to investigate
 - any useful scientific context
-- optionally, an existing folder that already contains your data
+- optionally, input data already registered under **DiscoveryAgent Data**
 
 Project context can include experimental details, important terminology, assumptions, known limitations, or other information needed to understand the research problem and your data.
 
 ### 4. Add your data
 
-When creating a project, choose an existing data folder or leave the field blank
-and let DiscoveryAgent create one. A chosen folder is read in place: its files
-are not copied, moved, renamed, or deleted. For a managed folder, Project Home
-shows the exact path and can open it in Finder so you can add supporting files.
+Register one or more input folders on the **Data** page, then select the folders
+or files a project may use. Registered inputs remain at their original locations
+and can be shared read-only across projects; DiscoveryAgent does not copy, move,
+rename, or delete them. Generated code, reports, and analysis outputs remain in
+each project's own workspace.
 
 Your projects and research files remain stored locally on your Mac.
 
@@ -151,7 +152,9 @@ You may choose another location. DiscoveryAgent persists that choice and stops
 asking once the folder exists. Existing files in the selected root are left
 alone; DiscoveryAgent adds only its own project directories.
 
-This includes your project inputs and the research generated within each project.
+This includes each project's generated code, reports, checkpoints, and other
+research outputs. Input folders registered in **DiscoveryAgent Data** remain at
+their original locations and are not moved into this project root.
 
 Uninstalling DiscoveryAgent does **not** delete this project data.
 
@@ -159,14 +162,13 @@ For important datasets, keep an independent copy of the original files.
 
 ## Choosing models
 
-Every **Start round** action opens a settings dialog for that round. You can
-choose the Claude reasoning model used to generate hypotheses and direct the
-round, the execution model used to write and run analysis code, the query
-budget, and whether deep research and web search are available.
+Choose one supported Anthropic model for a project under **Advanced Settings**
+when creating or editing it. DiscoveryAgent uses that model consistently across
+the project's research agents. A resumed interrupted round keeps the model
+already recorded in that round's configuration.
 
-DiscoveryAgent loads the model catalog from Anthropic when possible. If the
-live catalog is unavailable, it uses a built-in fallback and identifies that
-fallback in the dialog.
+Every **Start round** action still opens settings for the query budget and for
+whether deep research and web search are available in that round.
 
 ## Security and privacy
 
