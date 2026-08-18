@@ -236,8 +236,6 @@ package = Path(da_selection_ui.__file__).resolve().parent
 direct_url = md.distribution("da-selection-ui").read_text("direct_url.json")
 print(json.dumps({
     "module": str(package),
-    "templates": str(package / "templates" / "index.html"),
-    "static": str(package / "static"),
     "direct_url": direct_url,
 }))
 """
@@ -308,6 +306,23 @@ def _assert_noneditable(
     return module
 
 
+def _validate_frontend_package_resources(package: Path) -> None:
+    """Require the current V2 Flask package resources after wheel installation."""
+    templates = package / "templates"
+    static = package / "static"
+    required_files = (
+        templates / "base.html",
+        templates / "projects.html",
+        static / "style.css",
+    )
+    if (
+        not templates.is_dir()
+        or not static.is_dir()
+        or any(not path.is_file() for path in required_files)
+    ):
+        raise BootstrapError("Frontend templates/static package resources are missing")
+
+
 def validate_installed_release(
     release_root: Path,
     cache_root: Path,
@@ -352,10 +367,7 @@ def validate_installed_release(
         application_root=frontend_root,
         label="Frontend package",
     )
-    templates = Path(str(frontend["templates"]))
-    static = Path(str(frontend["static"]))
-    if not templates.is_file() or not static.is_dir():
-        raise BootstrapError("Frontend templates/static package resources are missing")
+    _validate_frontend_package_resources(frontend_module)
     _run(
         [frontend_python, "-m", "da_selection_ui", "--help"],
         runner=runner,

@@ -3,11 +3,11 @@
 set -eu
 umask 077
 
-RELEASE_TAG="v0.2.0"
+RELEASE_TAG="v0.2.1"
 RELEASE_ID="dev-8923b2825e28-d547cedabc0d"
 ARTIFACT_NAME="discoveryagent-${RELEASE_ID}-macos-arm64.tar.gz"
 PUBLIC_ARTIFACT_URL="https://github.com/evangorrell/DiscoveryAgent-app/releases/download/${RELEASE_TAG}/${ARTIFACT_NAME}"
-PUBLIC_ARTIFACT_SHA256="2554c8be667cd40856acd4db0a719954cd5cf1980b86521cc6da4227841878da"
+PUBLIC_ARTIFACT_SHA256="d878aea67e356911f96644264d3b5123419182ecdf946b70da8c159db043bbd3"
 UV_URL="https://releases.astral.sh/github/uv/releases/download/0.11.17/uv-aarch64-apple-darwin.tar.gz"
 UV_SHA256="2a162f6b90ff3691a2f9cae1622e066a3ce592e110f66670cdcc841324b28226"
 

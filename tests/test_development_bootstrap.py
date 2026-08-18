@@ -14,6 +14,7 @@ from pathlib import Path
 from manager.discoveryagent_cli.bootstrap import (
     BootstrapConfig,
     EnvironmentValidation,
+    _validate_frontend_package_resources,
     bootstrap_development_install,
     install_wrapper,
     refresh_development_manager,
@@ -247,6 +248,47 @@ class DevelopmentBootstrapTests(unittest.TestCase):
             BootstrapConfig(self.repository, Path("relative"), self.data).normalized()
         with self.assertRaisesRegex(BootstrapError, "data-root"):
             BootstrapConfig(self.repository, self.install, Path("relative")).normalized()
+
+
+class FrontendPackageResourceValidationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.package = Path(self.temporary.name) / "site-packages" / "da_selection_ui"
+        (self.package / "templates").mkdir(parents=True)
+        (self.package / "static").mkdir()
+        (self.package / "templates" / "base.html").write_text(
+            "<!doctype html>\n", encoding="utf-8"
+        )
+        (self.package / "templates" / "projects.html").write_text(
+            "{% extends 'base.html' %}\n", encoding="utf-8"
+        )
+        (self.package / "static" / "style.css").write_text(
+            ":root {}\n", encoding="utf-8"
+        )
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def test_current_v2_resources_pass_without_retired_index_template(self) -> None:
+        self.assertFalse((self.package / "templates" / "index.html").exists())
+
+        _validate_frontend_package_resources(self.package)
+
+    def test_missing_current_template_or_static_resource_is_rejected(self) -> None:
+        for relative in (
+            "templates/base.html",
+            "templates/projects.html",
+            "static/style.css",
+        ):
+            with self.subTest(relative=relative):
+                target = self.package / relative
+                contents = target.read_bytes()
+                target.unlink()
+                with self.assertRaisesRegex(
+                    BootstrapError, "templates/static package resources are missing"
+                ):
+                    _validate_frontend_package_resources(self.package)
+                target.write_bytes(contents)
 
 
 class WrapperTests(unittest.TestCase):
