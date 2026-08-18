@@ -1,9 +1,12 @@
 // Project Home (V2) — renders the canonical product state returned by
-// GET /api/project_state. The SERVER decides mode + attention state + all copy;
+// GET /api/project_state. The SERVER decides the durable Research Status + copy;
 // this file only renders it. There is no client-side state classification,
 // filesystem inference, or multi-endpoint reconstruction here.
 (function () {
     'use strict';
+
+    const ReportFigures = window.DiscoveryReportFigures;
+    if (!ReportFigures) throw new Error('Shared report figure renderer is unavailable');
 
     // Auth-fetch: redirect to login on an expired session (the small shared
     // pattern the existing screens use; kept minimal rather than copied wholesale).
@@ -35,30 +38,6 @@
         return div.innerHTML;
     }
 
-    // Minimal, deterministic Markdown-ish renderer for report content. Handles
-    // paragraphs, headings, bold, italics and inline code; everything is
-    // HTML-escaped first so report text can never inject markup.
-    function renderPreviewMarkdown(md) {
-        if (!md) return '';
-        return String(md)
-            .split(/\n\s*\n/)
-            .map((para) => para.trim())
-            .filter(Boolean)
-            .map((para) => {
-                const heading = para.match(/^(#{1,6})\s+(.+)$/s);
-                if (heading) {
-                    const level = Math.min(heading[1].length + 1, 6);
-                    return '<h' + level + '>' + esc(heading[2]) + '</h' + level + '>';
-                }
-                let html = esc(para).replace(/\n/g, '<br>');
-                html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-                html = html.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
-                html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-                return '<p>' + html + '</p>';
-            })
-            .join('');
-    }
-
     function el(tag, className, html) {
         const node = document.createElement(tag);
         if (className) node.className = className;
@@ -77,9 +56,19 @@
         // link. Project Home uses the SAME action as the Studio/Workspace buttons.
         if (a.cta_action === 'start_round') {
             const btn = el('button', 'v2-btn v2-btn-primary v2-start-round-btn',
-                esc(a.cta_label || 'Start round'));
+                esc(a.cta_label || 'Start round') + ' <span class="v2-arrow" aria-hidden="true">&rarr;</span>');
             btn.type = 'button';
             btn.setAttribute('data-start-round', '');
+            if (Number.isInteger(a.cta_round)) {
+                btn.setAttribute('data-start-round-number', String(a.cta_round));
+            }
+            return btn;
+        }
+        if (a.cta_action === 'resume_round' || a.cta_action === 'resubmit_round') {
+            const btn = el('button', 'v2-btn v2-btn-primary v2-round-recovery-btn',
+                esc(a.cta_label) + ' <span class="v2-arrow" aria-hidden="true">&rarr;</span>');
+            btn.type = 'button';
+            btn.addEventListener('click', () => { void performRoundRecovery(btn, a); });
             return btn;
         }
         if (!a.cta_destination) return null;
@@ -87,6 +76,52 @@
             esc(a.cta_label) + ' <span class="v2-arrow" aria-hidden="true">&rarr;</span>');
         btn.href = a.cta_destination;
         return btn;
+    }
+
+    function recoveryError(button, message) {
+        const actions = button.closest('.v2-actions');
+        if (!actions) return;
+        let note = actions.querySelector('.v2-round-recovery-error');
+        if (!note) {
+            note = el('p', 'v2-round-recovery-error');
+            note.setAttribute('role', 'alert');
+            actions.appendChild(note);
+        }
+        note.textContent = message || 'The round could not be launched.';
+    }
+
+    async function performRoundRecovery(button, status) {
+        if (status.cta_action === 'resubmit_round') {
+            const confirmed = await window.V2Dialog.confirm({
+                title: 'Resubmit this round?',
+                message: 'DiscoveryAgent will resubmit this round and run it again from the beginning.',
+                confirmLabel: 'Resubmit Round',
+                cancelLabel: 'Cancel',
+                danger: false,
+            });
+            if (!confirmed) return;
+        }
+        const endpoint = status.cta_action === 'resume_round'
+            ? '/api/rounds/resume'
+            : '/api/rounds/resubmit';
+        button.disabled = true;
+        button.setAttribute('aria-busy', 'true');
+        try {
+            const response = await fetch(endpoint, {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Accept': 'application/json' },
+            });
+            const data = await response.json();
+            if (!response.ok || data.ok === false) {
+                throw new Error(data.message || 'The round could not be launched.');
+            }
+            window.location.assign(status.cta_destination);
+        } catch (error) {
+            button.disabled = false;
+            button.removeAttribute('aria-busy');
+            recoveryError(button, error && error.message);
+        }
     }
 
     function textLink(text, href) {
@@ -104,28 +139,25 @@
         return wrap;
     }
 
-    // Research Briefing: Needs Your Attention (compact, single CTA).
-    function buildAttention(attention) {
+    // Durable Research Status: one workflow state and one primary action.
+    function buildResearchStatus(status) {
         const section = el('section', 'v2-attention');
         const head = el('div', 'v2-attention-head');
-        head.appendChild(label('Needs Your Attention'));
-        if (attention.status_pill) {
-            const pillClass = 'v2-pill' + (attention.state === 'research_stopped' ? ' v2-pill-danger' : '');
-            head.appendChild(el('span', pillClass, '<span class="v2-pill-dot" aria-hidden="true"></span>' + esc(attention.status_pill)));
+        head.appendChild(label('Research Status'));
+        if (status.status_pill) {
+            const pillClass = 'v2-pill'
+                + (status.state === 'research_stopped' ? ' v2-pill-danger' : '')
+                + (status.state === 'research_in_progress' ? ' v2-pill-active' : '');
+            head.appendChild(el('span', pillClass, '<span class="v2-pill-dot" aria-hidden="true"></span>' + esc(status.status_pill)));
         }
         section.appendChild(head);
-        if (attention.headline) {
-            section.appendChild(el('h2', 'v2-attention-headline', esc(attention.headline)));
+        if (status.headline) {
+            section.appendChild(el('h2', 'v2-attention-headline', esc(status.headline)));
         }
-        // Deterministic framing: fixed lead-in (UI copy) above the exact
-        // artifact-derived content (hypothesis / finding), when present.
-        if (attention.body_lead) {
-            section.appendChild(el('p', 'v2-attention-lead', esc(attention.body_lead)));
+        if (status.body) {
+            section.appendChild(el('p', 'v2-attention-body', esc(status.body)));
         }
-        if (attention.body) {
-            section.appendChild(el('p', 'v2-attention-body', esc(attention.body)));
-        }
-        const cta = ctaButton(attention);
+        const cta = ctaButton(status);
         if (cta) {
             const actions = el('div', 'v2-actions');
             actions.appendChild(cta);
@@ -142,7 +174,18 @@
             const fullMarkdown = understanding.full_markdown || understanding.preview_markdown;
             const frame = el('div', 'v2-understanding-frame is-collapsed');
             frame.id = 'v2-research-understanding';
-            frame.appendChild(el('div', 'v2-prose', renderPreviewMarkdown(fullMarkdown)));
+            const content = el('div', 'v2-prose v2-report-markdown');
+            if (understanding.figures && understanding.figures.length) {
+                ReportFigures.renderReportMarkdown(content, fullMarkdown, understanding.figures);
+            } else {
+                // Preserve Project Home's established heading hierarchy while
+                // sharing the safe block/list parser used by report surfaces.
+                content.innerHTML = ReportFigures.renderFallbackMarkdown(
+                    fullMarkdown,
+                    { headingOffset: 1 },
+                );
+            }
+            frame.appendChild(content);
             section.appendChild(frame);
 
             const toggle = el('button', 'v2-understanding-link',
@@ -222,19 +265,15 @@
         frag.appendChild(buildIdentity(state.project || {}));
 
         if (state.mode === 'research_briefing') {
-            // No permanent Current Research Direction section: the selected /
-            // current hypothesis now appears only inside Needs Your Attention when
-            // it is the scientist's current actionable state.
             [
-                buildAttention(state.attention || {}),
+                buildResearchStatus(state.research_status || {}),
                 buildUnderstanding(state.research_understanding),
-                buildEvolution(state.evolution),
                 buildRecentRounds(state.recent_rounds),
+                buildEvolution(state.evolution),
             ].forEach((node) => { if (node) frag.appendChild(node); });
         } else {
-            // Pre-research uses the same Needs Your Attention component as
-            // completed/review states so the page keeps one visual language.
-            frag.appendChild(buildAttention(state.attention || {}));
+            // Pre-research uses the same Research Status component.
+            frag.appendChild(buildResearchStatus(state.research_status || {}));
         }
 
         els.content.innerHTML = '';

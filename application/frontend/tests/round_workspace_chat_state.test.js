@@ -46,51 +46,34 @@ test('a conversation-state 409 reconciles and retries persistence only', async (
   );
 });
 
-test('one UI submission remains one job POST across duplicate events and navigation', async () => {
-  const inFlight = new Map();
-  let roundChatJobPosts = 0;
-  let releaseRequest;
-  const requestFinished = new Promise((resolve) => { releaseRequest = resolve; });
-
-  async function submit(round) {
-    if (!ChatState.canSubmit(inFlight, round)) return false;
-    const user = { id: 'user-4', role: 'user', text: 'Summarize Round 4.' };
-    const pending = {
-      id: 'pending-4', requestId: user.id, role: 'assistant', text: '', pending: true,
-    };
-    inFlight.set(round, { pending });
-    roundChatJobPosts += 1;
-    await requestFinished;
-    inFlight.delete(round);
-    return true;
-  }
-
-  const firstSubmit = submit(4);
-  await submit(4); // A second submit/Enter event while the request is pending.
-  assert.equal(roundChatJobPosts, 1);
-
-  // A newly loaded page keeps the server job identity and pending state. It
-  // resumes status polling; it never invokes the job-submission callback.
+test('queued jobs survive normalization and refresh without duplication', async () => {
   const restored = ChatState.recoverMessages([
-    { id: 'user-4', requestId: 'user-4', role: 'user', text: 'Summarize Round 4.' },
-    { id: 'pending-4', requestId: 'user-4', jobId: 'job-4', jobStatus: 'running', role: 'assistant', text: '', pending: true },
+    { id: 'user-a', requestId: 'user-a', jobId: 'job-a', jobStatus: 'running', role: 'user', text: 'Question A' },
+    { id: 'assistant-a', requestId: 'user-a', jobId: 'job-a', jobStatus: 'running', role: 'assistant', text: '', pending: true },
+    { id: 'user-b', requestId: 'user-b', jobId: 'job-b', jobStatus: 'queued', role: 'user', text: 'Question B', queued: true },
+    { id: 'assistant-b', requestId: 'user-b', jobId: 'job-b', jobStatus: 'queued', role: 'assistant', text: '', queued: true },
   ], 4);
+
   assert.equal(restored[1].pending, true);
-  assert.equal(restored[1].jobId, 'job-4');
-  assert.equal(restored[1].jobStatus, 'running');
-  assert.equal(roundChatJobPosts, 1);
+  assert.equal(restored[2].queued, true);
+  assert.equal(restored[3].queued, true);
+  assert.equal(restored[3].jobId, 'job-b');
+
+  const merged = ChatState.mergeStates(
+    { rounds: { 4: restored } },
+    { rounds: { 4: restored } },
+  );
+  assert.deepEqual(merged.rounds[4].map((message) => message.id), [
+    'user-a', 'assistant-a', 'user-b', 'assistant-b',
+  ]);
 
   let persistenceWrites = 0;
   await ChatState.persistWithConflict(
-    { rounds: { 4: restored } },
+    merged,
     async () => response((persistenceWrites += 1) === 1 ? 409 : 200),
-    async () => ({ ok: true, state: { rounds: {} } }),
+    async () => ({ ok: true, state: merged }),
   );
   assert.equal(persistenceWrites, 2);
-  assert.equal(roundChatJobPosts, 1); // The 409 retried state only, never the job.
-
-  releaseRequest();
-  await firstSubmit;
 });
 
 test('a durable completed answer wins over stale browser pending state', () => {
@@ -107,6 +90,38 @@ test('a durable completed answer wins over stale browser pending state', () => {
   assert.equal(merged.rounds[4][0].pending, undefined);
   assert.equal(merged.rounds[4][0].jobStatus, 'succeeded');
   assert.equal(merged.rounds[4][0].jobId, 'job-4');
+});
+
+test('a completed user turn cannot be resurrected as queued after refresh', () => {
+  const durable = { rounds: { 4: [{
+    id: 'user-4', requestId: 'user-4', jobId: 'job-4', role: 'user',
+    text: 'Question B', queued: false, jobStatus: 'succeeded',
+  }] } };
+  const staleBrowser = { rounds: { 4: [{
+    id: 'user-4', requestId: 'user-4', jobId: 'job-4', role: 'user',
+    text: 'Question B', queued: true, jobStatus: 'queued',
+  }] } };
+  const merged = ChatState.mergeStates(durable, staleBrowser);
+  assert.equal(merged.rounds[4][0].jobStatus, 'succeeded');
+  assert.equal(merged.rounds[4][0].queued, undefined);
+});
+
+test('a durable cancellation wins over stale browser pending state', () => {
+  const durable = { rounds: { 4: [{
+    id: 'pending-4', requestId: 'user-4', jobId: 'job-4', role: 'assistant',
+    text: 'Round Chat response cancelled.', pending: false, jobStatus: 'cancelled',
+    cancelled: true,
+  }] } };
+  const browser = { rounds: { 4: [{
+    id: 'pending-4', requestId: 'user-4', role: 'assistant', text: '', pending: true,
+    jobStatus: 'running',
+  }] } };
+  const merged = ChatState.mergeStates(durable, browser);
+  assert.equal(merged.rounds[4][0].text, 'Round Chat response cancelled.');
+  assert.equal(merged.rounds[4][0].pending, undefined);
+  assert.equal(merged.rounds[4][0].jobStatus, 'cancelled');
+  assert.equal(merged.rounds[4][0].cancelled, true);
+  assert.equal('paused' in merged.rounds[4][0], false);
 });
 
 test('browser transcript ordering survives server acceptance racing persistence', () => {
@@ -133,4 +148,47 @@ test('legacy messages get stable ids so local and durable state can reconcile', 
   const second = ChatState.mergeStates(first, legacy);
   assert.equal(second.rounds[4].length, 1);
   assert.match(second.rounds[4][0].id, /^legacy-4-0-user-/);
+});
+
+test('composer control switches between accessible Send and Stop states', () => {
+  assert.deepEqual(ChatState.composerControlState(false, false), {
+    action: 'send', ariaLabel: 'Send message', icon: 'send', disabled: false,
+  });
+  assert.deepEqual(ChatState.composerControlState(true, false), {
+    action: 'stop', ariaLabel: 'Stop response', icon: 'stop', disabled: false,
+  });
+  assert.deepEqual(ChatState.composerControlState(true, true), {
+    action: 'stop', ariaLabel: 'Stop response', icon: 'stop', disabled: true,
+  });
+  assert.equal(ChatState.composerControlState(false, false).icon, 'send');
+});
+
+test('composer button sends while idle but only stops while active', () => {
+  const calls = [];
+  const callbacks = {
+    send: (message) => calls.push(['send', message]),
+    stop: () => calls.push(['stop']),
+  };
+  assert.equal(ChatState.performComposerAction('send', '  Question A  ', callbacks), 'send');
+  assert.deepEqual(calls, [['send', 'Question A']]);
+
+  calls.length = 0;
+  const draft = 'Question B stays in the composer';
+  assert.equal(ChatState.performComposerAction('stop', draft, callbacks), 'stop');
+  assert.deepEqual(calls, [['stop']]);
+  assert.equal(draft, 'Question B stays in the composer');
+});
+
+test('composer keyboard intent queues Enter and preserves newline/composition behavior', () => {
+  assert.equal(ChatState.composerKeyboardAction({ key: 'Enter', shiftKey: false }, 'Question B'), 'send');
+  assert.equal(ChatState.composerKeyboardAction({ key: 'Enter', shiftKey: true }, 'Question B'), null);
+  assert.equal(ChatState.composerKeyboardAction({ key: 'Enter', shiftKey: false }, '   '), 'noop');
+  assert.equal(ChatState.composerKeyboardAction({ key: 'Enter', shiftKey: false, isComposing: true }, '質問'), null);
+  assert.equal(ChatState.composerKeyboardAction({ key: 'Enter', shiftKey: false, keyCode: 229 }, '質問'), null);
+});
+
+test('empty idle composer does not invoke send', () => {
+  let sends = 0;
+  assert.equal(ChatState.performComposerAction('send', ' \n ', { send: () => { sends += 1; } }), 'noop');
+  assert.equal(sends, 0);
 });

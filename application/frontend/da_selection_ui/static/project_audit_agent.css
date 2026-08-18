@@ -1,7 +1,7 @@
 /* =====================================================================
    Audit Agent (V2) — page-specific layout.
    Mirrors the Hypothesis Studio empty-state composer while keeping audit
-   resources and conversation controls close to the input.
+   conversation controls close to the input.
    ===================================================================== */
 
 .v2-page-audit {
@@ -40,6 +40,7 @@
     flex: 0 0 auto;
     z-index: 10;
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 10px;
     justify-content: flex-end;
@@ -491,7 +492,6 @@
 
 .aa-intro-heading {
     font-family: var(--v2-serif);
-    font-size: clamp(1.7rem, 3.4vw, 2.3rem);
     line-height: 1.2;
     font-weight: 640;
     letter-spacing: -0.01em;
@@ -535,50 +535,20 @@
 .aa-turn-assistant {
     align-self: flex-start;
     width: 100%;
+    min-width: 0;
 }
 
-.aa-turn-assistant .aa-turn-body {
-    font-family: var(--v2-serif);
-}
-
-.aa-turn-assistant .aa-turn-body.markdown-body {
+.aa-turn-assistant .aa-chat-markdown {
+    box-sizing: border-box;
+    min-width: 0;
+    max-width: 100%;
     background: transparent;
     border: none;
     border-radius: 0;
     box-shadow: none;
     padding: 0;
     color: var(--v2-ink);
-}
-
-.aa-turn-assistant .aa-turn-body.markdown-body p {
-    color: var(--v2-ink);
-}
-
-.aa-turn-assistant .aa-turn-body.markdown-body,
-.aa-turn-assistant .aa-turn-body.markdown-body p,
-.aa-turn-assistant .aa-turn-body.markdown-body li,
-.aa-turn-assistant .aa-turn-body.markdown-body td,
-.aa-turn-assistant .aa-turn-body.markdown-body th {
-    max-width: 100%;
-    overflow-wrap: anywhere;
-    word-break: break-word;
-}
-
-.aa-turn-assistant .aa-turn-body.markdown-body :not(pre) > code,
-.aa-turn-assistant .aa-turn-body.markdown-body a {
-    white-space: normal;
-    overflow-wrap: anywhere;
-    word-break: break-word;
-}
-
-.aa-turn-assistant .aa-turn-body.markdown-body pre {
-    max-width: 100%;
-    overflow-x: auto;
-}
-
-.aa-turn-assistant .aa-turn-body.markdown-body table {
-    max-width: 100%;
-    table-layout: fixed;
+    font: var(--v2-report-body-font);
 }
 
 .aa-turn-role {
@@ -707,28 +677,6 @@
 .aa-shell.is-empty .aa-queued-messages {
     display: none;
 }
-
-.aa-queue-paused {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 16px;
-    padding: 2px 12px;
-    color: var(--v2-ink);
-    font-family: var(--v2-sans);
-    font-size: 0.82rem;
-}
-
-.aa-queue-resume {
-    border: 0;
-    background: transparent;
-    color: var(--v2-muted);
-    font: inherit;
-    cursor: pointer;
-}
-
-.aa-queue-resume:hover,
-.aa-queue-resume:focus-visible { color: var(--v2-green); outline: none; }
 
 .aa-queued-item {
     display: flex;

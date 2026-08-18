@@ -21,7 +21,7 @@ When you ask questions in Audit Chat, the agent answers by grounding responses i
 
 - Ask the Audit Chat to explain findings, assumptions, methods, and decisions.
 - Request pointers to specific evidence in reports, checkpoints, or source files.
-- Inspect supporting context such as the README, research paper (if configured), codebase link, and checkpoints browser.
+- Ask the Audit Agent to inspect supporting context such as the README, research paper (if configured), code, and checkpoints.
 - Export the full audit chat transcript for documentation and handoff.
 
 ### What You Cannot Do Here
@@ -32,7 +32,7 @@ When you ask questions in Audit Chat, the agent answers by grounding responses i
 ## How To Use It Effectively
 
 1. Start with orientation:
-Read the README and (if available) the research paper to understand project scope.
+Ask the Audit Agent to summarize the README and (if available) the research paper to understand project scope.
 
 2. Build a quick mental model:
 Ask the chat for a summary of goals, methods, and key outcomes.

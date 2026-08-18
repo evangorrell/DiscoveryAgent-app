@@ -43,6 +43,12 @@ def test_legacy_access_endpoints_are_removed(monkeypatch, tmp_path):
         assert response.status_code == 404, path
 
 
+def test_orphaned_finalize_routes_are_removed(monkeypatch, tmp_path):
+    client = _client(monkeypatch, tmp_path)
+    assert client.get("/finalize").status_code == 404
+    assert client.post("/api/preview_feedback", json={}).status_code == 404
+
+
 def test_pages_have_no_access_flow_or_global_footer(monkeypatch, tmp_path):
     client = _client(monkeypatch, tmp_path)
     forbidden = (

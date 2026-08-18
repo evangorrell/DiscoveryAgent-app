@@ -388,6 +388,8 @@ def test_running_round_status(monkeypatch, tmp_path):
     pid = _create(client).get_json()["project_id"]
     (_round0(tmp_path, pid) / "query_000").mkdir()
     proj = next(p for p in _list(client) if p["id"] == pid)
+    # Legacy query activity without a runner record retains the existing
+    # filesystem-backed in-progress fallback and its exact active round.
     assert proj["status_label"] == "In Progress"
     assert proj["status_tone"] == "active"
 
@@ -488,15 +490,16 @@ def test_project_objective_endpoint_persists_canonical_task_description(monkeypa
     assert cfg["task_description"] == objective
 
 
-# --- (24) V1 + slice routes intact ------------------------------------------
+# --- (24) current project routes intact -------------------------------------
 
 def test_routes_intact():
     endpoints = {r.endpoint for r in app_module.app.url_map.iter_rules()}
-    for n in ("home", "app_interface", "round_monitor", "unified_report",
-              "project_home", "api_project_state",
+    for n in ("home", "project_home", "api_project_state",
               "projects", "api_projects_list", "api_projects_create",
               "api_projects_continue", "api_projects_upload_file"):
         assert n in endpoints
+    for n in ("app_interface", "round_monitor", "unified_report", "checkpoint_browser"):
+        assert n not in endpoints
 
 
 def test_projects_available_without_auth():

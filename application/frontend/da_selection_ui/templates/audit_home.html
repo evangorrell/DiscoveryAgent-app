@@ -65,7 +65,6 @@
                 {% if github_url %}
                 <a href="{{ github_url }}" target="_blank" rel="noopener noreferrer" class="audit-topbar-btn">Codebase</a>
                 {% endif %}
-                <a href="{{ url_for('checkpoint_browser') }}" target="_blank" rel="noopener noreferrer" class="audit-topbar-btn">Checkpoints</a>
             </div>
         </div>
         <div style="display:flex;align-items:center;gap:8px;">
@@ -404,7 +403,7 @@
             }
 
             // ── S3 sync polling ───────────────────────────────────────────────
-            // Mirrors waitForS3SyncIfNeeded() in script.js.
+            // Preserve the legacy Audit session's sync readiness check.
             // Returns true when ready to proceed, false if sync failed.
             async function waitForS3Sync() {
                 try {

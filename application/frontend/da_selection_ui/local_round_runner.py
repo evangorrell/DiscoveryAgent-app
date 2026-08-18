@@ -15,9 +15,12 @@ import shutil
 import subprocess
 import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from .project_skills import SkillImportError, has_project_skills, skills_root
 
 
 SCHEMA_VERSION = 1
@@ -42,6 +45,13 @@ class RoundLaunchError(RuntimeError):
 
 _RUNNER_LOCK = threading.RLock()
 _PROCESSES: dict[str, subprocess.Popen] = {}
+
+
+@contextmanager
+def round_state_guard():
+    """Serialize external project mutations with round launch transitions."""
+    with _RUNNER_LOCK:
+        yield
 
 
 def _anthropic_key_is_present(env: dict[str, str]) -> bool:
@@ -417,6 +427,7 @@ def _hydrate_round_zero_config(project: dict[str, Any], paths: dict[str, Path]) 
         "no_sandbox": False,
         "deep_research_provider": existing.get("deep_research_provider") or "paperclip",
     })
+    _overlay_project_skills(config, project)
     _atomic_write_json(paths["config_file"], {"config": config})
     return config
 
@@ -469,8 +480,51 @@ def _hydrate_continuation_config(project: dict[str, Any], paths: dict[str, Path]
         "generate_plan": True,
         "no_sandbox": False,
     })
+    _overlay_project_skills(local_config, project)
     _atomic_write_json(target_config, {"config": local_config})
     paths["config_file"] = target_config
+
+
+def _overlay_project_skills(config: dict[str, Any], project: dict[str, Any]) -> None:
+    """Use only the current project's trusted skill root for a new round config."""
+    try:
+        if has_project_skills(project):
+            config["execution_skills_path"] = str(skills_root(project))
+        else:
+            config.pop("execution_skills_path", None)
+    except SkillImportError as exc:
+        raise RoundLaunchError("invalid_local_configuration", exc.message) from exc
+
+
+def _refresh_resume_project_skills(project: dict[str, Any], config_file: Path) -> None:
+    """Overlay only live project skills onto an interrupted round's config."""
+    try:
+        payload = json.loads(config_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RoundLaunchError(
+            "invalid_local_configuration", "The interrupted round configuration is not valid JSON."
+        ) from exc
+    if not isinstance(payload, dict):
+        raise RoundLaunchError(
+            "invalid_local_configuration", "The interrupted round configuration is not valid JSON."
+        )
+
+    nested = payload.get("config")
+    if nested is not None and not isinstance(nested, dict):
+        raise RoundLaunchError(
+            "invalid_local_configuration", "The interrupted round configuration is not valid JSON."
+        )
+    config = dict(nested) if isinstance(nested, dict) else dict(payload)
+    original = dict(config)
+    _overlay_project_skills(config, project)
+    if config == original:
+        return
+    if isinstance(nested, dict):
+        updated = dict(payload)
+        updated["config"] = config
+    else:
+        updated = config
+    _atomic_write_json(config_file, updated)
 
 
 def _build_command(
@@ -629,7 +683,7 @@ def _launch_round(
         diagnostic_handle = None
         try:
             if resume_only:
-                pass
+                _refresh_resume_project_skills(project, paths["config_file"])
             elif paths["round"] == 0:
                 _hydrate_round_zero_config(project, paths)
             else:
@@ -833,8 +887,20 @@ def resubmit_round(project: dict[str, Any], *, env: dict[str, str] | None = None
     return result
 
 
-def round_status(project: dict[str, Any]) -> dict[str, Any]:
-    paths = _project_paths(project)
+def _round_status_from_paths(
+    paths: dict[str, Path],
+    *,
+    project_id: str,
+    persist_reconciled_state: bool,
+) -> dict[str, Any]:
+    """Derive the runner-owned lifecycle state from canonical local paths.
+
+    Round Workspace's ``/api/rounds/status`` response and read-only consumers
+    such as Project Home must agree about running/stopped/resumable state.  Keep
+    that decision here so callers never reproduce the native-checkpoint rules.
+    Only the execution API persists stale process reconciliation; presentation
+    reads remain side-effect free.
+    """
     state = _read_state(paths["state_file"])
     round_number = int(state.get("round", 0)) if state else 0
     target_dir = paths["checkpoints_dir"] / f"round_{round_number}"
@@ -851,17 +917,59 @@ def round_status(project: dict[str, Any]) -> dict[str, Any]:
     else:
         status = "not_started"
 
-    if state and state.get("status") != status:
+    if persist_reconciled_state and state and state.get("status") != status:
         state = dict(state)
         state.update({"status": status, "updated_at": _utc_now()})
         _atomic_write_json(paths["state_file"], state)
     return {
-        "project_id": str(project["id"]),
+        "project_id": project_id,
         "round": round_number,
         "status": status,
         "pid": state.get("pid") if state and status == "running" else None,
         "resumable": status in {"interrupted", "failed"} and _latest_native_checkpoint(target_dir) is not None and not (target_dir / "memory_report.md").is_file(),
     }
+
+
+def inspect_round_status(checkpoint_dir: str | Path) -> dict[str, Any]:
+    """Read the same lifecycle state as :func:`round_status` without writing.
+
+    ``checkpoint_dir`` is the registered V2 ``.../checkpoints/round_N`` path.
+    This intentionally accepts no browser-supplied artifact path and exposes no
+    file contents; it only lets other trusted server views share the runner's
+    exact process/checkpoint classification.
+    """
+    configured_round = Path(checkpoint_dir).expanduser().resolve()
+    if not (
+        re.fullmatch(r"round_\d+", configured_round.name)
+        and configured_round.parent.name == "checkpoints"
+    ):
+        raise RoundLaunchError(
+            "invalid_local_configuration",
+            "The checkpoint path has an unsupported layout.",
+        )
+    checkpoints_dir = configured_round.parent
+    state_file = checkpoints_dir.parent / "run_state.json"
+    state = _read_state(state_file)
+    result = _round_status_from_paths(
+        {"checkpoints_dir": checkpoints_dir, "state_file": state_file},
+        project_id=str((state or {}).get("project_id") or ""),
+        persist_reconciled_state=False,
+    )
+    # Project-facing consumers with an existing filesystem fallback need to
+    # distinguish an explicitly recorded terminal state from this inspector's
+    # conservative ``activity exists -> interrupted`` inference. Keep this
+    # read-only provenance detail out of the public Round Workspace API.
+    result["recorded_state"] = bool(state)
+    return result
+
+
+def round_status(project: dict[str, Any]) -> dict[str, Any]:
+    paths = _project_paths(project)
+    return _round_status_from_paths(
+        paths,
+        project_id=str(project["id"]),
+        persist_reconciled_state=True,
+    )
 
 
 # Backward-compatible names for integrations/tests from the Round-0 milestone.

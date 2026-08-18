@@ -716,6 +716,67 @@
 }
 .hs-send:disabled { background: var(--v2-border); color: var(--v2-muted); cursor: default; }
 
+.hs-queued-messages {
+    width: var(--hs-composer-width);
+    max-width: calc(100% - 24px);
+    margin: 6px auto 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-family: var(--v2-sans);
+}
+.hs-queued-messages[hidden] { display: none; }
+.hs-queued-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 36px;
+    max-width: 100%;
+    padding: 7px 12px;
+    border: 1px solid rgba(42, 96, 72, 0.11);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.72);
+    color: var(--v2-ink);
+    box-shadow: 0 2px 12px rgba(40, 30, 12, 0.05);
+    font-size: 0.86rem;
+}
+.hs-queued-icon {
+    flex: 0 0 auto;
+    color: var(--v2-muted);
+}
+.hs-queued-text {
+    min-width: 0;
+    flex: 1 1 auto;
+    overflow-wrap: anywhere;
+}
+.hs-queued-status {
+    flex: 0 0 auto;
+    color: var(--v2-muted);
+    font-size: 0.78rem;
+    white-space: nowrap;
+}
+.hs-queued-delete {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 26px;
+    height: 26px;
+    margin-right: -4px;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--v2-muted);
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+.hs-queued-delete:hover,
+.hs-queued-delete:focus-visible {
+    background: rgba(119, 45, 45, 0.08);
+    color: #8d3232;
+    outline: none;
+}
+
 .hs-composer-error {
     margin: 10px 0 0 4px;
     font-family: var(--v2-sans);
@@ -731,6 +792,11 @@
 /* ---- Final review overlay ---- */
 .hs-review {
     max-width: min(680px, calc(100vw - 48px));
+}
+.hs-review:focus,
+.hs-review:focus-visible {
+    outline: 1px solid var(--v2-border);
+    outline-offset: 0;
 }
 .hs-review > .v2-modal-head { padding-bottom: 24px; }
 .hs-review-block { margin-bottom: 24px; }
@@ -787,7 +853,6 @@
 }
 .hs-welcome-heading {
     font-family: var(--v2-serif);
-    font-size: clamp(1.7rem, 3.4vw, 2.25rem);
     line-height: 1.18;
     font-weight: 660;
     letter-spacing: -0.01em;
@@ -1106,7 +1171,6 @@
     padding: 6px 10px;
     font-size: 0.78rem;
 }
-
 .hs-card-head {
     display: flex;
     align-items: flex-start;

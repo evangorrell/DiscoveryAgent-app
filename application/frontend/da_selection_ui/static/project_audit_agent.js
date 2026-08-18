@@ -29,7 +29,6 @@
     let deleteConfirmChatId = null;
     let pendingAuditJobs = [];
     let queuedAuditMessages = {};
-    let pausedAuditQueues = {};
     const cancelledAuditJobIds = new Set();
     const pendingChatIds = new Set();
     const pollingJobIds = new Set();
@@ -41,16 +40,11 @@
         ? config.chatStorageScope.trim()
         : 'anonymous';
     const auditChatStorageKey = `da_audit_chat_state_v${CHAT_STORAGE_VERSION}_${chatStorageScope}`;
-    const projectContext = window.discoveryProjectContext || {};
-    const auditFreshEntry = projectContext.auditFreshEntry === true;
-    try {
-        if (projectContext.auditFreshEntryKey) {
-            window.sessionStorage.removeItem(projectContext.auditFreshEntryKey);
-        }
-    } catch (_) {}
     let durablePersistTimer = null;
     let durablePersistChain = Promise.resolve();
     let pendingDurableAuditChatSnapshot = null;
+    const auditFigurePresentationCache = new Map();
+    let auditMarkdownRenderSequence = 0;
 
     function renderMarkdown(text) {
         if (!text) return '';
@@ -62,21 +56,81 @@
             .replace(/\n/g, '<br>');
     }
 
-    function rewriteImagePaths(el) {
-        el.querySelectorAll('img').forEach(function(img) {
-            const src = img.getAttribute('src');
-            if (src && !src.startsWith('http') && !src.startsWith('data:') && !src.startsWith('/api/serve_asset')) {
-                const assetUrl = new URL('/api/serve_asset', window.location.origin);
-                assetUrl.searchParams.set('path', src);
-                if (config.projectSlug) assetUrl.searchParams.set('project', config.projectSlug);
-                img.setAttribute('src', assetUrl.toString());
-            }
-            img.style.maxWidth = '100%';
-            img.style.borderRadius = '4px';
-            img.style.marginTop = '8px';
-            img.style.display = 'block';
-            img.addEventListener('error', function() { this.style.display = 'none'; });
+    function highlightAssistantCode(element) {
+        if (!window.hljs || !element) return;
+        element.querySelectorAll('pre code').forEach(function(code) {
+            hljs.highlightElement(code);
         });
+    }
+
+    function auditMarkdownWithoutImageDestinations(text) {
+        return String(text || '').replace(
+            /!\[([^\]\r\n]*)\]\([^\r\n]*?\)/g,
+            function(_match, alt) { return `**Figure unavailable:** ${alt || 'Referenced figure'}`; },
+        );
+    }
+
+    async function prepareAuditFigurePresentation(text) {
+        if (auditFigurePresentationCache.has(text)) {
+            return auditFigurePresentationCache.get(text);
+        }
+        const projectQuery = config.projectSlug
+            ? `?project=${encodeURIComponent(config.projectSlug)}`
+            : '';
+        const request = fetch(`/api/audit_chat_figures${projectQuery}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ markdown: text }),
+        }).then(async function(response) {
+            const data = await response.json().catch(function() { return {}; });
+            if (!response.ok || !data.success) {
+                throw new Error(data.error || 'Could not prepare Audit figures');
+            }
+            return {
+                displayText: typeof data.display_text === 'string' ? data.display_text : text,
+                figures: Array.isArray(data.figures) ? data.figures : [],
+            };
+        });
+        auditFigurePresentationCache.set(text, request);
+        try {
+            return await request;
+        } catch (error) {
+            auditFigurePresentationCache.delete(text);
+            throw error;
+        }
+    }
+
+    async function renderAuditAssistantMarkdown(element, text) {
+        if (!element) return;
+        const renderId = String(++auditMarkdownRenderSequence);
+        element.dataset.auditMarkdownRenderId = renderId;
+        element.setAttribute('aria-busy', 'true');
+        element.textContent = '';
+        try {
+            const presentation = await prepareAuditFigurePresentation(text);
+            if (!element.isConnected || element.dataset.auditMarkdownRenderId !== renderId) return;
+            if (window.DiscoveryReportFigures) {
+                window.DiscoveryReportFigures.renderReportMarkdown(
+                    element, presentation.displayText, presentation.figures,
+                );
+            } else {
+                element.innerHTML = renderMarkdown(presentation.displayText);
+            }
+        } catch (_error) {
+            if (!element.isConnected || element.dataset.auditMarkdownRenderId !== renderId) return;
+            const safeFallback = auditMarkdownWithoutImageDestinations(text);
+            if (window.DiscoveryReportFigures) {
+                window.DiscoveryReportFigures.renderMarkdown(element, safeFallback);
+            } else {
+                element.innerHTML = renderMarkdown(safeFallback);
+            }
+        } finally {
+            if (element.dataset.auditMarkdownRenderId === renderId) {
+                element.removeAttribute('aria-busy');
+                highlightAssistantCode(element);
+                scrollToBottomAfterLayout();
+            }
+        }
     }
 
     function normalizeStoredAuditChatMessages(messages) {
@@ -206,7 +260,6 @@
             queuedAuditMessages[chatId] = queue;
         } else {
             delete queuedAuditMessages[chatId];
-            delete pausedAuditQueues[chatId];
         }
         return next;
     }
@@ -219,7 +272,6 @@
             queuedAuditMessages[chatId] = queue;
         } else {
             delete queuedAuditMessages[chatId];
-            delete pausedAuditQueues[chatId];
         }
     }
 
@@ -348,11 +400,6 @@
                     activeChatId: selectedChat.id,
                     pendingJobs: normalizePendingAuditJobs(parsed.pendingJobs, chats),
                     queuedMessages: normalizeQueuedAuditMessages(parsed.queuedMessages, chats),
-                    pausedQueues: Object.fromEntries(
-                        (Array.isArray(parsed.pausedQueues) ? parsed.pausedQueues : [])
-                            .filter(function(chatId) { return chats.some(function(chat) { return chat.id === chatId; }); })
-                            .map(function(chatId) { return [chatId, true]; })
-                    ),
                 };
             }
             const legacyMessages = normalizeStoredAuditChatMessages(parsed.messages);
@@ -360,7 +407,7 @@
                 const migratedChat = createEmptyChat();
                 migratedChat.messages = legacyMessages;
                 migratedChat.title = deriveChatTitle(legacyMessages);
-                return { version: CHAT_STORAGE_VERSION, updatedAt: 0, chats: [migratedChat], activeChatId: migratedChat.id, pendingJobs: [], queuedMessages: {}, pausedQueues: {} };
+                return { version: CHAT_STORAGE_VERSION, updatedAt: 0, chats: [migratedChat], activeChatId: migratedChat.id, pendingJobs: [], queuedMessages: {} };
             }
             return null;
     }
@@ -480,16 +527,16 @@
             const chats = chatSessions
                 .filter(function(chat) { return !isUnlistedDraftChat(chat); })
                 .slice(0, AUDIT_CHAT_STORAGE_MAX_CHATS);
+            const persistedActiveChatId = chats.some(function(chat) { return chat.id === activeChatId; })
+                ? activeChatId
+                : null;
             const state = {
                 version: CHAT_STORAGE_VERSION,
                 updatedAt: Date.now(),
-                activeChatId,
+                activeChatId: persistedActiveChatId,
                 chats,
                 pendingJobs: normalizePendingAuditJobs(pendingAuditJobs, chats),
                 queuedMessages: normalizeQueuedAuditMessages(queuedAuditMessages, chats),
-                pausedQueues: Object.keys(pausedAuditQueues).filter(function(chatId) {
-                    return pausedAuditQueues[chatId] && getQueuedAuditMessages(chatId).length > 0;
-                }),
             };
             localStorage.setItem(auditChatStorageKey, JSON.stringify(state));
             queueDurableAuditChatState(state);
@@ -638,7 +685,6 @@
                 menu.appendChild(option);
             }
 
-            addMenuItem('Export', function() { exportChat(chat); });
             addMenuItem('Rename', function() { renameChat(chat.id); });
             addMenuItem(chat.pinned ? 'Unpin chat' : 'Pin chat', function() { togglePinChat(chat.id); });
             addMenuItem('Delete', function() { requestDeleteChat(chat.id); }, 'is-danger');
@@ -691,25 +737,6 @@
         while (queuedMessagesEl.firstChild) queuedMessagesEl.removeChild(queuedMessagesEl.firstChild);
         const queued = getQueuedAuditMessages(activeChatId);
         queuedMessagesEl.classList.toggle('hidden', queued.length === 0);
-        if (queued.length && pausedAuditQueues[activeChatId]) {
-            const notice = document.createElement('div');
-            notice.className = 'aa-queue-paused';
-            const label = document.createElement('span');
-            label.textContent = 'Queue paused because you interrupted';
-            const resume = document.createElement('button');
-            resume.type = 'button';
-            resume.className = 'aa-queue-resume';
-            resume.textContent = 'Resume';
-            resume.addEventListener('click', function() {
-                delete pausedAuditQueues[activeChatId];
-                persistAuditChatState({ touchActive: true });
-                renderQueuedMessages();
-                promoteNextQueuedAuditMessage(activeChatId);
-            });
-            notice.appendChild(label);
-            notice.appendChild(resume);
-            queuedMessagesEl.appendChild(notice);
-        }
         queued.forEach(function(entry, index) {
             const item = document.createElement('div');
             item.className = 'aa-queued-item';
@@ -753,10 +780,7 @@
     function renderStoredChatHistory(entries) {
         clearChatBubbles();
         entries.forEach(function(entry) {
-            const contentEl = appendTurn(entry.role, entry.text, false, entry.responseTimeMs);
-            if (entry.role !== 'user' && window.hljs) {
-                contentEl.querySelectorAll('pre code').forEach(function(el) { hljs.highlightElement(el); });
-            }
+            appendTurn(entry.role, entry.text, false, entry.responseTimeMs);
         });
         if (pendingChatIds.has(activeChatId)) {
             appendTurn('assistant', '', true, null);
@@ -998,7 +1022,6 @@
         chatSessions = chatSessions.filter(function(entry) { return entry.id !== chatId; });
         pendingAuditJobs = pendingAuditJobs.filter(function(job) { return job.chatId !== chatId; });
         delete queuedAuditMessages[chatId];
-        delete pausedAuditQueues[chatId];
         rebuildPendingChatIds();
         sortChatSessions();
         if (deletingActiveChat) {
@@ -1084,13 +1107,21 @@
         label.textContent = role === 'user' ? 'YOU' : 'AUDIT AGENT';
 
         const content = document.createElement('div');
-        content.classList.add('aa-turn-body', 'markdown-body');
+        content.classList.add('aa-turn-body');
+        if (role === 'user') {
+            content.classList.add('markdown-body');
+        } else {
+            content.classList.add('v2-report-markdown', 'aa-chat-markdown');
+        }
         if (loading) {
             content.classList.add('is-pending');
             content.innerHTML = '<span class="aa-typing" aria-label="Thinking"><span></span><span></span><span></span></span>';
         } else {
-            content.innerHTML = renderMarkdown(text);
-            if (role !== 'user') rewriteImagePaths(content);
+            if (role === 'user') {
+                content.innerHTML = renderMarkdown(text);
+            } else {
+                void renderAuditAssistantMarkdown(content, text);
+            }
         }
 
         turn.appendChild(label);
@@ -1111,17 +1142,13 @@
         if (activeChatId !== chatId) return;
         if (replyContent && replyContent.isConnected) {
             replyContent.classList.remove('is-pending');
-            replyContent.innerHTML = renderMarkdown(replyText);
-            rewriteImagePaths(replyContent);
+            void renderAuditAssistantMarkdown(replyContent, replyText);
             const responseTimeLabel = formatResponseTimeMs(responseTimeMs);
             if (responseTimeLabel) {
                 const timing = document.createElement('div');
                 timing.classList.add('aa-response-time');
                 timing.textContent = `Response time: ${responseTimeLabel}`;
                 replyContent.parentElement && replyContent.parentElement.appendChild(timing);
-            }
-            if (window.hljs) {
-                replyContent.querySelectorAll('pre code').forEach(function(el) { hljs.highlightElement(el); });
             }
         } else {
             renderStoredChatHistory(chatHistory);
@@ -1139,6 +1166,7 @@
             renderChatList();
             updateComposerForActiveChat();
             syncEmptyState();
+            promoteNextQueuedAuditMessage(chatId);
             return;
         }
         if (data && data.cancelled) {
@@ -1149,6 +1177,7 @@
             renderChatList();
             updateComposerForActiveChat();
             syncEmptyState();
+            promoteNextQueuedAuditMessage(chatId);
             return;
         }
         if (data && data.success) {
@@ -1225,6 +1254,9 @@
         pendingAuditJobs.forEach(function(job) {
             pollAuditChatJob(job, null);
         });
+        Object.keys(queuedAuditMessages).forEach(function(chatId) {
+            promoteNextQueuedAuditMessage(chatId);
+        });
     }
 
     function getActiveAuditJob() {
@@ -1237,7 +1269,6 @@
         cancelledAuditJobIds.add(job.jobId);
         removePendingAuditJob(job.jobId);
         appendAssistantMessageToChat(job.chatId, 'Response stopped.', null);
-        if (getQueuedAuditMessages(job.chatId).length) pausedAuditQueues[job.chatId] = true;
         if (activeChatId === job.chatId) {
             renderStoredChatHistory(chatHistory);
         }
@@ -1245,6 +1276,7 @@
         renderChatList();
         updateComposerForActiveChat();
         syncEmptyState();
+        promoteNextQueuedAuditMessage(job.chatId);
         try {
             await fetch(`/api/audit_chat_jobs/${encodeURIComponent(job.jobId)}/cancel`, {
                 method: 'POST',
@@ -1276,37 +1308,6 @@
         document.body.classList.remove('v2-modal-open');
     }
 
-    function returningFromSameProjectTab() {
-        if (!config.projectSlug || !document.referrer) return false;
-        try {
-            const prior = new URL(document.referrer, window.location.href);
-            if (prior.origin !== window.location.origin) return false;
-            const projectRoot = `/projects/${encodeURIComponent(config.projectSlug)}`;
-            if (prior.pathname === projectRoot || prior.pathname.startsWith(projectRoot + '/')) {
-                return true;
-            }
-            return prior.pathname === '/rounds/'
-                && prior.searchParams.get('project') === config.projectSlug;
-        } catch (_) {
-            return false;
-        }
-    }
-
-    function shouldRestoreStoredActiveChat(storedState) {
-        const storedActiveChatId = storedState && typeof storedState.activeChatId === 'string'
-            ? storedState.activeChatId
-            : '';
-        if (!storedActiveChatId || !chatSessions.some(function(chat) { return chat.id === storedActiveChatId; })) {
-            return false;
-        }
-        const activeResponsePending = pendingAuditJobs.some(function(job) {
-            return job.chatId === storedActiveChatId;
-        });
-        if (activeResponsePending) return true;
-        if (auditFreshEntry) return false;
-        return returningFromSameProjectTab();
-    }
-
     if (guideBtn && guideModal) {
         guideBtn.addEventListener('click', function() { openGuide(); });
         guideCloseBtn && guideCloseBtn.addEventListener('click', closeGuide);
@@ -1323,21 +1324,17 @@
         const storedState = readAuditChatStateFromStorage();
         chatSessions = storedState && Array.isArray(storedState.chats)
             ? storedState.chats
-            : [createEmptyChat()];
+            : [];
         pendingAuditJobs = normalizePendingAuditJobs(storedState && storedState.pendingJobs, chatSessions);
         queuedAuditMessages = normalizeQueuedAuditMessages(storedState && storedState.queuedMessages, chatSessions);
-        pausedAuditQueues = (storedState && storedState.pausedQueues) || {};
         rebuildPendingChatIds();
         cleanupUnlistedDraftChats(null);
-        if (shouldRestoreStoredActiveChat(storedState)) {
-            activeChatId = storedState.activeChatId;
-        } else {
-            // Direct entry, app relaunch, Projects, or another project starts a
-            // fresh composer; restored project chats remain visible in History.
-            const freshChat = createEmptyChat();
-            chatSessions.unshift(freshChat);
-            activeChatId = freshChat.id;
-        }
+        // Every page entry starts in a transient blank composer. Restored
+        // project chats remain visible in History and keep running in the
+        // background, but none is selected until the user explicitly opens it.
+        const freshChat = createEmptyChat();
+        chatSessions.unshift(freshChat);
+        activeChatId = freshChat.id;
         const activeChat = ensureActiveChat();
         const restoredMessages = normalizeStoredAuditChatMessages(activeChat.messages);
         clearChatBubbles();
@@ -1426,11 +1423,6 @@
 
     function promoteNextQueuedAuditMessage(chatId) {
         if (pendingChatIds.has(chatId)) return false;
-        if (pausedAuditQueues[chatId]) {
-            renderQueuedMessages();
-            persistAuditChatState({ touchActive: activeChatId === chatId });
-            return false;
-        }
         const next = shiftQueuedAuditMessage(chatId);
         if (!next) return false;
         const chat = chatSessions.find(function(entry) { return entry.id === chatId; });
@@ -1558,7 +1550,7 @@
         autoSizeInput();
         refreshSendEnabled();
 
-        if (pendingChatIds.has(requestChatId) || pausedAuditQueues[requestChatId]) {
+        if (pendingChatIds.has(requestChatId)) {
             queueAuditMessage(requestChatId, message);
             persistAuditChatState({ touchActive: true });
             renderQueuedMessages();

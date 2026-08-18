@@ -50,9 +50,29 @@
         return Math.max(floor, current);
     }
 
+    function visibleExpandedState(expanded, regenerating) {
+        const visible = {};
+        Object.keys(expanded || {}).forEach(function (key) {
+            const index = Number(key);
+            if (!expanded[key]) return;
+            visible[index] = true;
+        });
+        return visible;
+    }
+
+    function isOpeningFirstVisibleExpansion(expanded, regenerating, index, nextExpanded) {
+        const before = visibleExpandedState(expanded, regenerating);
+        const afterState = Object.assign({}, expanded || {});
+        afterState[Number(index)] = !!nextExpanded;
+        const after = visibleExpandedState(afterState, regenerating);
+        return Object.keys(before).length === 0 && Object.keys(after).length === 1;
+    }
+
     return {
         singleOverflowColumn: singleOverflowColumn,
         packedOverflowPreferences: packedOverflowPreferences,
         hypothesisExpansionPanelRatio: hypothesisExpansionPanelRatio,
+        visibleExpandedState: visibleExpandedState,
+        isOpeningFirstVisibleExpansion: isOpeningFirstVisibleExpansion,
     };
 });

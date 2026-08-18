@@ -15,7 +15,7 @@
     }
   },
   "frontend": {
-    "commit": "5a87ee0d0270fdeb4b7d5ec15d4a7c8426d23da7",
+    "commit": "8923b2825e28c09a2dff768747813ca1d0916f6f",
     "remote_url": "https://github.com/owencqueen/DA_selection_ui",
     "repository": "DA_selection_ui",
     "uv_lock_sha256": "a81e89b5a66d9946dcaf7162f7117e669e0f7e59c350d1858388dd98fd4ebc47",
@@ -32,7 +32,7 @@
     "sha256": "036362c1408eb872183f7614d1784e1d5c2a770456878d2c6e02808cad593db8",
     "vendored_wheel": "vendor/gxl_paperclip-0.7.24-py3-none-any.whl"
   },
-  "release_id": "dev-5a87ee0d0270-d547cedabc0d",
+  "release_id": "dev-8923b2825e28-d547cedabc0d",
   "release_type": "development",
   "required_cpython_version": "3.11.11",
   "schema_version": 1

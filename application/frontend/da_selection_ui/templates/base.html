@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}DiscoveryAgent{% endblock %}</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=20260808-attention-pill-1">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=20260817-research-status">
     {% block head %}{% endblock %}
 </head>
 <body class="v2{% if page_class %} {{ page_class }}{% endif %}">
@@ -12,7 +12,7 @@
       Shared V2 application shell. This is the first Jinja base template in the
       repository; only new V2 screens extend it. Navigation uses real links
       (server-rendered route changes), not hash navigation. The view passes
-      nav_active as one of: home | studio | workspace | audit | settings.
+      nav_active as one of: home | studio | workspace | skills | audit | settings.
     -->
     {% set nav_active = nav_active | default('') %}
     {% set bare_shell = bare_shell | default(false) %}
@@ -38,6 +38,9 @@
                 <span class="v2-nav-link v2-nav-link-disabled" aria-disabled="true"
                       title="No research round has started yet">Round Workspace</span>
                 {% endif %}
+                <a class="v2-nav-link{% if nav_active == 'skills' %} is-active{% endif %}"
+                   href="{{ url_for('project_skills', project_slug=project_slug) }}"
+                   {% if nav_active == 'skills' %}aria-current="page"{% endif %}>Skills</a>
                 <a class="v2-nav-link{% if nav_active == 'audit' %} is-active{% endif %}"
                    href="{{ url_for('project_audit_agent', project_slug=project_slug) }}"
                    {% if nav_active == 'audit' %}aria-current="page"{% endif %}>Audit Agent</a>
@@ -58,7 +61,7 @@
         projectSlug: {{ project_slug | tojson }}
       };
     </script>
-    <script src="{{ url_for('static', filename='project_context.js') }}?v=20260808-project-continuity-1"></script>
+    <script src="{{ url_for('static', filename='project_context.js') }}?v=20260817-audit-new-chat-1"></script>
     <script src="{{ url_for('static', filename='v2_dialog.js') }}?v=20260808-modal-regions-1"></script>
     {% if project_slug and not bare_shell %}
     <script>

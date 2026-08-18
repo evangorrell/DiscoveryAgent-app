@@ -62,6 +62,14 @@ from .db import (
     EventLog,
 )
 from . import local_round_runner
+from .project_skills import (
+    MAX_ARCHIVE_BYTES,
+    SkillImportError,
+    import_project_skill,
+    list_project_skills,
+    remove_project_skill,
+    validate_project_skill,
+)
 from .interaction_storage import (
     append_jsonl_line,
     migrate_legacy_interactions,
@@ -88,12 +96,22 @@ from .utils.memory_monitor import (
 
 try:
     # Prefer package-relative imports when installed
-    from .select_hypothesis import InteractiveHypothesisGenerator, display_card_title
+    from .select_hypothesis import (
+        InteractiveHypothesisGenerator,
+        display_card_title,
+        parse_hypothesis_sections_text,
+        preserve_manual_hypothesis_text,
+    )
     from . import hypothesis_history
 except Exception:
     # Fallback for running as a loose script
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from select_hypothesis import InteractiveHypothesisGenerator, display_card_title
+    from select_hypothesis import (
+        InteractiveHypothesisGenerator,
+        display_card_title,
+        parse_hypothesis_sections_text,
+        preserve_manual_hypothesis_text,
+    )
     import hypothesis_history
 
 from AIR.utils.code_chat import CodeChatConversation, run_code_chat
@@ -211,8 +229,6 @@ REGENERATION_STATE = {}
 GENERATION_IDS: dict[str, int] = {}
 GENERATION_LOCK = threading.Lock()
 GENERATION_ID_LOCK = threading.RLock()
-REPORT_CHAT_CANCEL_STATE = {}
-REPORT_CHAT_CANCEL_LOCK = threading.Lock()
 HYPOTHESIS_THREAD_CANCEL_STATE = {}
 HYPOTHESIS_THREAD_CANCEL_LOCK = threading.Lock()
 SESSION_OPERATION_LOCKS: dict[str, threading.RLock] = {}
@@ -257,12 +273,15 @@ def _evict_idle_sessions() -> None:
             for sid in stale:
                 GENERATORS.pop(sid, None)
                 with GENERATION_LOCK:
-                    GENERATION_STATE.pop(sid, None)
+                    stale_generation_keys = [
+                        key for key in GENERATION_STATE
+                        if key == sid or (isinstance(key, tuple) and key and key[0] == sid)
+                    ]
+                    for key in stale_generation_keys:
+                        GENERATION_STATE.pop(key, None)
                     REGENERATION_STATE.pop(sid, None)
                 with GENERATION_ID_LOCK:
                     GENERATION_IDS.pop(sid, None)
-                with REPORT_CHAT_CANCEL_LOCK:
-                    REPORT_CHAT_CANCEL_STATE.pop(sid, None)
                 with HYPOTHESIS_THREAD_CANCEL_LOCK:
                     HYPOTHESIS_THREAD_CANCEL_STATE.pop(sid, None)
                 with SESSION_OPERATION_LOCKS_GUARD:
@@ -591,27 +610,20 @@ def _load_latest_round_report_content(
     checkpoint_dir: Path,
 ) -> tuple[str | None, str | None, Path | None]:
     """
-    Load (full_text, summary_text, report_dir) for the latest round that has
-    a round_report.md, reusing _latest_round_checkpoint_dir for the scan.
+    Load (full_text, summary_text, report_dir) for the latest completed round.
 
-    checkpoint_dir is expected to be a round_N directory; its grandparent is
-    the checkpoint root that _latest_round_checkpoint_dir expects (the dir
-    that contains the 'checkpoints/' subdirectory).
-
-    If the highest-numbered round has no round_report.md yet (still running),
-    returns (None, None, None) so callers can fall back to generator attributes
-    loaded from the session's checkpoint at startup.
+    The latest completed round is resolved once from durable round directories;
+    both report variants are then read only from that exact directory.  This
+    helper exists for the retained legacy remote-Audit report surface.  Exact
+    V2 round views do not use it.
     """
-    # Derive the root that _latest_round_checkpoint_dir expects.
-    if checkpoint_dir.name.startswith("round_"):
-        checkpoint_root = checkpoint_dir.parent.parent
-    else:
-        checkpoint_root = checkpoint_dir.parent
-
-    latest_round = _latest_round_checkpoint_dir(checkpoint_root)
-    report_path = latest_round / "round_report.md"
-    if not report_path.exists():
+    rounds_root = _v2_round_dirs_root_from_any_checkpoint_path(Path(checkpoint_dir))
+    round_number, latest_round = _v2_latest_round_dir_with_file(
+        rounds_root, 'round_report.md',
+    )
+    if latest_round is None or round_number is None:
         return None, None, None
+    report_path = latest_round / "round_report.md"
 
     try:
         raw = report_path.read_text(encoding='utf-8', errors='replace').strip()
@@ -881,6 +893,13 @@ def _extract_hypothesis_display_text(raw_text: str | None) -> str:
         return ''
 
     text = raw_text.strip()
+
+    structured = parse_hypothesis_sections_text(
+        text,
+        fallback_to_full_text=False,
+    )
+    if structured.get('hypothesis'):
+        return structured['hypothesis']
 
     hyp_match = _HYPOTHESIS_LABEL_RE.search(text)
     if hyp_match:
@@ -4922,11 +4941,11 @@ def _read_conversation_surface_state(
     return copy.deepcopy(entry['state'])
 
 
-def _round_chat_message_is_terminal(message: object) -> bool:
+def _round_chat_message_has_terminal_job_status(message: object) -> bool:
     return (
         isinstance(message, dict)
-        and message.get('role') == 'assistant'
-        and str(message.get('jobStatus') or '').lower() in {'succeeded', 'failed'}
+        and message.get('role') in {'user', 'assistant'}
+        and str(message.get('jobStatus') or '').lower() in {'succeeded', 'failed', 'cancelled'}
         and message.get('pending') is not True
     )
 
@@ -4966,7 +4985,11 @@ def _merge_round_chat_conversation_states(existing: object, incoming: object) ->
             message = copy.deepcopy(raw)
             message_id = str(message.get('id') or '').strip()
             prior = remote_by_id.get(message_id) if message_id else None
-            if prior is not None and _round_chat_message_is_terminal(prior) and not _round_chat_message_is_terminal(message):
+            if (
+                prior is not None
+                and _round_chat_message_has_terminal_job_status(prior)
+                and not _round_chat_message_has_terminal_job_status(message)
+            ):
                 ordered.append(copy.deepcopy(prior))
                 continue
             combined = {**(prior or {}), **message}
@@ -5748,12 +5771,15 @@ def clear_session_state() -> None:
     if session_id:
         GENERATORS.pop(session_id, None)
         with GENERATION_LOCK:
-            GENERATION_STATE.pop(session_id, None)
+            stale_generation_keys = [
+                key for key in GENERATION_STATE
+                if key == session_id or (isinstance(key, tuple) and key and key[0] == session_id)
+            ]
+            for key in stale_generation_keys:
+                GENERATION_STATE.pop(key, None)
             REGENERATION_STATE.pop(session_id, None)
         with GENERATION_ID_LOCK:
             GENERATION_IDS.pop(session_id, None)
-        with REPORT_CHAT_CANCEL_LOCK:
-            REPORT_CHAT_CANCEL_STATE.pop(session_id, None)
         with HYPOTHESIS_THREAD_CANCEL_LOCK:
             HYPOTHESIS_THREAD_CANCEL_STATE.pop(session_id, None)
         with SESSION_OPERATION_LOCKS_GUARD:
@@ -6449,83 +6475,242 @@ def with_generation_operation_lock(func):
             # precede the session requirement (notably pristine Round 0).
             g.generation_token = None
             return func(*args, **kwargs)
-        token = _begin_generation(session_id)
+        generation_scope = _generation_project_scope()
+        data = request.get_json(silent=True) or {}
+        requested_attempt_id = sanitize_field(data.get('attempt_id'), 120)
+        token = _begin_generation(
+            session_id,
+            scope=generation_scope,
+            attempt_id=requested_attempt_id or None,
+        )
         if not token:
-            return jsonify({'success': False, 'error': 'Generation already in progress'})
+            status = _generation_status_for_session(session_id, scope=generation_scope)
+            return jsonify({
+                'success': False,
+                'error': 'Generation already in progress',
+                **status,
+            })
         g.generation_token = token
+        g.generation_scope = generation_scope
+        g.generation_attempt_id = _generation_attempt_id(session_id, token, scope=generation_scope)
         try:
             with _session_operation_context('api_generate'):
                 return func(*args, **kwargs)
         finally:
-            _end_generation(session_id, token)
+            _end_generation(session_id, token, scope=generation_scope)
     return _wrapped
 
 
-def _ensure_generation_state(session_id: str) -> dict:
-    state = GENERATION_STATE.get(session_id)
+def _generation_project_scope() -> str:
+    """Return the active project's generation namespace within one session."""
+    project_id = session.get('v2_active_project_id')
+    if project_id:
+        return f'project-id:{project_id}'
+    project_slug = session.get('v2_active_project_slug')
+    if project_slug:
+        return f'project-slug:{project_slug}'
+    return 'session'
+
+
+def _generation_state_key(session_id: str, scope: str | None = None):
+    return (session_id, scope or 'session')
+
+
+def _ensure_generation_state(session_id: str, *, scope: str | None = None) -> dict:
+    key = _generation_state_key(session_id, scope)
+    state = GENERATION_STATE.get(key)
     if not state:
         state = {
             'in_progress': False,
             'cancel_requested': False,
             'token': None,
+            'attempt_id': None,
+            'status': 'idle',
+            'generator': None,
+            'last_attempt_id': None,
+            'last_status': None,
         }
-        GENERATION_STATE[session_id] = state
+        GENERATION_STATE[key] = state
     return state
 
 
-def _begin_generation(session_id: str) -> str | None:
+def _begin_generation(
+    session_id: str,
+    *,
+    scope: str | None = None,
+    attempt_id: str | None = None,
+) -> str | None:
     with GENERATION_LOCK:
-        state = _ensure_generation_state(session_id)
+        state = _ensure_generation_state(session_id, scope=scope)
         if state.get('in_progress'):
             return None
         token = os.urandom(8).hex()
+        public_attempt_id = attempt_id or token
         state.update({
             'in_progress': True,
             'cancel_requested': False,
             'token': token,
+            'attempt_id': public_attempt_id,
+            'status': 'running',
+            'generator': None,
         })
         return token
 
 
-def _request_generation_cancel(session_id: str) -> None:
+def _generation_attempt_id(
+    session_id: str,
+    token: str | None,
+    *,
+    scope: str | None = None,
+) -> str | None:
     with GENERATION_LOCK:
-        state = _ensure_generation_state(session_id)
-        state['cancel_requested'] = True
-
-
-def _is_generation_cancelled(session_id: str, token: str | None) -> bool:
-    with GENERATION_LOCK:
-        state = GENERATION_STATE.get(session_id)
-        if not state:
-            return False
+        state = GENERATION_STATE.get(_generation_state_key(session_id, scope)) or {}
         if token and state.get('token') != token:
-            return False
-        return bool(state.get('cancel_requested'))
+            return None
+        return state.get('attempt_id')
 
 
-def _end_generation(session_id: str, token: str | None) -> None:
+def _bind_generation_generator(
+    session_id: str,
+    token: str | None,
+    generator,
+    *,
+    scope: str | None = None,
+) -> bool:
+    """Associate mutable generator state with the exact active attempt."""
     with GENERATION_LOCK:
-        state = GENERATION_STATE.get(session_id)
+        state = GENERATION_STATE.get(_generation_state_key(session_id, scope))
+        if not state or state.get('token') != token or state.get('status') != 'running':
+            return False
+        state['generator'] = generator
+        return True
+
+
+def _request_generation_cancel(
+    session_id: str,
+    *,
+    scope: str | None = None,
+    attempt_id: str | None = None,
+) -> dict:
+    """Terminally cancel the matching running attempt and release ownership."""
+    with GENERATION_LOCK:
+        state = _ensure_generation_state(session_id, scope=scope)
+        active_attempt_id = state.get('attempt_id')
+        if state.get('in_progress') and state.get('status') == 'running':
+            if attempt_id and attempt_id != active_attempt_id:
+                return {'cancelled': False, 'newly_cancelled': False, 'attempt_id': active_attempt_id}
+            generator = state.get('generator')
+            if generator is not None and GENERATORS.get(session_id) is generator:
+                # The provider call may continue mutating this object. Removing
+                # the shared binding makes a retry restore a clean generator.
+                GENERATORS.pop(session_id, None)
+            state.update({
+                'in_progress': False,
+                'cancel_requested': True,
+                'token': None,
+                'attempt_id': None,
+                'status': 'cancelled',
+                'generator': None,
+                'last_attempt_id': active_attempt_id,
+                'last_status': 'cancelled',
+            })
+            return {'cancelled': True, 'newly_cancelled': True, 'attempt_id': active_attempt_id}
+
+        # Repeating Cancel for the same terminal attempt is deliberately safe.
+        if state.get('last_status') == 'cancelled' and (
+            not attempt_id or attempt_id == state.get('last_attempt_id')
+        ):
+            return {
+                'cancelled': True,
+                'newly_cancelled': False,
+                'attempt_id': state.get('last_attempt_id'),
+            }
+        return {
+            'cancelled': False,
+            'newly_cancelled': False,
+            'attempt_id': active_attempt_id or state.get('last_attempt_id'),
+        }
+
+
+def _is_generation_cancelled(
+    session_id: str,
+    token: str | None,
+    *,
+    scope: str | None = None,
+) -> bool:
+    with GENERATION_LOCK:
+        state = GENERATION_STATE.get(_generation_state_key(session_id, scope))
+        if not state:
+            return bool(token)
+        # A token that no longer owns this scope is stale, regardless of whether
+        # a newer attempt is running or the old attempt was terminally cancelled.
+        if token and state.get('token') != token:
+            return True
+        return state.get('status') == 'cancelled' or bool(state.get('cancel_requested'))
+
+
+def _claim_generation_result(
+    session_id: str,
+    token: str | None,
+    generator,
+    *,
+    scope: str | None = None,
+) -> bool:
+    """Atomically win the cancel/result race before publishing any mutation."""
+    with GENERATION_LOCK:
+        state = GENERATION_STATE.get(_generation_state_key(session_id, scope))
+        if not state or state.get('token') != token or state.get('status') != 'running':
+            return False
+        state['status'] = 'committing'
+        state['generator'] = generator
+        GENERATORS[session_id] = generator
+        return True
+
+
+def _end_generation(
+    session_id: str,
+    token: str | None,
+    *,
+    scope: str | None = None,
+) -> None:
+    with GENERATION_LOCK:
+        state = GENERATION_STATE.get(_generation_state_key(session_id, scope))
         if not state:
             return
         if token and state.get('token') != token:
             return
+        attempt_id = state.get('attempt_id')
         state['in_progress'] = False
         state['cancel_requested'] = False
         state['token'] = None
+        state['attempt_id'] = None
+        state['status'] = 'completed'
+        state['generator'] = None
+        state['last_attempt_id'] = attempt_id
+        state['last_status'] = 'completed'
 
 
-def _generation_status_for_session(session_id: str | None) -> dict:
+def _generation_status_for_session(
+    session_id: str | None,
+    *,
+    scope: str | None = None,
+) -> dict:
     if not session_id:
         return {
             'in_progress': False,
             'cancel_requested': False,
+            'attempt_id': None,
+            'status': 'idle',
         }
     with GENERATION_LOCK:
-        state = GENERATION_STATE.get(session_id) or {}
+        state = GENERATION_STATE.get(_generation_state_key(session_id, scope)) or {}
+        in_progress = bool(state.get('in_progress'))
+        status = state.get('status') or ('running' if in_progress else 'idle')
         return {
-            'in_progress': bool(state.get('in_progress')),
-            'cancel_requested': bool(state.get('cancel_requested')),
+            'in_progress': in_progress,
+            'cancel_requested': status == 'cancelled',
+            'attempt_id': state.get('attempt_id') if in_progress else state.get('last_attempt_id'),
+            'status': status,
         }
 
 
@@ -6593,59 +6778,6 @@ def _hypothesis_regeneration_status_for_session(session_id: str | None) -> dict:
             'started_at': state.get('started_at'),
             'cancel_requested': bool(state.get('cancel_requested')),
         }
-
-
-def _ensure_report_chat_cancel_state(session_id: str) -> dict:
-    state = REPORT_CHAT_CANCEL_STATE.get(session_id)
-    if not state:
-        state = {
-            'active_request_id': None,
-            'cancel_requested': False,
-        }
-        REPORT_CHAT_CANCEL_STATE[session_id] = state
-    return state
-
-
-def _begin_report_chat_request(session_id: str, request_id: str) -> None:
-    with REPORT_CHAT_CANCEL_LOCK:
-        state = _ensure_report_chat_cancel_state(session_id)
-        state['active_request_id'] = request_id
-        state['cancel_requested'] = False
-
-
-def _request_report_chat_cancel(session_id: str, request_id: str | None = None) -> bool:
-    with REPORT_CHAT_CANCEL_LOCK:
-        state = REPORT_CHAT_CANCEL_STATE.get(session_id)
-        if not state:
-            return False
-        active_request_id = state.get('active_request_id')
-        if not active_request_id:
-            return False
-        if request_id and request_id != active_request_id:
-            return False
-        state['cancel_requested'] = True
-        return True
-
-
-def _is_report_chat_cancelled(session_id: str, request_id: str | None) -> bool:
-    with REPORT_CHAT_CANCEL_LOCK:
-        state = REPORT_CHAT_CANCEL_STATE.get(session_id)
-        if not state:
-            return False
-        if request_id and state.get('active_request_id') != request_id:
-            return False
-        return bool(state.get('cancel_requested'))
-
-
-def _end_report_chat_request(session_id: str, request_id: str | None) -> None:
-    with REPORT_CHAT_CANCEL_LOCK:
-        state = REPORT_CHAT_CANCEL_STATE.get(session_id)
-        if not state:
-            return
-        if request_id and state.get('active_request_id') != request_id:
-            return
-        state['active_request_id'] = None
-        state['cancel_requested'] = False
 
 
 def _ensure_hypothesis_thread_cancel_state(session_id: str) -> dict:
@@ -7574,174 +7706,103 @@ def _v2_round_destination(
     return None
 
 
-# ---- Attention copy (canonical; server is the single source of truth) --------
+# ---- Research Status copy (canonical; server is the single source of truth) --
 
-def _v2_pre_research_attention(state: str, urls: dict) -> dict:
-    """Focused pre-research state block (the whole body beneath project identity
-    when no completed research understanding exists yet)."""
+def _v2_research_status(
+    state: str,
+    *,
+    round_number: int,
+    studio_url: str,
+    workspace_url: str,
+    resumable: bool = False,
+) -> dict:
+    """Return one of the six durable Project Home workflow states.
+
+    State derivation happens once in :func:`_v2_project_state_for`; this helper
+    owns only exact product copy and the single action for that state.
+    """
+    separator = '&' if '?' in workspace_url else '?'
+    exact_workspace = f'{workspace_url}{separator}round={round_number}'
+
     table = {
         'start_first_round': {
-            'label': 'NEEDS YOUR ATTENTION',
-            'headline': 'Start your first round',
+            'status_pill': 'Ready to start',
+            'headline': 'Ready to begin your first investigation.',
             'body': (
-                "DiscoveryAgent works best when it begins with an exploratory "
-                "round to understand your data. Afterwards, you will be able "
-                "to generate hypotheses and steer the research direction."
+                'DiscoveryAgent will begin with an exploratory round to investigate '
+                'the project context, data, and research objective.'
             ),
-            'cta_label': 'Start round',
-            # This CTA is an action (launch the first exploratory round), not a
-            # navigation: the frontend binds all three screens' buttons to the
-            # same round-start action via this identifier. No destination URL.
+            'cta_label': 'Start Round 0',
             'cta_action': 'start_round',
             'cta_destination': None,
-        },
-        'explore_hypotheses': {
-            'label': 'EXPLORE HYPOTHESES',
-            'headline': 'DiscoveryAgent has not completed a research round yet.',
-            'body': (
-                "Begin by generating and comparing possible hypotheses. You can discuss "
-                "them with the Hypothesis Agent, refine promising candidates, and choose "
-                "what DiscoveryAgent should investigate first."
-            ),
-            'cta_label': 'Explore Hypotheses',
-            'cta_destination': urls['studio'],
-        },
-        'continue_exploring_hypotheses': {
-            'label': 'CONTINUE EXPLORING HYPOTHESES',
-            'headline': None,
-            'body': (
-                "You have generated candidate hypotheses but have not yet selected which "
-                "one DiscoveryAgent should investigate."
-            ),
-            'cta_label': 'Continue Exploring Hypotheses',
-            'cta_destination': urls['studio'],
-        },
-        'hypothesis_selected': {
-            'label': 'HYPOTHESIS SELECTED',
-            'headline': None,
-            'body': (
-                "Your hypothesis has been selected and is ready for final review before "
-                "research begins."
-            ),
-            'cta_label': 'Start Research Round',
-            'cta_action': 'start_round',
-            'cta_destination': None,
-        },
-        'research_in_progress': {
-            'label': 'RESEARCH IN PROGRESS',
-            'headline': 'A research round is currently underway.',
-            'body': "Open Round Workspace to follow DiscoveryAgent's progress.",
-            'cta_label': 'Open Round Workspace',
-            'cta_destination': urls['workspace'],
-        },
-        'research_stopped': {
-            'label': 'NEEDS YOUR ATTENTION',
-            'headline': 'The research round needs your attention.',
-            'body': (
-                'The round has been stopped. Resume or resubmit it from Round '
-                'Workspace.'
-            ),
-            'cta_label': 'Return to Round Workspace',
-            'cta_destination': urls['workspace'],
-        },
-    }
-    block = dict(table.get(state, table['explore_hypotheses']))
-    block['state'] = state
-    block['status_pill'] = None
-    block.setdefault('cta_action', None)  # only start_first_round is action-based
-    return block
-
-
-def _v2_briefing_attention(
-    state: str, urls: dict,
-    running_round: int | None,
-    review_round: int | None,
-    review_context: str | None,
-    selected_round: int | None = None,
-    selected_hypothesis: str | None = None,
-    running_hypothesis: str | None = None,
-) -> dict:
-    """Needs-Your-Attention copy for Research Briefing mode. Exactly one CTA.
-
-    Deterministic narrative framing = FIXED product language (`body_lead`) +
-    EXACT artifact-derived scientific content (`body`). No LLM, no rewriting: the
-    lead-in is UI copy and the hypothesis / finding text is verbatim from the
-    resolver / report. A colon-based lead-in is used (safer than concatenating a
-    sentence around arbitrary hypothesis text). When the artifact content is
-    unavailable, the lead-in is dropped and a plain fallback line is shown.
-    """
-    running_n = running_round if running_round is not None else 0
-    review_n = review_round if review_round is not None else 0
-    selected_n = selected_round if selected_round is not None else 0
-    table = {
-        'research_in_progress': {
-            'label': 'RESEARCH IN PROGRESS',
-            'status_pill': 'Research in progress',
-            'headline': f"Round {running_n} is currently underway.",
-            'body_lead': "DiscoveryAgent is investigating:" if running_hypothesis else None,
-            'body': running_hypothesis or "DiscoveryAgent is actively investigating the selected hypothesis.",
-            'cta_label': 'Open Round Workspace',
-            'cta_destination': urls['workspace'],
-        },
-        'research_stopped': {
-            'label': 'NEEDS YOUR ATTENTION',
-            'status_pill': 'Round stopped',
-            'headline': f"Round {running_n} needs your attention.",
-            'body_lead': None,
-            'body': (
-                'The round has been stopped. Resume or resubmit it from Round '
-                'Workspace.'
-            ),
-            'cta_label': 'Return to Round Workspace',
-            'cta_destination': urls['workspace'],
-        },
-        'hypothesis_selected': {
-            'label': 'HYPOTHESIS SELECTED',
-            'status_pill': 'Hypothesis selected',
-            'headline': f"A hypothesis has been selected for Round {selected_n}.",
-            'body_lead': None,
-            # Exact selected hypothesis text (justification/plan stripped upstream).
-            'body': selected_hypothesis or "A hypothesis has been selected for the next research round.",
-            'cta_label': f"Start Round {selected_n}",
-            'cta_action': 'start_round',
-            'cta_destination': None,
-        },
-        'continue_exploring_hypotheses': {
-            'label': 'HYPOTHESES READY',
-            'status_pill': 'Hypotheses ready',
-            'headline': "New hypotheses are ready for review.",
-            'body_lead': None,
-            'body': (
-                "Compare the generated hypotheses and choose the direction "
-                "DiscoveryAgent should investigate next."
-            ),
-            'cta_label': 'Return to Hypothesis Studio',
-            'cta_destination': urls['studio'],
+            'cta_round': 0,
         },
         'round_ready_for_review': {
-            'label': f"ROUND {review_n} COMPLETE",
-            'status_pill': f"Round {review_n} complete",
-            'headline': f"Round {review_n} is complete and ready for review.",
-            'body_lead': None,
-            # Deterministic finding/outcome preview from the completed round report
-            # (verbatim; no LLM); falls back to a neutral line.
-            'body': review_context or "The latest research round is ready for your review.",
-            'cta_label': f"Review Round {review_n}",
-            'cta_destination': urls['latest_round_report'],
+            'status_pill': f'Round {round_number} complete',
+            'headline': f'Round {round_number} is complete and ready for review.',
+            'body': (
+                f'Round {round_number} has finished. Review its findings before '
+                'developing the hypothesis for the next investigation.'
+            ),
+            'cta_label': f'Review Round {round_number}',
+            'cta_destination': f'{exact_workspace}&review=1',
         },
-        'explore_hypotheses': {
-            'label': 'EXPLORE HYPOTHESES',
-            'status_pill': 'Ready to explore',
-            'headline': "The project is ready for its next hypothesis.",
-            'body_lead': None,
-            'body': "Generate and develop hypotheses for DiscoveryAgent to investigate.",
-            'cta_label': 'Explore Hypotheses',
-            'cta_destination': urls['studio'],
+        'hypothesis_development': {
+            'status_pill': 'Hypothesis development',
+            'headline': f'Develop the hypothesis for Round {round_number}.',
+            'body': (
+                'Review, discuss, and refine the candidate hypotheses before '
+                'selecting what DiscoveryAgent should investigate next.'
+            ),
+            'cta_label': 'Open Hypothesis Studio',
+            'cta_destination': studio_url,
+        },
+        'hypothesis_selected': {
+            'status_pill': 'Hypothesis selected',
+            'headline': 'Your hypothesis is ready for investigation.',
+            'body': (
+                f'A hypothesis has been selected for Round {round_number}. Start '
+                'the investigation when you are ready.'
+            ),
+            'cta_label': f'Start Round {round_number}',
+            'cta_action': 'start_round',
+            'cta_destination': None,
+            'cta_round': round_number,
+        },
+        'research_in_progress': {
+            'status_pill': f'Round {round_number} in progress',
+            'headline': f'Round {round_number} investigation is in progress.',
+            'body': (
+                'DiscoveryAgent is currently executing this investigation. Open '
+                'the workspace to follow activity and inspect results as they are produced.'
+            ),
+            'cta_label': f'Open Round {round_number}',
+            'cta_destination': exact_workspace,
+        },
+        'research_stopped': {
+            'status_pill': f'Round {round_number} stopped',
+            'headline': f'Round {round_number} was stopped.',
+            'body': (
+                'The investigation stopped before completion. A checkpoint is '
+                'available, so you can resume the round from its saved progress.'
+                if resumable else
+                'The investigation stopped before completion and cannot be resumed '
+                'from a saved checkpoint. Resubmit the round to run it again.'
+            ),
+            'cta_label': (
+                f'Resume Round {round_number}' if resumable
+                else f'Resubmit Round {round_number}'
+            ),
+            'cta_action': 'resume_round' if resumable else 'resubmit_round',
+            'cta_destination': exact_workspace,
+            'cta_round': round_number,
         },
     }
-    block = dict(table.get(state, table['explore_hypotheses']))
-    block['state'] = state
-    block.setdefault('cta_action', None)  # shape-consistent with pre-research attention
+    block = dict(table[state])
+    block.update({'state': state, 'label': 'RESEARCH STATUS', 'round': round_number})
+    block.setdefault('cta_action', None)
+    block.setdefault('cta_round', None)
+    block.setdefault('body_lead', None)
     return block
 
 
@@ -7771,16 +7832,12 @@ def _v2_project_state_for(checkpoint_dir_raw, title: str, research_goal: str | N
     Home (active project) and the Projects list (per project).
 
     project_slug (the project's stable, human-readable url_slug -- not the
-    internal id) is required to build canonical /projects/<slug>/... URLs:
-    round reports and exact historical content resolve to legacy round URLs,
-    while the active Round Workspace lives at /rounds/."""
-    round_url = lambda n: url_for('legacy_project_round', project_slug=project_slug, round_number=n)
+    internal id) is required to build canonical V2 destinations. Historical
+    rounds link directly to an exact Round Workspace report state."""
+    round_url = lambda n: _v2_round_workspace_report_url(project_slug, n)
     urls = {
         'studio': url_for('project_hypotheses', project_slug=project_slug),
-        'workspace': url_for('project_hypotheses', project_slug=project_slug),
-        # Background report is session/generator-scoped, not per-round; out of
-        # scope for this round-number canonicalization.
-        'memory_report': url_for('unified_report', type='background', view='full'),
+        'workspace': url_for('rounds_workspace', project=project_slug),
     }
 
     project = {
@@ -7788,18 +7845,24 @@ def _v2_project_state_for(checkpoint_dir_raw, title: str, research_goal: str | N
         'research_goal': research_goal,
     }
 
-    def _pre_research(state: str) -> dict:
+    def _pre_research(research_status: dict) -> dict:
         return {
             'mode': 'pre_research',
             'project': project,
-            'attention': _v2_pre_research_attention(state, urls),
+            'research_status': research_status,
+            # Temporary response-shape compatibility for callers outside
+            # Project Home. Both keys contain the new six-state model/copy.
+            'attention': research_status,
             'research_understanding': None,
             'evolution': [],
             'recent_rounds': [],
         }
 
     if not checkpoint_dir_raw:
-        return _pre_research('explore_hypotheses')
+        return _pre_research(_v2_research_status(
+            'start_first_round', round_number=0,
+            studio_url=urls['studio'], workspace_url=urls['workspace'],
+        ))
 
     checkpoint_dir = Path(checkpoint_dir_raw)
     rounds_root = _v2_round_dirs_root(checkpoint_dir)
@@ -7807,7 +7870,6 @@ def _v2_project_state_for(checkpoint_dir_raw, title: str, research_goal: str | N
     # --- Current action state via the existing round-state classification. -----
     active_round_dir = _v2_active_round_dir_for(checkpoint_dir)
     active_index = _v2_round_index(active_round_dir)
-    urls['workspace'] = url_for('rounds_workspace', project=project_slug)
     try:
         round_state = _classify_round_state(active_round_dir)
     except OSError:
@@ -7816,139 +7878,107 @@ def _v2_project_state_for(checkpoint_dir_raw, title: str, research_goal: str | N
     all_rounds = _v2_iter_round_dirs(rounds_root)
     latest_index = all_rounds[-1][0] if all_rounds else None
 
-    # Latest completed round (round_report.md is the completion signal) + its
-    # durable review signal (scientist_feedback.md presence).
+    # Latest completed round (round_report.md is the completion signal).
     completed_index, completed_dir = _v2_latest_round_dir_with_file(rounds_root, 'round_report.md')
     urls['latest_round_report'] = (
         url_for('rounds_workspace', project=project_slug, round=completed_index, review=1)
         if completed_index is not None else urls['studio']
     )
-    review_pending = False
-    if completed_dir is not None:
-        feedback_path = completed_dir / _SCIENTIST_FEEDBACK_FILE
-        feedback_saved = False
-        if feedback_path.exists():
-            try:
-                feedback_saved = bool(feedback_path.read_text(encoding='utf-8').strip())
-            except OSError:
-                feedback_saved = False
-        review_pending = not feedback_saved
-
-    # The filesystem classifier cannot distinguish a pristine round directory
-    # from a process that has only just started or stopped before writing its
-    # first query. The local runner's durable state records that lifecycle edge
-    # and therefore takes precedence until the corresponding round report
-    # exists.
-    runner_state: dict = {}
+    # Shared, read-only local-runner lifecycle. This is the same process/native-
+    # checkpoint calculation returned to Round Workspace by /api/rounds/status.
+    runner_lifecycle: dict = {}
     try:
-        loaded_runner_state = json.loads(
-            (rounds_root.parent / 'run_state.json').read_text(encoding='utf-8')
-        )
-        if isinstance(loaded_runner_state, dict):
-            runner_state = loaded_runner_state
-    except (OSError, ValueError):
+        runner_lifecycle = local_round_runner.inspect_round_status(checkpoint_dir)
+    except (OSError, local_round_runner.RoundLaunchError):
         pass
-    runner_status = str(runner_state.get('status') or '').strip().lower()
+    runner_status = str(runner_lifecycle.get('status') or '').strip().lower()
     try:
-        runner_round = int(runner_state.get('round'))
+        runner_round = int(runner_lifecycle.get('round'))
     except (TypeError, ValueError):
         runner_round = None
     runner_round_dir = (
         rounds_root / f'round_{runner_round}' if runner_round is not None else active_round_dir
     )
     runner_incomplete = not (runner_round_dir / 'round_report.md').is_file()
-    if runner_round is not None and runner_incomplete:
+    if (
+        runner_round is not None
+        and runner_status in {'starting', 'running', 'interrupted', 'failed'}
+        and runner_incomplete
+    ):
         active_index = runner_round
         active_round_dir = runner_round_dir
 
-    # Contextual selected-hypothesis resolution. The hypothesis TEXT and the round
-    # NUMBER are resolved separately (they come from different state): the fresh
-    # selection is stored in the just-completed round dir (cross-round convention),
-    # while the round that runs NEXT is the canonical continuation (completed + 1).
+    # The selection and durable Studio set live in the just-completed round's
+    # directory and direct its exact successor. Existing helpers encode that
+    # storage/product-round convention; Project Home does not infer it client-side.
     selected_round = None
-    selected_hypothesis = None
-    running_hypothesis = None
+    status_round = active_index if active_index is not None else 0
+    resumable = False
 
-    # Attention-state precedence (locked): running > selected-next-hypothesis >
-    # generated-none-selected > completed-awaiting-review > default exploration.
+    # Six-state precedence (locked): running > stopped > selected > durable
+    # candidates > completed > pristine Round 0.
     if runner_status in {'starting', 'running'} and runner_incomplete:
-        attention_state = 'research_in_progress'
-        _raw_run, running_hypothesis = _v2_round_selected_context(active_round_dir)
-    elif runner_status in {'interrupted', 'failed'} and runner_incomplete:
-        attention_state = 'research_stopped'
+        research_state = 'research_in_progress'
+        status_round = runner_round if runner_round is not None else status_round
+    elif (
+        runner_status in {'interrupted', 'failed'}
+        and runner_lifecycle.get('recorded_state') is True
+        and runner_incomplete
+    ):
+        research_state = 'research_stopped'
+        status_round = runner_round if runner_round is not None else status_round
+        resumable = runner_lifecycle.get('resumable') is True
     elif round_state == 'round_monitor':
-        attention_state = 'research_in_progress'
-        # The hypothesis driving the running round (launcher, resolved via the
-        # existing cross-round lookup: round_{N-1} first, then round_N).
-        _raw_run, running_hypothesis = _v2_round_selected_context(active_round_dir)
+        research_state = 'research_in_progress'
     elif round_state == 'selected_waiting_for_backend':
         # A round dir already exists with a fresh selection but has not run yet;
         # that dir IS the round about to run.
-        attention_state = 'hypothesis_selected'
+        research_state = 'hypothesis_selected'
         selected_round = active_index
-        selected_hypothesis = _v2_selected_hypothesis_text(active_round_dir)
-    elif round_state == 'needs_hypothesis_selection':
-        attention_state = 'continue_exploring_hypotheses'
-    elif round_state == 'round_complete_needs_review':
-        # Real lifecycle: after a round completes, the NEXT round's hypothesis is
-        # selected into the just-completed round's dir (newer than round_report.md)
-        # before the next round_N dir is created. A genuinely newer selection
-        # overrides the review state, and the round that runs next is completed + 1.
+        status_round = selected_round if selected_round is not None else status_round
+    elif completed_dir is not None:
         next_selection = _v2_next_round_selection(completed_dir) if completed_dir is not None else None
         if next_selection:
-            attention_state = 'hypothesis_selected'
+            research_state = 'hypothesis_selected'
             selected_round = (completed_index + 1) if completed_index is not None else None
-            selected_hypothesis = next_selection
-        elif review_pending:
-            attention_state = 'round_ready_for_review'
+            status_round = selected_round if selected_round is not None else status_round
+        elif _v2_round_has_current_hypothesis_candidates(completed_dir):
+            research_state = 'hypothesis_development'
+            status_round = (completed_index + 1) if completed_index is not None else status_round
         else:
-            attention_state = 'explore_hypotheses'
-    else:  # needs_hypothesis_generation / error_or_unknown
-        attention_state = 'explore_hypotheses'
+            research_state = 'round_ready_for_review'
+            status_round = completed_index if completed_index is not None else status_round
+    else:
+        research_state = 'start_first_round'
+        status_round = 0
 
-    # Lifecycle gate: before ANY autonomous round has ever started, the project
-    # is in the initial-exploration state (Round 0 is autonomous and directed by
-    # no user hypothesis). This precedes every hypothesis-cycle state above, so
-    # it overrides the classification-derived attention. Reuses the single
-    # canonical predicate shared with the Studio and Round Workspace.
-    if _v2_no_round_has_started(rounds_root):
-        attention_state = 'start_first_round'
+    # A genuinely pristine project is State 1. Higher-precedence durable/runtime
+    # evidence above is never hidden by a stale lower-level artifact.
+    if research_state not in {
+        'research_in_progress', 'research_stopped', 'hypothesis_selected',
+        'hypothesis_development', 'round_ready_for_review',
+    } and _v2_no_round_has_started(rounds_root):
+        research_state = 'start_first_round'
+        status_round = 0
+
+    research_status = _v2_research_status(
+        research_state,
+        round_number=status_round,
+        studio_url=urls['studio'],
+        workspace_url=urls['workspace'],
+        resumable=resumable,
+    )
 
     # --- Display mode: completed authoritative memory report exists? -----------
     mem_index, mem_dir = _v2_latest_round_dir_with_file(rounds_root, 'memory_report.md')
 
     if mem_dir is None:
         # No completed research understanding -> focused pre-research screen.
-        # round_ready_for_review cannot occur without a completed report; clamp
-        # the rare "round_report but no memory_report" case to explore.
-        pre_state = attention_state
-        if pre_state == 'round_ready_for_review':
-            pre_state = 'explore_hypotheses'
-        return _pre_research(pre_state)
+        # Research Status remains authoritative even when a report lacks a
+        # cumulative memory artifact.
+        return _pre_research(research_status)
 
     # --- Research Briefing mode ------------------------------------------------
-    # Contextual attention: the selected/current hypothesis (resolved above) and
-    # the completed round's finding preview surface only inside Needs Your
-    # Attention (no permanent Current Research Direction).
-    review_context = None
-    if attention_state == 'round_ready_for_review' and completed_dir is not None:
-        # Deterministic concise finding preview from the completed round report.
-        try:
-            rr_raw = (completed_dir / 'round_report.md').read_text(encoding='utf-8', errors='replace')
-            review_context = _v2_round_outcome_preview(rr_raw)
-        except OSError:
-            review_context = None
-
-    attention = _v2_briefing_attention(
-        attention_state, urls,
-        running_round=active_index,
-        review_round=completed_index,
-        review_context=review_context,
-        selected_round=selected_round,
-        selected_hypothesis=selected_hypothesis,
-        running_hypothesis=running_hypothesis,
-    )
-
     # Current Research Understanding (preview + complete inline memory body).
     try:
         mem_raw = (mem_dir / 'memory_report.md').read_text(encoding='utf-8', errors='replace')
@@ -7957,10 +7987,20 @@ def _v2_project_state_for(checkpoint_dir_raw, title: str, research_goal: str | N
     except OSError:
         preview = None
         full = None
+    figures: list[dict] = []
+    if full and mem_index is not None:
+        full, figures = _prepare_round_workspace_report_figures(
+            mem_index,
+            '',
+            'memory_report.md',
+            full,
+            'memory_report',
+        )
     research_understanding = {
         'preview_markdown': preview,
         'full_markdown': full,
         'source_round': mem_index,
+        'figures': figures,
     }
 
     # How the research evolved (chronological) + recent completed rounds.
@@ -8002,7 +8042,8 @@ def _v2_project_state_for(checkpoint_dir_raw, title: str, research_goal: str | N
     return {
         'mode': 'research_briefing',
         'project': project,
-        'attention': attention,
+        'research_status': research_status,
+        'attention': research_status,
         'research_understanding': research_understanding,
         'evolution': evolution,
         'recent_rounds': recent_rounds,
@@ -8013,11 +8054,23 @@ def _v2_project_state_for(checkpoint_dir_raw, title: str, research_goal: str | N
 def project_home():
     """Compatibility redirect only. The canonical Project Home URL is
     /projects/<url_slug>; this never serves a second independent Home page."""
+    if 'project' in request.args:
+        explicit_project = str(request.args.get('project') or '').strip()
+        if not explicit_project:
+            abort(404)
+        project, _matched_by_id = _v2_registered_project_by_slug_or_id_read_only(
+            explicit_project,
+        )
+        if project is None or not project.get('url_slug'):
+            abort(404)
+        return redirect(url_for(
+            'project_home_canonical', project_slug=project['url_slug'],
+        ))
     active_slug = session.get('v2_active_project_slug')
     active_id = session.get('v2_active_project_id')
     if active_slug and active_id and _v2_get_project(active_id):
         return redirect(url_for('project_home_canonical', project_slug=active_slug))
-    return redirect(url_for('projects'))
+    abort(404)
 
 
 @app.route('/api/project_state', methods=['GET'])
@@ -8052,31 +8105,10 @@ def _parse_hypothesis_sections_standalone(text: str | None) -> dict:
     an instance method). Kept in sync with that method's field markers so the
     read-only history view can parse stored hypothesis text without the cost or
     side effects of restoring a generator."""
-    text = text or ''
-
-    def _grab(pattern):
-        m = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
-        return m.group(1).strip() if m else None
-
-    label = r'(?:\*\*)?{name}(?:\*\*)?\s*:'
+    parsed = parse_hypothesis_sections_text(text)
     return {
-        'title': _grab(
-            r'(?:^|\n)\s*' + label.format(name='Title')
-            + r'(.*?)(?=\n\s*(?:\*\*)?(?:Primary factor|Hypothesis)(?:\*\*)?\s*:|$)'
-        ),
-        'interpretation': _grab(
-            r'(?:^|\n)\s*' + label.format(name='Interpretation')
-            + r'(.*?)(?=\n\s*(?:\*\*)?Hypothesis(?:\*\*)?\s*:|$)'
-        ),
-        'hypothesis': _grab(
-            r'(?:^|\n)\s*' + label.format(name='Hypothesis')
-            + r'(.*?)(?=\n\s*(?:\*\*)?(?:Justification|Plan)(?:\*\*)?\s*:|$)'
-        ),
-        'justification': _grab(
-            r'(?:^|\n)\s*' + label.format(name='Justification')
-            + r'(.*?)(?=\n\s*(?:\*\*)?Plan(?:\*\*)?\s*:|$)'
-        ),
-        'plan': _grab(r'(?:^|\n)\s*' + label.format(name='Plan') + r'(.*?)$'),
+        key: parsed.get(key)
+        for key in ('title', 'interpretation', 'hypothesis', 'justification', 'plan')
     }
 
 
@@ -8297,6 +8329,26 @@ def _v2_active_hypotheses_from_history(round_dir: Path) -> list[dict]:
                 active[idx] = snap
 
     return [active[k] for k in sorted(active.keys())]
+
+
+def _v2_current_studio_hypotheses(round_dir: Path) -> list[dict]:
+    """Return the candidate set Hypothesis Studio would currently display.
+
+    ``generated_hypotheses.json`` is the preferred operational source used by
+    Studio initialization. When removal of the final card clears that cache,
+    replay the durable history's latest set-defining event; an empty removal
+    snapshot then correctly projects to the welcome/initialize state instead
+    of treating an older generation event as a live candidate set.
+    """
+    generated = _v2_read_generated_hypotheses(round_dir)
+    if generated:
+        return generated
+    return _v2_active_hypotheses_from_history(round_dir)
+
+
+def _v2_round_has_current_hypothesis_candidates(round_dir: Path) -> bool:
+    """Whether the current Studio workspace contains candidate cards."""
+    return bool(_v2_current_studio_hypotheses(round_dir))
 
 
 def _valid_hypothesis_thread_id(value) -> str | None:
@@ -9178,7 +9230,9 @@ def api_hypothesis_history_round(round_index):
 # =====================================================================
 
 _V2_PROJECTS_LOCK = threading.Lock()
+_V2_SKILLS_LOCK = threading.Lock()
 _V2_LEGACY_MIGRATION_LOCK = threading.Lock()
+# Combined operations always acquire: projects -> round runner -> skills.
 # Artifacts that count as real research activity for status / "Updated" time.
 _V2_ACTIVITY_FILES = (
     'generated_hypotheses.json', 'selected_hypothesis.md',
@@ -9777,22 +9831,19 @@ def _v2_latest_completed_number(state: dict) -> int | None:
 
 
 def _v2_status_for(state: dict) -> tuple[str, str]:
-    """(status_label, status_tone) derived from the canonical attention state."""
-    attn = state['attention']['state']
-    if attn == 'research_in_progress':
+    """(status_label, status_tone) derived from canonical Research Status."""
+    research_state = state['research_status']['state']
+    if research_state == 'research_in_progress':
         return "In Progress", "active"
-    if attn == 'research_stopped':
+    if research_state == 'research_stopped':
         return "Stopped", "neutral"
-    if attn == 'hypothesis_selected':
+    if research_state == 'hypothesis_selected':
         return "Hypothesis Selected", "neutral"
-    if attn == 'continue_exploring_hypotheses':
+    if research_state == 'hypothesis_development':
         return "Exploring Hypotheses", "neutral"
     completed_n = _v2_latest_completed_number(state)
-    if attn == 'round_ready_for_review':
+    if research_state == 'round_ready_for_review':
         return (f"Round {completed_n} Complete" if completed_n is not None else "Round Complete"), "review"
-    # explore_hypotheses: completed-and-reviewed (briefing) vs never started
-    if state.get('mode') == 'research_briefing' and completed_n is not None:
-        return f"Round {completed_n} Complete", "review"
     return "Not Started", "neutral"
 
 
@@ -9897,6 +9948,287 @@ def _v2_ensure_url_slugs_backfilled() -> None:
         _v2_save_projects(projects)
 
 
+_V2_PROJECT_CONTEXT_PATH_FIELDS = (
+    'project_root', 'code_dir', 'checkpoint_dir', 'data_dir', 'readme_path',
+)
+
+
+def _v2_canonical_context_path(value) -> Path | None:
+    """Canonicalize one compatibility path without requiring it to exist."""
+    if value is None or isinstance(value, bool):
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    try:
+        return Path(raw).expanduser().resolve(strict=False)
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def _v2_normalize_registered_project_for_resolution(
+    project: dict, *, managed: bool, registry_parent: Path,
+) -> dict:
+    """Return an in-memory, absolute-path copy of one registered project."""
+    normalized = dict(project)
+    project_id = str(normalized.get('id') or '').strip()
+    if managed and project_id:
+        root = _v2_canonical_context_path(get_project_root(project_id))
+    else:
+        raw_root = normalized.get('project_root')
+        root_candidate = Path(str(raw_root)) if raw_root else registry_parent / project_id
+        if not root_candidate.is_absolute():
+            root_candidate = registry_parent / root_candidate
+        root = _v2_canonical_context_path(root_candidate)
+
+    for field in _V2_PROJECT_CONTEXT_PATH_FIELDS:
+        raw = normalized.get(field)
+        if not raw:
+            continue
+        candidate = Path(str(raw))
+        if managed and field == 'project_root' and str(raw) == '.':
+            candidate = root or candidate
+        elif not candidate.is_absolute() and root is not None:
+            candidate = root / candidate
+        canonical = _v2_canonical_context_path(candidate)
+        if canonical is not None:
+            normalized[field] = str(canonical)
+    if root is not None:
+        normalized['project_root'] = str(root)
+    return normalized
+
+
+def _v2_registered_projects_for_resolution() -> list[dict]:
+    """Read both project registries without backfills, migrations, or writes."""
+    managed_path = _v2_projects_registry_path()
+    legacy_path = Path(_get_disk_path()) / 'v2_projects.json'
+    projects: list[dict] = []
+    known_ids: set[str] = set()
+
+    for record in _v2_read_projects_registry(managed_path):
+        normalized = _v2_normalize_registered_project_for_resolution(
+            record, managed=True, registry_parent=managed_path.parent,
+        )
+        projects.append(normalized)
+        project_id = str(normalized.get('id') or '').strip()
+        if project_id:
+            known_ids.add(project_id)
+
+    if legacy_path.resolve(strict=False) != managed_path.resolve(strict=False):
+        for record in _v2_read_projects_registry(legacy_path):
+            project_id = str(record.get('id') or '').strip()
+            if project_id and project_id in known_ids:
+                continue
+            projects.append(_v2_normalize_registered_project_for_resolution(
+                record, managed=False, registry_parent=legacy_path.parent,
+            ))
+    return projects
+
+
+def _v2_context_path_variants(field: str, value) -> set[Path]:
+    canonical = _v2_canonical_context_path(value)
+    if canonical is None:
+        return set()
+    variants = {canonical}
+    if field == 'checkpoint_dir':
+        if re.fullmatch(r'round_\d+', canonical.name):
+            variants.add(canonical.parent)
+        elif canonical.name == 'checkpoint':
+            variants.add(canonical / 'checkpoints')
+        elif canonical.name != 'checkpoints':
+            variants.add(canonical / 'checkpoints')
+            variants.add(canonical / 'checkpoint' / 'checkpoints')
+    return variants
+
+
+def _v2_resolve_registered_project_context(
+    *, project_slug=None, project_id=None, path_context: dict | None = None,
+) -> dict | None:
+    """Resolve legacy/session context to one existing registered V2 project.
+
+    Resolution is deliberately read-only: registries are parsed directly, so
+    this helper never activates a project, backfills a slug, migrates storage,
+    or updates last-opened metadata. Explicit canonical slug wins over internal
+    id; relevant canonical paths are considered only after both identifiers.
+    Ambiguous identifiers or paths return no match rather than guessing.
+    """
+    projects = _v2_registered_projects_for_resolution()
+
+    slug = str(project_slug or '').strip()
+    if slug:
+        matches = [project for project in projects if project.get('url_slug') == slug]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            return None
+
+    internal_id = str(project_id or '').strip()
+    if internal_id:
+        matches = [project for project in projects if project.get('id') == internal_id]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            return None
+
+    aliases = {'data_path': 'project_root', 'working_directory': 'code_dir'}
+    supplied: dict[str, set[Path]] = {}
+    for raw_field, value in (path_context or {}).items():
+        field = aliases.get(raw_field, raw_field)
+        if field not in _V2_PROJECT_CONTEXT_PATH_FIELDS:
+            continue
+        variants = _v2_context_path_variants(field, value)
+        if variants:
+            supplied.setdefault(field, set()).update(variants)
+    if not supplied:
+        return None
+
+    matches = []
+    for project in projects:
+        matched = any(
+            supplied_variants & _v2_context_path_variants(field, project.get(field))
+            for field, supplied_variants in supplied.items()
+        )
+        if matched:
+            matches.append(project)
+    return matches[0] if len(matches) == 1 else None
+
+
+def _v2_registered_project_by_slug_or_id_read_only(
+    value: str,
+) -> tuple[dict | None, bool]:
+    """Resolve a registered project path value without registry/session writes."""
+    project = _v2_resolve_registered_project_context(project_slug=value)
+    if project is not None:
+        return project, False
+    project = _v2_resolve_registered_project_context(project_id=value)
+    return (project, project is not None)
+
+
+def _v2_registered_exact_round_dir(project: dict, round_number: int) -> Path | None:
+    """Return one registered project's exact, non-symlink round_N directory."""
+    checkpoint_dir = project.get('checkpoint_dir')
+    if not checkpoint_dir or round_number < 0:
+        return None
+    try:
+        rounds_root = _v2_round_dirs_root_from_any_checkpoint_path(
+            Path(checkpoint_dir)
+        ).resolve()
+        unresolved = rounds_root / f'round_{round_number}'
+        if unresolved.is_symlink() or not unresolved.is_dir():
+            return None
+        resolved = unresolved.resolve()
+        if not resolved.is_relative_to(rounds_root) or resolved.name != f'round_{round_number}':
+            return None
+        return resolved
+    except (OSError, ValueError):
+        return None
+
+
+def _v2_round_workspace_report_url(
+    project_slug: str,
+    round_number: int,
+    *,
+    view: str = 'full',
+    review: bool = True,
+) -> str:
+    """Canonical exact-round V2 report destination."""
+    values: dict[str, object] = {
+        'project': project_slug,
+        'round': round_number,
+    }
+    if review:
+        values['review'] = 1
+    if view == 'summary':
+        values['report_view'] = 'summary'
+    return url_for('rounds_workspace', **values)
+
+
+def _v2_unique_registered_project(candidates: list[dict | None]) -> dict | None:
+    """Return one consistent registered-project match, never a conflict."""
+    matches: dict[tuple[str, str], dict] = {}
+    for candidate in candidates:
+        if not candidate:
+            continue
+        identity = (
+            str(candidate.get('id') or '').strip(),
+            str(candidate.get('url_slug') or '').strip(),
+        )
+        if any(identity):
+            matches[identity] = candidate
+    return next(iter(matches.values())) if len(matches) == 1 else None
+
+
+def _v2_compatibility_path_context() -> dict:
+    """Collect legacy path signals without mutating session or project stores."""
+    raw_config = session.get('project_config')
+    path_context = dict(raw_config) if isinstance(raw_config, dict) else {}
+    for field, fallback in (
+        ('checkpoint_dir', CLI_CHECKPOINT_DIR),
+        ('code_dir', CLI_CODE_DIR),
+        ('readme_path', CLI_README_PATH),
+    ):
+        if not path_context.get(field) and fallback:
+            path_context[field] = fallback
+    return path_context
+
+
+def _v2_compatibility_registered_project() -> dict | None:
+    """Resolve a legacy entrypoint to exactly one registered project, read-only."""
+    explicit_keys = {
+        key for key in ('project', 'project_slug', 'project_id')
+        if key in request.args
+    }
+    if explicit_keys:
+        candidates: list[dict | None] = []
+        for key in ('project', 'project_slug', 'project_id'):
+            if key not in explicit_keys:
+                continue
+            value = str(request.args.get(key) or '').strip()
+            if not value:
+                return None
+            if key == 'project':
+                candidate = _v2_resolve_registered_project_context(
+                    project_slug=value,
+                    project_id=value,
+                )
+            elif key == 'project_slug':
+                candidate = _v2_resolve_registered_project_context(
+                    project_slug=value,
+                )
+            else:
+                candidate = _v2_resolve_registered_project_context(
+                    project_id=value,
+                )
+            if candidate is None:
+                return None
+            candidates.append(candidate)
+        return _v2_unique_registered_project(candidates)
+
+    active_slug = str(session.get('v2_active_project_slug') or '').strip()
+    active_id = str(session.get('v2_active_project_id') or '').strip()
+    path_context = _v2_compatibility_path_context()
+    return _v2_unique_registered_project([
+        _v2_resolve_registered_project_context(project_slug=active_slug)
+        if active_slug else None,
+        _v2_resolve_registered_project_context(project_id=active_id)
+        if active_id else None,
+        _v2_resolve_registered_project_context(path_context=path_context)
+        if path_context else None,
+    ])
+
+
+def _is_valid_unresolved_remote_audit_context() -> bool:
+    """Keep the legacy Audit shell only for an actual remote Audit session."""
+    if not _is_audit_mode():
+        return False
+    raw_config = session.get('project_config')
+    project_config = raw_config if isinstance(raw_config, dict) else {}
+    return bool(
+        str(session.get('checkpoint_s3_prefix') or '').strip()
+        or str(project_config.get('checkpoint_s3_prefix') or '').strip()
+    )
+
+
 def _v2_resolve_project_by_slug_or_id(value: str) -> tuple[dict | None, bool]:
     """Resolve a project-scoped canonical route's path segment. Priority:
     (1) exact url_slug match (canonical), (2) exact internal id match (narrow
@@ -9933,6 +10265,37 @@ def _v2_activate_project(project: dict) -> dict:
     return record
 
 
+_RETIRED_GENERIC_V1_PATHS = frozenset({
+    '/app',
+    '/round_monitor',
+    '/report',
+    '/background_report',
+    '/checkpoint_browser',
+    '/activity_log',
+    '/thank_you',
+    '/website_guide',
+})
+
+# These user-facing routes validate and activate their explicit project/resource
+# context themselves. The request hook must not mutate session state before that
+# validation has succeeded (especially for unknown slugs and malformed rounds).
+_V2_ROUTE_OWNS_PROJECT_RESOLUTION = frozenset({
+    'home',
+    'projects',
+    'project_home',
+    'project_home_canonical',
+    'project_hypotheses',
+    'project_audit_agent',
+    'project_skills',
+    'rounds_workspace',
+    'project_round',
+    'legacy_project_round',
+    'project_round_report_download',
+    'audit_home',
+    'research_paper_pdf',
+})
+
+
 @app.before_request
 def _bind_tab_scoped_project_context():
     """Bind API work to the tab's explicit project instead of the shared cookie.
@@ -9943,6 +10306,15 @@ def _bind_tab_scoped_project_context():
     keeps all existing session-backed helpers compatible while isolating
     generators, queues, and cancellation state by tab.
     """
+    # Unmatched/retired URLs and self-validating V2 page routes must reach their
+    # handler (or the standard 404 handler) before any tab/project state changes.
+    if (
+        request.url_rule is None
+        or request.path in _RETIRED_GENERIC_V1_PATHS
+        or request.endpoint in _V2_ROUTE_OWNS_PROJECT_RESOLUTION
+    ):
+        return None
+
     tab_token = request.headers.get('X-DiscoveryAgent-Tab', '').strip()
     if tab_token and re.fullmatch(r'[A-Za-z0-9_-]{16,80}', tab_token):
         session['session_id'] = f'tab:{tab_token}'
@@ -9965,7 +10337,7 @@ def _bind_tab_scoped_project_context():
                 'error': 'The project for this tab no longer exists.',
                 'code': 'project_not_found',
             }), 404
-        return None
+        abort(404)
     _v2_activate_v2_project(project)
     return None
 
@@ -10035,6 +10407,112 @@ def _active_v2_project_for_round_execution() -> dict | None:
     if not project_id:
         return None
     return _v2_get_project(project_id)
+
+
+def _v2_project_research_is_running(project: dict) -> bool:
+    """Use the existing local-runner state as the skill-mutation safety gate."""
+    try:
+        return local_round_runner.round_status(project).get('status') == 'running'
+    except local_round_runner.RoundLaunchError:
+        return False
+
+
+def _v2_skill_project(project_id: str) -> dict | None:
+    """Resolve only a registered project; browser requests never provide paths."""
+    return _v2_get_project(project_id)
+
+
+def _v2_skill_error(exc: SkillImportError, status: int = 400):
+    if exc.code == 'duplicate_skill':
+        status = 409
+    elif exc.code == 'invalid_project':
+        status = 409
+    elif exc.code == 'skill_not_found':
+        status = 404
+    return jsonify({'success': False, 'code': exc.code, 'error': exc.message}), status
+
+
+def _v2_uploaded_skill_package():
+    if request.content_length and request.content_length > MAX_ARCHIVE_BYTES + 1024 * 1024:
+        raise SkillImportError('archive_too_large', 'The ZIP file is too large.')
+    upload = request.files.get('skill')
+    if upload is None or not upload.filename:
+        raise SkillImportError('zip_required', 'Choose a .zip skill package.')
+    return upload
+
+
+@app.route('/api/projects/<project_id>/skills', methods=['GET'])
+def api_project_skills(project_id):
+    with _V2_PROJECTS_LOCK:
+        project = _v2_skill_project(project_id)
+        if project is None:
+            return jsonify({'success': False, 'error': 'Project not found.'}), 404
+        try:
+            skills = list_project_skills(project)
+        except SkillImportError as exc:
+            return _v2_skill_error(exc)
+        running = _v2_project_research_is_running(project)
+        return jsonify({'success': True, 'skills': skills, 'running': running})
+
+
+@app.route('/api/projects/<project_id>/skills/preview', methods=['POST'])
+def api_project_skill_preview(project_id):
+    with _V2_PROJECTS_LOCK:
+        project = _v2_skill_project(project_id)
+        if project is None:
+            return jsonify({'success': False, 'error': 'Project not found.'}), 404
+        if _v2_project_research_is_running(project):
+            return jsonify({
+                'success': False,
+                'code': 'round_running',
+                'error': 'Skills cannot be changed while a research round is running.',
+            }), 409
+        try:
+            upload = _v2_uploaded_skill_package()
+            metadata = validate_project_skill(project, upload.stream, upload.filename)
+        except SkillImportError as exc:
+            return _v2_skill_error(exc)
+        filename = upload.filename.replace('\\', '/').rsplit('/', 1)[-1]
+        return jsonify({'success': True, 'skill': metadata, 'filename': filename})
+
+
+@app.route('/api/projects/<project_id>/skills', methods=['POST'])
+def api_project_skill_import(project_id):
+    with _V2_PROJECTS_LOCK, local_round_runner.round_state_guard(), _V2_SKILLS_LOCK:
+        project = _v2_skill_project(project_id)
+        if project is None:
+            return jsonify({'success': False, 'error': 'Project not found.'}), 404
+        if _v2_project_research_is_running(project):
+            return jsonify({
+                'success': False,
+                'code': 'round_running',
+                'error': 'Skills cannot be changed while a research round is running.',
+            }), 409
+        try:
+            upload = _v2_uploaded_skill_package()
+            metadata = import_project_skill(project, upload.stream, upload.filename)
+        except SkillImportError as exc:
+            return _v2_skill_error(exc)
+    return jsonify({'success': True, 'skill': metadata}), 201
+
+
+@app.route('/api/projects/<project_id>/skills/<skill_id>', methods=['DELETE'])
+def api_project_skill_remove(project_id, skill_id):
+    with _V2_PROJECTS_LOCK, local_round_runner.round_state_guard(), _V2_SKILLS_LOCK:
+        project = _v2_skill_project(project_id)
+        if project is None:
+            return jsonify({'success': False, 'error': 'Project not found.'}), 404
+        if _v2_project_research_is_running(project):
+            return jsonify({
+                'success': False,
+                'code': 'round_running',
+                'error': 'Skills cannot be changed while a research round is running.',
+            }), 409
+        try:
+            metadata = remove_project_skill(project, skill_id)
+        except SkillImportError as exc:
+            return _v2_skill_error(exc)
+    return jsonify({'success': True, 'skill': metadata})
 
 
 @app.route('/api/rounds/start', methods=['POST'])
@@ -10144,13 +10622,12 @@ def project_hypotheses(project_slug):
     """Canonical V2 Hypothesis Studio deep link, addressed by url_slug.
 
     Activates the project via the same shared helper as Project Home, then
-    renders the V2 Hypothesis Studio (a new, permanent template -- NOT the
-    legacy index.html workspace). The redesigned page reuses every existing
+    renders the permanent V2 Hypothesis Studio. The redesigned page reuses every existing
     hypothesis backend API (initialize/generate/chat/edit/regenerate/select).
     A pre-slug internal-id URL redirects to the canonical
     slug URL. The existing restoration behavior is preserved: if a research
     round is already running for this project, we redirect to the Round
-    Workspace exactly as app_interface() does, rather than showing the studio.
+    Workspace rather than showing the studio.
     """
     project, matched_by_id = _v2_resolve_project_by_slug_or_id(project_slug)
     if project is None:
@@ -10159,11 +10636,11 @@ def project_hypotheses(project_slug):
         return redirect(url_for('project_hypotheses', project_slug=project['url_slug']))
     project = _v2_activate_project(project)
 
-    # Audit mode is a legacy, reviewer-only concept that V2 projects never use;
-    # defer to the legacy interface if it is somehow active rather than showing
-    # a studio that would reject every mutation.
-    if _is_audit_mode():
-        return app_interface()
+    # Reviewer contexts use the registered project's canonical V2 Audit Agent.
+    if _is_audit_mode() or _is_audit_only_mode():
+        return redirect(url_for(
+            'project_audit_agent', project_slug=project['url_slug'],
+        ))
 
     # Studio stays unavailable until autonomous Round 0 is complete. Later
     # autonomous rounds continue to use the existing read-only history mode.
@@ -10214,11 +10691,7 @@ def project_hypotheses(project_slug):
 
 @app.route('/projects/<project_slug>/audit')
 def project_audit_agent(project_slug):
-    """Project-scoped Audit Agent tab.
-
-    This embeds the legacy audit chat experience into the V2 project shell
-    without changing the whole session into legacy audit mode.
-    """
+    """Project-scoped V2 Audit Agent tab."""
     project, matched_by_id = _v2_resolve_project_by_slug_or_id(project_slug)
     if project is None:
         abort(404)
@@ -10229,20 +10702,6 @@ def project_audit_agent(project_slug):
     project_cfg = _get_project_config()
     checkpoint_dir = project_cfg.get('checkpoint_dir') or project.get('checkpoint_dir') or CLI_CHECKPOINT_DIR
     code_dir = project_cfg.get('code_dir') or project.get('code_dir') or CLI_CODE_DIR
-    github_url = project.get('github_url') or project_cfg.get('github_url') or CLI_GITHUB_URL
-
-    research_paper_pdf_url = None
-    research_paper_pdf_available = False
-    pdf_path = _resolve_research_paper_pdf_path(
-        None,
-        checkpoint_dir,
-        _get_configured_research_paper_path(project_cfg),
-    )
-    if pdf_path:
-        research_paper_pdf_available = True
-        research_paper_pdf_url = url_for(
-            'research_paper_pdf', project=project['url_slug'],
-        )
 
     audit_guide_html = _load_audit_guide_html()
 
@@ -10262,9 +10721,6 @@ def project_audit_agent(project_slug):
         round_workspace_url=_v2_round_workspace_nav_url(project, project['url_slug']),
         checkpoint_dir=checkpoint_dir,
         code_dir=code_dir,
-        github_url=github_url,
-        research_paper_pdf_url=research_paper_pdf_url,
-        research_paper_pdf_available=research_paper_pdf_available,
         audit_guide_html=Markup(audit_guide_html) if audit_guide_html else None,
         chat_storage_scope=f"{_audit_chat_storage_scope()}:v2:{project.get('url_slug')}",
         durable_chat_state=_read_conversation_surface_state('audit_agent', 'main'),
@@ -10274,82 +10730,22 @@ def project_audit_agent(project_slug):
     )
 
 
-def _render_round_report_view(project: dict, round_dir: Path, round_number: int):
-    """Render the report/review experience for ONE SPECIFIC round directory.
-
-    Sourced ENTIRELY from round_dir's own round_report.md / round_report_
-    summary.md / memory_report.md -- never from session['generator'] state,
-    never from 'latest completed round' inference. This is what makes
-    /legacy/projects/<slug>/rounds/<n> truthful for every completed round (the
-    latest one AND any historical one), not just whichever round the
-    session's generator happens to be pointed at. Reuses the existing
-    report.html template and render_checkpoint_markdown_html (the same
-    generator-independent markdown+asset renderer the checkpoint browser
-    already uses for arbitrary in-tree files) rather than duplicating report
-    rendering."""
-    report_path = round_dir / 'round_report.md'
-    if not report_path.exists():
+@app.route('/projects/<project_slug>/skills')
+def project_skills(project_slug):
+    """Project-scoped custom skills page."""
+    project, matched_by_id = _v2_resolve_project_by_slug_or_id(project_slug)
+    if project is None:
         abort(404)
-    try:
-        raw = report_path.read_text(encoding='utf-8', errors='replace').strip()
-    except OSError:
-        abort(404)
-    match = re.search(r'## Round Report\n\n(.*)', raw, re.DOTALL)
-    full_text = match.group(1).strip() if match else raw
-
-    summary_text = None
-    summary_path = round_dir / 'round_report_summary.md'
-    if summary_path.exists():
-        try:
-            summary_text = summary_path.read_text(encoding='utf-8', errors='replace').strip() or None
-        except OSError:
-            pass
-
-    has_summary = bool(summary_text)
-    has_full = bool(full_text)
-    view = request.args.get('view', 'summary')
-    if view == 'summary' and not has_summary:
-        view = 'full'
-    if view == 'full' and not has_full:
-        view = 'summary'
-
-    # Project-scoped (not generator-scoped) asset resolution, so images embedded
-    # in THIS round's report resolve from THIS round's own directory.
-    code_dir = Path(project['code_dir']).resolve() if project.get('code_dir') else None
-    checkpoint_dir_for_assets = round_dir.parent.resolve()
-
-    def _render(md: str | None) -> str | None:
-        if not md:
-            return None
-        return render_checkpoint_markdown_html(
-            md, checkpoint_dir=checkpoint_dir_for_assets, code_dir=code_dir, source_path=report_path,
-        )
-
-    summary_html = _render(summary_text) if view == 'summary' else None
-    full_html = _render(full_text) if view == 'full' else None
-
-    n_rounds = len(_v2_iter_round_dirs(round_dir.parent))
-
+    if matched_by_id:
+        return redirect(url_for('project_skills', project_slug=project['url_slug']))
+    project = _v2_activate_project(project)
     return render_template(
-        'report.html',
-        summary_html=Markup(summary_html) if summary_html else None,
-        full_html=Markup(full_html) if full_html else None,
-        report_available=True,
-        report_type='round',
-        current_view=view,
-        has_summary=has_summary,
-        has_full=has_full,
-        has_round_report=True,
-        title=f"Round {round_number} Report",
-        n_rounds=n_rounds,
-        # Report chat/download/resync are session-generator-bound V1
-        # features out of scope for this hardening pass (round CONTENT
-        # correctness); disabling the chat entry point here avoids offering
-        # an action that would silently operate on a different round.
-        code_chat_available=False,
-        audit_mode=_is_audit_mode(),
-        audit_only=_is_audit_only_mode(),
-        chat_storage_scope=_session_debug_id(),
+        'project_skills.html',
+        nav_active='skills',
+        page_class='v2-page-skills',
+        project_slug=project['url_slug'],
+        project_id=project['id'],
+        round_workspace_url=_v2_round_workspace_nav_url(project, project['url_slug']),
     )
 
 
@@ -10362,15 +10758,38 @@ def rounds_workspace():
     available as compatibility/deep links for reports and exact historical
     round content.
     """
-    project_slug = (
-        request.args.get('project', '').strip()
-        or session.get('v2_active_project_slug')
-    )
+    explicit_project_slug = request.args.get('project')
+    explicit_round = request.args.get('round')
+    if explicit_project_slug is not None:
+        project_slug = str(explicit_project_slug).strip()
+        if not project_slug:
+            abort(404)
+    else:
+        project_slug = session.get('v2_active_project_slug')
     if not project_slug:
-        return redirect(url_for('projects'))
-    project, matched_by_id = _v2_resolve_project_by_slug_or_id(project_slug)
+        abort(404)
+    if explicit_round is not None:
+        project, matched_by_id = _v2_registered_project_by_slug_or_id_read_only(
+            project_slug,
+        )
+    else:
+        project, matched_by_id = _v2_resolve_project_by_slug_or_id(project_slug)
     if project is None:
-        return redirect(url_for('projects'))
+        abort(404)
+
+    requested_round = None
+    requested_round_dir = None
+    if explicit_round is not None:
+        normalized_round = explicit_round.strip()
+        if not re.fullmatch(r'\d+', normalized_round):
+            abort(404)
+        requested_round = int(normalized_round)
+        requested_round_dir = _v2_registered_exact_round_dir(
+            project, requested_round,
+        )
+        if requested_round_dir is None:
+            abort(404)
+
     project = _v2_activate_project(project)
 
     checkpoint_dir = project.get('checkpoint_dir')
@@ -10383,17 +10802,21 @@ def rounds_workspace():
     try:
         checkpoint_path = Path(checkpoint_dir)
         rounds_root = _v2_round_dirs_root(checkpoint_path)
-        active_round_dir = _v2_active_round_dir_for(checkpoint_path)
-        active_index = _v2_round_index(active_round_dir)
-        if active_index is not None:
-            round_dir = active_round_dir
-            pinned_round = active_index
+        if requested_round is not None:
+            round_dir = requested_round_dir
+            pinned_round = requested_round
         else:
-            all_rounds = _v2_iter_round_dirs(rounds_root)
-            if all_rounds:
-                pinned_round, round_dir = all_rounds[-1]
+            active_round_dir = _v2_active_round_dir_for(checkpoint_path)
+            active_index = _v2_round_index(active_round_dir)
+            if active_index is not None:
+                round_dir = active_round_dir
+                pinned_round = active_index
             else:
-                round_dir = rounds_root / 'round_0'
+                all_rounds = _v2_iter_round_dirs(rounds_root)
+                if all_rounds:
+                    pinned_round, round_dir = all_rounds[-1]
+                else:
+                    round_dir = rounds_root / 'round_0'
 
         pre_round_overlay = _v2_no_round_has_started(rounds_root)
     except OSError:
@@ -10425,39 +10848,133 @@ def project_round(project_slug, round_number):
     """Compatibility V2 round URL.
 
     The non-legacy project round path should never show the old report surface;
-    it activates the requested project and sends the scientist to the new
-    session-scoped Round Workspace screen at /rounds/. Exact historical reports
-    live under /legacy/projects/<slug>/rounds/<n>.
+    it validates the requested project/round without changing active-project
+    state, then redirects to the exact session-scoped workspace URL. The
+    canonical /rounds/ route activates the project only after revalidating it.
     """
-    project, matched_by_id = _v2_resolve_project_by_slug_or_id(project_slug)
+    project, matched_by_id = _v2_registered_project_by_slug_or_id_read_only(
+        project_slug,
+    )
     if project is None:
         abort(404)
-    _v2_activate_project(project)
-    return redirect(url_for('rounds_workspace', project=project['url_slug']))
+    if _v2_registered_exact_round_dir(project, round_number) is None:
+        abort(404)
+    return redirect(url_for(
+        'rounds_workspace', project=project['url_slug'], round=round_number,
+    ))
+
+
+def _round_workspace_markdown_download_name(round_number, original_name):
+    """Prefix a trusted Markdown basename with its exact workspace round."""
+    return f'round{int(round_number)}_{Path(original_name).name}'
+
+
+@app.route('/projects/<project_slug>/rounds/<int:round_number>/report/download')
+def project_round_report_download(project_slug, round_number):
+    """Download one report variant from one registered project's exact round."""
+    project, matched_by_id = _v2_registered_project_by_slug_or_id_read_only(project_slug)
+    if project is None:
+        abort(404)
+
+    view = request.args.get('view', 'full')
+    if view not in {'full', 'summary'}:
+        abort(404)
+    canonical_slug = str(project.get('url_slug') or '').strip()
+    if not canonical_slug:
+        abort(404)
+    if matched_by_id:
+        return redirect(url_for(
+            'project_round_report_download',
+            project_slug=canonical_slug,
+            round_number=round_number,
+            view=view,
+        ))
+
+    round_dir = _v2_registered_exact_round_dir(project, round_number)
+    if round_dir is None:
+        abort(404)
+
+    # A summary is a view of a completed round report, not an independently
+    # downloadable artifact from an unfinished round.
+    full_path = round_dir / 'round_report.md'
+    filename = 'round_report_summary.md' if view == 'summary' else 'round_report.md'
+    target = round_dir / filename
+    try:
+        if full_path.is_symlink() or not full_path.is_file() or full_path.stat().st_size <= 0:
+            abort(404)
+        if target.is_symlink() or not target.is_file() or target.stat().st_size <= 0:
+            abort(404)
+        resolved = target.resolve()
+        if not resolved.is_relative_to(round_dir):
+            abort(404)
+        if resolved.stat().st_size > ROUND_REPORT_DOWNLOAD_MAX_BYTES:
+            abort(413)
+    except OSError:
+        abort(404)
+
+    return send_from_directory(
+        resolved.parent,
+        resolved.name,
+        as_attachment=True,
+        download_name=_round_workspace_markdown_download_name(
+            round_number,
+            resolved.name,
+        ),
+        mimetype='text/markdown',
+    )
+
+
+@app.route('/projects/<project_slug>/rounds/<int:round_number>/artifacts/markdown/download')
+def project_round_markdown_artifact_download(project_slug, round_number):
+    """Download one exact, research-visible Markdown artifact as raw bytes."""
+    project, matched_by_id = _v2_registered_project_by_slug_or_id_read_only(project_slug)
+    if project is None:
+        abort(404)
+
+    canonical_slug = str(project.get('url_slug') or '').strip()
+    relative_path = request.args.get('path', '')
+    if not canonical_slug or not relative_path:
+        abort(404)
+    if matched_by_id:
+        return redirect(url_for(
+            'project_round_markdown_artifact_download',
+            project_slug=canonical_slug,
+            round_number=round_number,
+            path=relative_path,
+        ))
+
+    target = _round_workspace_resolve_downloadable_markdown(
+        project,
+        round_number,
+        relative_path,
+    )
+    if target is None:
+        abort(404)
+    try:
+        if target.stat().st_size > ROUND_WORKSPACE_MARKDOWN_DOWNLOAD_MAX_BYTES:
+            abort(413)
+    except OSError:
+        abort(404)
+
+    return send_from_directory(
+        target.parent,
+        target.name,
+        as_attachment=True,
+        download_name=_round_workspace_markdown_download_name(
+            round_number,
+            target.name,
+        ),
+        mimetype='text/markdown',
+    )
 
 
 @app.route('/legacy/projects/<project_slug>/rounds/<int:round_number>')
 def legacy_project_round(project_slug, round_number):
-    """Legacy V2 exact-round report/monitor route, addressed by url_slug.
-
-    This is the old numbered route behavior: one stable URL per round number
-    for completed reports, pinned running monitors, and historical content.
-    The user-facing Round Workspace tab uses /rounds/ instead.
-    """
-    project, matched_by_id = _v2_resolve_project_by_slug_or_id(project_slug)
+    """Read-only compatibility redirect to an exact V2 Round Workspace."""
+    project, _matched_by_id = _v2_registered_project_by_slug_or_id_read_only(project_slug)
     if project is None:
         abort(404)
-    if matched_by_id:
-        return redirect(url_for('legacy_project_round', project_slug=project['url_slug'], round_number=round_number))
-    project = _v2_activate_project(project)
-
-    checkpoint_dir = project.get('checkpoint_dir')
-    round_dir = None
-    if checkpoint_dir:
-        rounds_root = _v2_round_dirs_root(Path(checkpoint_dir))
-        candidate = rounds_root / f'round_{round_number}'
-        if candidate.exists():
-            round_dir = candidate
+    round_dir = _v2_registered_exact_round_dir(project, round_number)
     if round_dir is None:
         abort(404)
 
@@ -10466,61 +10983,11 @@ def legacy_project_round(project_slug, round_number):
     except OSError:
         abort(404)
 
-    if status == 'completed':
-        # Same experience whether this is the latest completed round or an
-        # older historical one -- content is always read from round_dir
-        # itself, never from a 'latest' scan.
-        return _render_round_report_view(project, round_dir, round_number)
-
-    if status == 'running':
-        # Pinned directly to round_dir: bypasses the sibling/active-round
-        # scan entirely (see _get_latest_round_dir_for_session), so an old
-        # directory that merely LOOKS running can never cause a different,
-        # genuinely-active round to be shown here. The V2 shell receives the
-        # same pinned round metadata for future workspace controllers.
-        return render_template(
-            'round_workspace.html',
-            nav_active='workspace',
-            page_class='v2-page-round-workspace',
-            project_slug=project['url_slug'],
-            round_workspace_url=url_for('rounds_workspace', project=project['url_slug']),
-            checkpoint_path=str(project.get('checkpoint_dir') or ''),
-            round_path=str(round_dir),
-            pinned_round=round_number,
-            workspace_session_scope=_session_debug_id(),
-        )
-
-    # Before ANY autonomous round has ever started, Round 0 has no live content
-    # yet, but the Round Workspace must still be reachable and show the shared
-    # initial-exploration callout (same canonical predicate as Project Home and
-    # the Studio). Render the V2 workspace shell with the blocking "Start your
-    # first round" overlay rather than redirecting away.
-    if round_number == 0 and _v2_no_round_has_started(rounds_root):
-        return render_template(
-            'round_workspace.html',
-            nav_active='workspace',
-            page_class='v2-page-round-workspace',
-            project_slug=project['url_slug'],
-            round_workspace_url=url_for('rounds_workspace', project=project['url_slug']),
-            checkpoint_path=str(project.get('checkpoint_dir') or ''),
-            round_path=str(round_dir),
-            pinned_round=None,
-            workspace_session_scope=_session_debug_id(),
-            pre_round_overlay=True,
-            overlay_body=(
-                'DiscoveryAgent works best when it begins with an exploratory '
-                'round to understand your data. Once the round is in progress, '
-                'you can use Round Workspace to see what DiscoveryAgent is doing.'
-            ),
-            # The overlay keeps the quiet "Back to project home" link while
-            # the shared V2 nav remains available above the workspace.
-            home_url=url_for('project_home_canonical', project_slug=project_slug),
-        )
-
-    # Not yet started (selected/exploring/pending/unknown): nothing to show at
-    # this round's URL yet -- send the scientist to where the next action
-    # actually lives instead of rendering an empty page.
-    return redirect(url_for('project_hypotheses', project_slug=project_slug))
+    return redirect(_v2_round_workspace_report_url(
+        project['url_slug'],
+        round_number,
+        review=status == 'completed',
+    ))
 
 
 @app.route('/api/projects', methods=['GET'])
@@ -11346,27 +11813,6 @@ def render_report_html(md_text: str, generator: InteractiveHypothesisGenerator |
     )
 
 
-def render_checkpoint_markdown_html(
-    md_text: str,
-    *,
-    checkpoint_dir: Path | None,
-    code_dir: Path | None,
-    source_path: Path,
-) -> str:
-    """Render checkpoint markdown and rewrite image sources for the browser."""
-    html_content = render_markdown_to_html(md_text)
-    checkpoint_prefix = url_for('checkpoint_browser_asset', filename='')
-    code_prefix = url_for('report_asset', root='code', filename='') if code_dir else None
-    return rewrite_image_sources(
-        html_content,
-        checkpoint_prefix=checkpoint_prefix,
-        code_prefix=code_prefix,
-        checkpoint_dir=checkpoint_dir,
-        code_dir=code_dir,
-        source_dir=source_path.parent.resolve(),
-    )
-
-
 def _load_text_file(path: Path) -> str:
     """Best-effort UTF-8 file reader with logging."""
     try:
@@ -11540,6 +11986,193 @@ def _resolve_research_paper_pdf_path(
     return _find_research_paper_pdf(research_dir)
 
 
+V2_RESEARCH_PAPER_MARKDOWN_MAX_BYTES = 2 * 1024 * 1024
+V2_RESEARCH_PAPER_PDF_MAX_BYTES = 100 * 1024 * 1024
+
+
+def _v2_safe_research_paper_file(
+    candidate: Path,
+    project_root: Path,
+    *,
+    suffix: str,
+    max_bytes: int,
+) -> Path | None:
+    """Validate one registered-project paper without following any symlink."""
+    try:
+        root = project_root.expanduser().resolve()
+        unresolved = candidate.expanduser().absolute()
+        relative = unresolved.relative_to(root)
+        cursor = root
+        for part in relative.parts:
+            cursor = cursor / part
+            if cursor.is_symlink():
+                return None
+        resolved = unresolved.resolve()
+        size = resolved.stat().st_size
+        if (
+            not resolved.is_relative_to(root)
+            or not resolved.is_file()
+            or resolved.suffix.lower() != suffix
+            or size <= 0
+            or size > max_bytes
+        ):
+            return None
+        return resolved
+    except (OSError, ValueError):
+        return None
+
+
+def _v2_research_paper_search_roots(
+    project: dict,
+    checkpoint_dir: str | Path | None,
+) -> tuple[Path | None, list[Path]]:
+    """Return non-symlink checkpoint roots contained by one project root."""
+    raw_project_root = project.get('project_root')
+    if not raw_project_root or not checkpoint_dir:
+        return None, []
+    try:
+        project_root = Path(raw_project_root).expanduser().resolve()
+    except OSError:
+        return None, []
+    roots: list[Path] = []
+    seen: set[str] = set()
+    for raw_root in _candidate_research_paper_roots(Path(checkpoint_dir).expanduser()):
+        try:
+            unresolved = raw_root.absolute()
+            relative = unresolved.relative_to(project_root)
+            cursor = project_root
+            if any((cursor := cursor / part).is_symlink() for part in relative.parts):
+                continue
+            resolved = unresolved.resolve()
+            key = str(resolved)
+            if (
+                key in seen
+                or not resolved.is_relative_to(project_root)
+                or not resolved.is_dir()
+            ):
+                continue
+            seen.add(key)
+            roots.append(unresolved)
+        except (OSError, ValueError):
+            continue
+    return project_root, roots
+
+
+def _v2_configured_research_paper_target(
+    configured_path: str,
+    project_root: Path,
+    search_roots: list[Path],
+) -> Path | None:
+    """Resolve an explicit registered-project resource without escaping its root."""
+    requested = Path(configured_path).expanduser()
+    candidates = [requested] if requested.is_absolute() else [
+        root / requested for root in search_roots
+    ]
+    for candidate in candidates:
+        try:
+            unresolved = candidate.absolute()
+            relative = unresolved.relative_to(project_root)
+            cursor = project_root
+            if any((cursor := cursor / part).is_symlink() for part in relative.parts):
+                continue
+            resolved = unresolved.resolve()
+            if resolved.is_relative_to(project_root) and resolved.exists():
+                return unresolved
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def _v2_research_paper_from_target(
+    target: Path,
+    project_root: Path,
+) -> dict | None:
+    """Prefer a valid PDF, then the canonical Markdown paper in one target."""
+    directory = target.parent if target.is_file() else target
+    pdf_candidates: list[Path] = []
+    if target.suffix.lower() == '.pdf':
+        pdf_candidates.append(target)
+    else:
+        pdf_candidates.append(directory / 'research_paper.pdf')
+        try:
+            pdf_candidates.extend(sorted(
+                (
+                    item for item in directory.glob('*.pdf')
+                    if item.name != 'research_paper.pdf'
+                ),
+                key=lambda item: item.stat().st_mtime,
+                reverse=True,
+            ))
+        except OSError:
+            pass
+    for candidate in pdf_candidates:
+        path = _v2_safe_research_paper_file(
+            candidate, project_root,
+            suffix='.pdf', max_bytes=V2_RESEARCH_PAPER_PDF_MAX_BYTES,
+        )
+        if path is not None:
+            return {'kind': 'pdf', 'path': path}
+
+    markdown_candidate = (
+        target if target.name == 'research_paper.md'
+        else directory / 'research_paper.md'
+    )
+    path = _v2_safe_research_paper_file(
+        markdown_candidate, project_root,
+        suffix='.md', max_bytes=V2_RESEARCH_PAPER_MARKDOWN_MAX_BYTES,
+    )
+    return {'kind': 'markdown', 'path': path} if path is not None else None
+
+
+def _resolve_v2_research_paper_resource(
+    project: dict,
+    project_cfg: dict | None = None,
+) -> dict | None:
+    """Resolve one safe research-paper resource for a registered project."""
+    config = project_cfg if isinstance(project_cfg, dict) else {}
+    checkpoint_dir = (
+        config.get('checkpoint_dir')
+        or project.get('checkpoint_dir')
+    )
+    project_root, search_roots = _v2_research_paper_search_roots(
+        project, checkpoint_dir,
+    )
+    if project_root is None:
+        return None
+
+    configured = _get_configured_research_paper_path(config) or _clean_path_value(
+        project.get('research_paper_path')
+    )
+    if configured:
+        target = _v2_configured_research_paper_target(
+            configured, project_root, search_roots,
+        )
+        return (
+            _v2_research_paper_from_target(target, project_root)
+            if target is not None else None
+        )
+
+    latest_stamp = None
+    latest_dir = None
+    pattern = re.compile(r'^research_paper_(\d{8})_(\d{6})$')
+    for root in search_roots:
+        try:
+            for entry in root.iterdir():
+                match = pattern.fullmatch(entry.name)
+                if not match or entry.is_symlink() or not entry.is_dir():
+                    continue
+                stamp = f'{match.group(1)}_{match.group(2)}'
+                if latest_stamp is None or stamp > latest_stamp:
+                    latest_stamp = stamp
+                    latest_dir = entry
+        except OSError:
+            continue
+    return (
+        _v2_research_paper_from_target(latest_dir, project_root)
+        if latest_dir is not None else None
+    )
+
+
 def _resolve_report_asset_base_dir(root: str) -> Path | None:
     """Resolve the base directory for report assets without requiring a restored generator."""
     generator = get_generator()
@@ -11650,76 +12283,23 @@ def home():
     return redirect(url_for('projects'))
 
 
-@app.route('/app')
-def app_interface():
-    """Render the main workspace page."""
-    if _is_audit_mode():
-        return redirect(url_for('audit_home'))
-    project_cfg = _get_project_config()
-    audit_only = _is_audit_only_mode()
-    auto_initialize = CLI_AUTO_INITIALIZE
-    if audit_only or project_cfg.get('checkpoint_dir'):
-        auto_initialize = True
-    checkpoint_dir = project_cfg.get('checkpoint_dir') or CLI_CHECKPOINT_DIR
-    if not audit_only and checkpoint_dir:
-        try:
-            latest_round_dir = _latest_round_checkpoint_dir(Path(checkpoint_dir))
-            # Also scan sibling round_* dirs so that a newly started round_N+1 is
-            # detected even when the session checkpoint still points at round_N.
-            active_round_dir = _resolve_active_monitor_round(latest_round_dir)
-            if active_round_dir.exists() and _classify_round_state(active_round_dir) == 'round_monitor':
-                v2_round_url = _v2_active_round_workspace_url_for_session()
-                return redirect(v2_round_url or url_for('round_monitor'))
-        except OSError:
-            pass
-    code_dir = project_cfg.get('code_dir') or CLI_CODE_DIR
-    readme_path = project_cfg.get('readme_path') or CLI_README_PATH
-    github_url = project_cfg.get('github_url') or CLI_GITHUB_URL
-    default_model = CLI_HYPOTHESIS_MODEL
-    if not default_model and not CLI_DEV_MODE:
-        default_model = DEFAULT_HYPOTHESIS_MODEL
-    ui_include_background = True if not CLI_DEV_MODE else CLI_INCLUDE_BACKGROUND_LITERATURE
-    ui_generate_plan = True
-    ui_enable_citations = False
-    research_paper_pdf_url = None
-    research_paper_pdf_available = False
-    if audit_only:
-        pdf_path = _resolve_research_paper_pdf_path(
-            None,
-            checkpoint_dir,
-            _get_configured_research_paper_path(project_cfg),
-        )
-        if pdf_path:
-            research_paper_pdf_available = True
-            research_paper_pdf_url = url_for('research_paper_pdf')
-    return render_template(
-        'index.html',
-        checkpoint_dir=checkpoint_dir,
-        hypothesis_model=default_model,
-        code_dir=code_dir,
-        readme_path=readme_path,
-        github_url=github_url,
-        task_description=project_cfg.get('task_description'),
-        auto_initialize=auto_initialize,
-        include_background_literature=ui_include_background,
-        legacy_hyp_gen=CLI_LEGACY_HYP_GEN,
-        num_hypotheses=CLI_NUM_HYPOTHESES,
-        generate_plan=ui_generate_plan,
-        enable_citations=ui_enable_citations,
-        cache_documents=CLI_CACHE_DOCUMENTS,
-        dev_mode=CLI_DEV_MODE,
-        audit_only=audit_only,
-        research_paper_pdf_url=research_paper_pdf_url,
-        research_paper_pdf_available=research_paper_pdf_available,
-        chat_storage_scope=_session_debug_id(),
-    )
-
-
 @app.route('/audit')
 def audit_home():
-    """Audit-only entrypoint (background report)."""
-    if not _is_audit_mode():
-        return redirect(url_for('app_interface'))
+    """Compatibility entrypoint for registered V2 and session-only Audit contexts."""
+    project = _v2_compatibility_registered_project()
+    if project and project.get('url_slug'):
+        return redirect(url_for(
+            'project_audit_agent', project_slug=project['url_slug'],
+        ))
+    if any(
+        key in request.args for key in ('project', 'project_slug', 'project_id')
+    ):
+        abort(404)
+    if not _is_valid_unresolved_remote_audit_context():
+        abort(404)
+
+    # A valid session-only/remote Audit context that is not represented in either
+    # registered project store still needs its legacy sync and initialization UI.
     project_cfg = _get_project_config()
     github_url = project_cfg.get('github_url') or CLI_GITHUB_URL
     checkpoint_dir = project_cfg.get('checkpoint_dir') or CLI_CHECKPOINT_DIR
@@ -11745,7 +12325,6 @@ def audit_home():
 
     return render_template(
         'audit_home.html',
-        report_url=url_for('unified_report', type='background', view='summary'),
         github_url=github_url,
         checkpoint_dir=checkpoint_dir,
         code_dir=code_dir,
@@ -11756,74 +12335,12 @@ def audit_home():
     )
 
 
-@app.route('/finalize')
-def finalize():
-    """Render the finalize selection page."""
-    if _is_audit_mode():
-        return redirect(url_for('audit_home'))
-    if _is_audit_only_mode():
-        return redirect(url_for('app_interface'))
-    auto_initialize = CLI_AUTO_INITIALIZE
-    checkpoint_dir = _get_default_config_value('checkpoint_dir', CLI_CHECKPOINT_DIR)
-    code_dir = _get_default_config_value('code_dir', CLI_CODE_DIR)
-    readme_path = _get_default_config_value('readme_path', CLI_README_PATH)
-    ui_include_background = True if not CLI_DEV_MODE else CLI_INCLUDE_BACKGROUND_LITERATURE
-    ui_generate_plan = True
-    return render_template(
-        'finalize.html',
-        checkpoint_dir=checkpoint_dir,
-        hypothesis_model=CLI_HYPOTHESIS_MODEL,
-        code_dir=code_dir,
-        readme_path=readme_path,
-        auto_initialize=auto_initialize,
-        include_background_literature=ui_include_background,
-        legacy_hyp_gen=CLI_LEGACY_HYP_GEN,
-        num_hypotheses=CLI_NUM_HYPOTHESES,
-        generate_plan=ui_generate_plan,
-        enable_citations=False,
-        cache_documents=CLI_CACHE_DOCUMENTS,
-        dev_mode=CLI_DEV_MODE,
-    )
-
-
-@app.route('/activity_log')
-def activity_log():
-    """Collect post-selection activity log before logout."""
-    if _is_audit_mode():
-        return redirect(url_for('audit_home'))
-    if _is_audit_only_mode():
-        return redirect(url_for('app_interface'))
-    return render_template(
-        'activity_log.html',
-        username=session.get('username'),
-        project_label=session.get('project_label'),
-        finalize_feedback=session.get('finalize_feedback', ''),
-    )
-
-
-@app.route('/thank_you')
-def thank_you():
-    """Confirmation page after activity log submission."""
-    if _is_audit_mode():
-        return redirect(url_for('audit_home'))
-    if _is_audit_only_mode():
-        return redirect(url_for('app_interface'))
-    return render_template('thank_you.html')
-
-
 def _get_latest_round_dir_for_session() -> Path | None:
-    """Resolve the latest round directory for the current session's project, or None.
+    """Resolve a session project's requested or latest active round.
 
-    If the request carries an explicit ?round=N, that round's own directory is
-    used directly -- bypassing the sibling-scan entirely. This is how the
-    legacy /legacy/projects/<slug>/rounds/<n> route pins Round Monitor's initial
-    render AND its client-side AJAX polling (round_monitor.js forwards
-    ?round=N on every fetch once pinned) to the EXACT requested round, so a
-    numbered round route can never silently drift to a different "active"
-    round. Without ?round=N, behavior is unchanged: if the session checkpoint
-    dir is a round_N folder, siblings are scanned for any active
-    round_monitor round (e.g. round_{N+1} started by the backend while the
-    session still points at round_N) and returned instead.
+    An explicit ``?round=N`` pins shared compatibility APIs to that exact
+    directory. Without it, a session checkpoint at ``round_N`` may advance to
+    a newer sibling whose filesystem state shows that execution has begun.
     """
     project_cfg = _get_project_config()
     checkpoint_dir = project_cfg.get('checkpoint_dir') or CLI_CHECKPOINT_DIR
@@ -11843,28 +12360,6 @@ def _get_latest_round_dir_for_session() -> Path | None:
         return _resolve_active_monitor_round(round_dir)
     except OSError:
         return None
-
-
-@app.route('/round_monitor')
-def round_monitor(pinned_round_dir: "Path | None" = None, pinned_round_number: "int | None" = None):
-    """Render the Round Monitor screen for an in-progress/partial round.
-
-    pinned_round_dir/pinned_round_number are set only when called directly
-    (not via URL routing) from the legacy /legacy/projects/<slug>/rounds/<n>
-    dispatcher, so the page renders the EXACT requested round rather than
-    whatever _get_latest_round_dir_for_session's sibling-scan would otherwise
-    pick. The bare /round_monitor route (no args) keeps its existing
-    session-based behavior unchanged."""
-    round_dir = pinned_round_dir or _get_latest_round_dir_for_session()
-    if not round_dir or _classify_round_state(round_dir) != 'round_monitor':
-        return redirect(url_for('app_interface'))
-    project_cfg = _get_project_config()
-    return render_template(
-        'round_monitor.html',
-        checkpoint_path=str(project_cfg.get('checkpoint_dir') or ''),
-        round_path=str(round_dir),
-        pinned_round=pinned_round_number,
-    )
 
 
 @app.route('/api/round_status', methods=['GET'])
@@ -11904,632 +12399,6 @@ def api_round_status():
         'selected_hypothesis_path': str(selected_context_path) if selected_context_path else None,
         'has_selected_hypothesis_context': selected_context_path is not None,
     })
-
-
-# --- Round Constellation: visual concept-map data for Round Directory -----
-# Deterministic, filesystem/summary-based only -- never an LLM call. Reuses the
-# per-query summary _get_query_summary already produces (see api_round_tree).
-# Edges are a best-effort VISUAL reconstruction, not a claim of exact
-# derivation: every edge is inferred=True with a `reason` recording the rule
-# that produced it. See _build_round_constellation's docstring for the chain.
-
-# Structured director-activity -> lane. Authoritative when present (see
-# _classify_query_lane), which is how a node becomes Literature/Validation/etc
-# from a real run event rather than from summary keywords.
-_SUBAGENT_LABEL_TO_LANE: dict[str, str] = {
-    'Execution Agent': 'analysis',
-    'Deep Research Agent': 'literature',
-    'Validation Agent': 'validation',
-    'Synthesis/Report Writer': 'synthesis',
-}
-
-# Cue buckets, scored independently and resolved by a fixed priority (see
-# _classify_lane_from_text) so a lane reflects the WORK a query did, not
-# incidental summary words. Two deliberate splits:
-#   * Literature holds only multi-word RETRIEVAL phrases -- a summary merely
-#     mentioning "literature"/"citations" is not evidence a retrieval ran.
-#   * Synthesis is split STRONG (real integration/finalization) vs WEAK (a bare
-#     append/addendum, which only says where output went); weak never beats
-#     Analysis, so an appended addendum that ran real analysis stays Analysis.
-_LANE_CUE_BUCKETS: dict[str, tuple[str, ...]] = {
-    # Retrieval-only -- multi-word phrases naming an actual review/search/
-    # deep-research step. NO bare "literature"/"published"/"paper"/"citation".
-    'literature': (
-        'literature review', 'literature search', 'literature retrieval',
-        'reviewed the literature', 'reviewed published literature', 'review of published',
-        'review of the literature', 'searched the literature', 'searched published literature',
-        'deep research', 'deep_research', 'deep-research', 'citation search', 'retrieved papers',
-        'paper retrieval', 'grounded in published', 'published-literature review',
-    ),
-    # Verification/replication/robustness STEP. Interpretation words
-    # ("support"/"confirm"/"consistency") are NOT here -- they're weak ANALYSIS
-    # cues below. Null/specificity/control cues are multi-word so a passing
-    # mention of "specificity"/"control" doesn't flip a query to validation.
-    'validation': (
-        'validate', 'validating', 'validation', 'verify', 'verification', 'verifying',
-        'cross-check', 'cross check', 'crosscheck', 'replicate', 'replication', 'robustness',
-        'benchmark', 'sanity check', 'independent check', 'independent replication',
-        'null control', 'negative control', 'background control', 'specificity control',
-        'null model', 'permutation test', 'specificity check', 'robustness check',
-    ),
-    # STRONG synthesis -- real integration/finalization. Bare boilerplate
-    # ("summary"/"report"/...) is absent, and so is the bare noun "synthesis":
-    # it shows up in artifact names a query merely appends to (e.g.
-    # FINAL_HYPOTHESIS_SYNTHESIS.md), so only verb forms and qualified phrases
-    # ("final synthesis", "synthesis of") count as a real synthesis action.
-    'synthesis_strong': (
-        'synthesize', 'synthesise', 'synthesizing', 'synthesising', 'final synthesis',
-        'synthesis of', 'synthesis across', 'integrate', 'integrating', 'integrated',
-        'integration', 'consolidate', 'consolidation', 'consolidated', 'combine prior',
-        'combine the', 'combine multiple', 'combining prior', 'final evidence table',
-        'final summary figure', 'final report', 'evidence table', 'summary figure',
-        'round report', 'memory report',
-    ),
-    # WEAK synthesis -- describes only that output was appended/updated
-    # somewhere, not that the work itself was integrative. Never beats
-    # Analysis on its own.
-    'synthesis_weak': (
-        'addendum', 'append', 'appending', 'appended', 'update report', 'updated report',
-        'updating report',
-    ),
-    'analysis': (
-        'test', 'tested', 'testing', 'whether', 'compare', 'compared', 'comparing', 'contrast',
-        'contrasting', 'characterize', 'characterization', 'characterizing', 'analyze', 'analysis',
-        'analytical', 'quantify', 'quantified', 'quantitative', 'model', 'regression', 'score',
-        'scoring', 'readiness score', 'metric', 'ranking', 'ranked', 'expression', 'enrichment',
-        'correlation', 'correlate', 'differential', 'outlier', 'outliers', 'discriminating',
-        'decompose', 'decomposition', 'pattern', 'cluster', 'subtype', 'dataset', 'cross-dataset',
-        'disconfirm', 'disconfirms', 'disconfirming', 'support', 'contradict', 'contradicts',
-        'contradicting', 'consistent', 'consistency', 'computed', 'calculate', 'estimate', 'rrs',
-    ),
-}
-
-_LANE_FILENAME_CUES: list[tuple[str, tuple[str, ...]]] = [
-    ('validation', ('validation', 'verify', 'crosscheck', 'cross_check')),
-    ('literature', ('literature', 'research', 'citation', 'reference')),
-    ('synthesis', ('synthesis', 'addendum', 'final_report', 'evidence_table')),
-    ('analysis', ('analysis', 'result', 'model', 'stats', 'figure', 'plot', 'table')),
-]
-
-# Standalone heading lines that are boilerplate in almost every generated
-# query markdown/report -- e.g. "## Summary", "# Results" -- and must never
-# be treated as a query's actual TITLE (see _get_query_markdown_title).
-_LANE_BOILERPLATE_HEADING_RE = re.compile(
-    r'^#{1,6}\s*(summary|results|findings|conclusion|query report|report|markdown|evidence)\s*$',
-    re.IGNORECASE,
-)
-
-_QUERY_TITLE_READ_CAP = 500  # chars -- only need the first heading line or two, never the report body
-
-# The report BODY is never scanned for classification: ordinary prose uses
-# words like "final"/"combine"/"evidence table" descriptively, and a long
-# document accumulates enough incidental hits to drown out the short, deliberate
-# summary signal. Only the markdown TITLE heading is used, alongside the summary.
-def _get_query_markdown_title(qd: Path) -> str:
-    md_path = qd / f"{qd.name}.md"
-    if not md_path.exists():
-        return ''
-    try:
-        with open(md_path, 'r', encoding='utf-8', errors='replace') as f:
-            snippet = f.read(_QUERY_TITLE_READ_CAP)
-    except OSError:
-        return ''
-    for line in snippet.splitlines():
-        stripped = line.strip()
-        if not stripped.startswith('#'):
-            continue
-        if _LANE_BOILERPLATE_HEADING_RE.match(stripped):
-            continue  # a heading that's just "Summary"/"Report"/etc, not a real title -- keep looking
-        return stripped.lstrip('#').strip()
-    return ''
-
-
-def _lane_cue_scores(text: str, weight: float) -> dict[str, float]:
-    """Weighted count of distinct cues from each _LANE_CUE_BUCKETS list appearing in `text` (assumed already lowercased)."""
-    scores = {bucket: 0.0 for bucket in _LANE_CUE_BUCKETS}
-    if not text:
-        return scores
-    for bucket, cues in _LANE_CUE_BUCKETS.items():
-        scores[bucket] = weight * sum(1 for cue in cues if cue in text)
-    return scores
-
-
-def _classify_lane_from_text(summary_text: str, title_text: str) -> str | None:
-    """
-    Resolve a visual lane from two SHORT text sources -- the query's cached
-    summary (weight 2) and its markdown TITLE heading (weight 1), never the
-    report body -- using a fixed PRIORITY so a lane reflects the query's
-    actual activity type rather than incidental words:
-
-      1. literature (retrieval phrase) -- an actual review/search/deep-research
-         step. Bare "literature"/"published"/"citations" are NOT here, so a
-         paragraph that merely mentions literature can't produce Literature.
-      2. validation -- explicit verify/validation/cross-check/replicate/
-         robustness/null/specificity/control cues. Wins over synthesis so a
-         "literature validation" append lands on Validation, not Literature.
-      3. synthesis_strong -- genuine integration/consolidation/finalization.
-      4. analysis -- any analytical/testing/quantitative cue. Beats
-         weak-synthesis, so an "appended addendum" that ran correlation/
-         enrichment/scoring is Analysis, not Synthesis.
-      5. synthesis_weak -- a bare append/addendum/update with no analytical
-         content of its own.
-
-    Returns the lane string, or None when nothing scored (caller falls back to
-    filename cues / 'other'). Pure/deterministic and filesystem-free.
-    """
-    summary_scores = _lane_cue_scores((summary_text or '').strip().lower(), weight=2.0)
-    title_scores = _lane_cue_scores((title_text or '').strip().lower(), weight=1.0)
-    scores = {bucket: summary_scores[bucket] + title_scores[bucket] for bucket in summary_scores}
-
-    if scores['literature']:
-        return 'literature'
-    # Validation outranks synthesis (a "literature validation" / null /
-    # specificity check that also appends is Validation, not Synthesis), and
-    # outranks analysis when it scored at least as strongly, so a clearly
-    # framed cross-check/robustness step isn't swallowed by an incidental
-    # analysis word it also contains.
-    if scores['validation'] and scores['validation'] >= scores['synthesis_strong']:
-        return 'validation'
-    if scores['synthesis_strong']:
-        return 'synthesis'
-    if scores['analysis']:
-        return 'analysis'
-    if scores['validation']:
-        return 'validation'
-    if scores['synthesis_weak']:
-        return 'synthesis'
-    return None
-
-
-def _classify_query_lane(jsonl_objs: list[dict], info: dict | None, summary_text: str, qd: Path) -> str:
-    """
-    Deterministic visual-lane classification (analysis/literature/
-    validation/synthesis/other) for grouping/coloring one query's
-    constellation node. Priority:
-      1. Structured director-activity evidence (current_step / jsonl
-         event_type / subagent field, via the same _resolve_subagent_label
-         mapping director_activity uses) -- authoritative when present, so
-         it decides outright.
-      2. Otherwise, _classify_lane_from_text over the cached summary and the
-         markdown TITLE heading only (never the report body -- see
-         _get_query_markdown_title).
-      3. Filename cues in its top-level folder (excluding boilerplate -- own
-         report, checkpoint, query_status.json, the summary cache, logs).
-      4. 'other' -- a true fallback, only when nothing above matched.
-    """
-    candidate_tokens: list[str] = []
-    if info and isinstance(info.get('current_step'), str):
-        candidate_tokens.append(info['current_step'])
-    for obj in jsonl_objs:
-        for field in ('event_type', 'subagent', 'agent'):
-            val = obj.get(field)
-            if isinstance(val, str):
-                candidate_tokens.append(val)
-    for token in candidate_tokens:
-        resolved = _resolve_subagent_label(token)
-        if resolved:
-            lane = _SUBAGENT_LABEL_TO_LANE.get(resolved[0])
-            if lane:
-                return lane
-
-    text_lane = _classify_lane_from_text(summary_text, _get_query_markdown_title(qd))
-    if text_lane:
-        return text_lane
-
-    # Exclude the boilerplate every query writes (its own report, checkpoint,
-    # query_status.json, the summary cache, logs) so a file that merely exists
-    # can't drive classification.
-    own_markdown = f"{qd.name}.md".lower()
-    try:
-        filenames = [
-            p.name.lower() for p in qd.iterdir()
-            if p.is_file()
-            and p.name.lower() != own_markdown
-            and p.name.lower() not in _STANDARD_QUERY_ARTIFACT_NAMES
-            and Path(p.name.lower()).suffix not in _STANDARD_QUERY_ARTIFACT_SUFFIXES
-        ]
-    except OSError:
-        filenames = []
-    for name in filenames:
-        for lane, cues in _LANE_FILENAME_CUES:
-            if any(cue in name for cue in cues):
-                return lane
-
-    return 'other'
-
-
-# Filenames/suffixes that are the boilerplate every query writes -- never
-# counted as "richness" evidence since they carry no signal about how much
-# this particular query actually produced.
-_STANDARD_QUERY_ARTIFACT_NAMES = frozenset({'checkpoint.json', 'query_status.json', _QUERY_SUMMARY_CACHE_FILE})
-_STANDARD_QUERY_ARTIFACT_SUFFIXES = frozenset({'.log'})
-_ARTIFACT_RICHNESS_COUNT_CAP = 5       # notable files beyond which more files stop adding to the score
-_ARTIFACT_RICHNESS_SIZE_CAP_BYTES = 200_000  # total non-standard-artifact bytes beyond which more size stops adding to the score
-_ARTIFACT_RICHNESS_REPORT_BYTES_CAP = 6_000   # report length beyond which more text stops adding to the score
-
-
-def _count_notable_artifact_names(qd: Path, names: list[str]) -> int:
-    """How many of `names` (filenames, from either a directory listing or artifacts_written metadata) are non-standard for query dir `qd`."""
-    own_markdown = f"{qd.name}.md".lower()
-    count = 0
-    for name in names:
-        if not isinstance(name, str):
-            continue
-        lowered = name.strip().lower()
-        if not lowered or lowered == own_markdown or lowered in _STANDARD_QUERY_ARTIFACT_NAMES:
-            continue
-        if Path(lowered).suffix in _STANDARD_QUERY_ARTIFACT_SUFFIXES:
-            continue
-        count += 1
-    return count
-
-
-def _compute_artifact_richness(qd: Path, info: dict | None = None) -> float:
-    """
-    Bounded 0.0-1.0 richness score from generic file-count/size evidence,
-    visual-only (feeds the node-size formula in round_monitor.js), not a
-    quality measure. Combines three capped signals:
-      - report_bytes: size of this query's own report markdown -- its length
-        is genuine evidence of how much the query produced.
-      - notable_count: non-standard artifacts beyond the boilerplate every
-        query writes -- the larger of a top-level directory listing and
-        query_status.json's artifacts_written field.
-      - nonstandard_bytes: total size of those non-standard files on disk.
-    Each is capped so no single signal can dominate.
-    """
-    try:
-        entries = list(qd.iterdir())
-    except OSError:
-        entries = []
-
-    own_markdown = f"{qd.name}.md".lower()
-    report_bytes = 0
-    fs_notable_count = 0
-    nonstandard_bytes = 0
-    for p in entries:
-        if not p.is_file():
-            continue
-        lowered = p.name.lower()
-        if lowered == own_markdown:
-            try:
-                report_bytes = p.stat().st_size
-            except OSError:
-                pass
-            continue
-        if lowered in _STANDARD_QUERY_ARTIFACT_NAMES or Path(lowered).suffix in _STANDARD_QUERY_ARTIFACT_SUFFIXES:
-            continue
-        fs_notable_count += 1
-        try:
-            nonstandard_bytes += p.stat().st_size
-        except OSError:
-            pass
-
-    meta_names = (info or {}).get('artifacts_written') or []
-    meta_notable_count = _count_notable_artifact_names(qd, meta_names)
-
-    notable_count = max(fs_notable_count, meta_notable_count)
-    report_score = min(report_bytes, _ARTIFACT_RICHNESS_REPORT_BYTES_CAP) / _ARTIFACT_RICHNESS_REPORT_BYTES_CAP
-    count_score = min(notable_count, _ARTIFACT_RICHNESS_COUNT_CAP) / _ARTIFACT_RICHNESS_COUNT_CAP
-    size_score = min(nonstandard_bytes, _ARTIFACT_RICHNESS_SIZE_CAP_BYTES) / _ARTIFACT_RICHNESS_SIZE_CAP_BYTES
-    richness = 0.5 * report_score + 0.3 * count_score + 0.2 * size_score
-    return round(min(1.0, max(0.0, richness)), 3)
-
-
-_QUERY_REFERENCE_READ_CAP = 6000  # chars -- generous enough to catch a reference mention anywhere reasonably early in a report
-
-
-def _gather_query_reference_text(qd: Path) -> str:
-    """
-    Text to scan for explicit mentions of OTHER queries: this query's own
-    top-level markdown report only (capped). Never reads subdirectories or
-    other query folders.
-    """
-    md_path = qd / f"{qd.name}.md"
-    if not md_path.exists():
-        return ''
-    try:
-        with open(md_path, 'r', encoding='utf-8', errors='replace') as f:
-            return f.read(_QUERY_REFERENCE_READ_CAP)
-    except OSError:
-        return ''
-
-
-def _find_referenced_query_ids(text: str, own_query_id: str) -> list[str]:
-    """
-    Generic scan for ANY mention of another query within a query's own text
-    (bare or phrased) -- 'query_004', 'query 4', 'Query 4', 'from query 2',
-    'building on query 3', 'compared to query_003', 'see query_003' all
-    match, since only the 'query N' token itself is matched, never specific
-    surrounding phrasing. Excludes a self-reference (e.g. this query's own
-    "# Query 4 Details" title); order-preserving and de-duplicated. This is
-    the superset used by both _find_strong_lineage_query_ids (a subset, for
-    primary_flow edges) and weak/bare mentions (secondary_reference edges).
-    """
-    if not text:
-        return []
-    seen: list[str] = []
-    for match in _QUERY_ID_NUM_RE.finditer(text):
-        candidate = _canonical_query_id(match.group(0))
-        if candidate and candidate != own_query_id and candidate not in seen:
-            seen.append(candidate)
-    return seen
-
-
-# Phrases that indicate genuine, deliberate lineage ("this query builds on
-# that one"), as opposed to an incidental/bare mention ("compared to
-# query_003", "see query_003") that merely references another query without
-# claiming to build on it. Only phrases in this list create a primary_flow
-# edge; every other mention becomes a much fainter secondary_reference edge
-# instead (see _build_round_constellation) -- this is what keeps an early
-# query that happens to get name-dropped a lot from becoming a dense hub.
-_STRONG_LINEAGE_RE = re.compile(
-    r'\b(?:building\s+on|derived\s+from|following|based\s+on|extends?|from)\s+'
-    r'q(?:uery)?[\s_-]?0*(\d+)\b',
-    re.IGNORECASE,
-)
-
-
-def _find_strong_lineage_query_ids(text: str, own_query_id: str) -> list[str]:
-    """
-    Subset of _find_referenced_query_ids: only mentions immediately preceded
-    by a genuine-lineage phrase (see _STRONG_LINEAGE_RE) -- 'building on
-    query 3', 'derived from query 3', 'following query 3', 'based on query
-    3', 'from query 3', 'extends query 3'. Never a bare 'query_003' mention
-    on its own. Order-preserving and de-duplicated.
-    """
-    if not text:
-        return []
-    seen: list[str] = []
-    for match in _STRONG_LINEAGE_RE.finditer(text):
-        candidate = _canonical_query_id(f"query_{match.group(1)}")
-        if candidate and candidate != own_query_id and candidate not in seen:
-            seen.append(candidate)
-    return seen
-
-
-_CONSTELLATION_ORIGIN_ID = '__origin__'
-_CONSTELLATION_SYNTHESIS_CONVERGENCE_CAP = 3
-
-
-def _make_constellation_edge(source: str, target: str, reason: str, edge_type: str) -> dict:
-    """Every constellation edge is inferred visual structure, not guaranteed scientific lineage -- always direction='downstream' (edges only ever point from an earlier-processed node to a later one, a DAG by construction)."""
-    return {'source': source, 'target': target, 'inferred': True, 'reason': reason, 'edge_type': edge_type, 'direction': 'downstream'}
-
-# The root query's first N children ("branch seeds") attach side-by-side under
-# the root. Fixed at 2 regardless of round size, so query 4+ stays properly
-# downstream instead of becoming another top-level branch.
-_CONSTELLATION_BRANCH_SEED_WINDOW = 2
-
-# Recency-weighted fallback-parent scoring for later queries (see
-# _score_candidate): a late query prefers recent relevant context over an old
-# branch seed unless that seed is still close and lane-compatible.
-_CONSTELLATION_RECENCY_WEIGHT = 1.0        # base weight; recency = 1 / (1 + order distance)
-_CONSTELLATION_BRANCH_CONTEXT_BONUS = 0.1  # small nudge toward root/branch-seed candidates -- never enough alone to beat a closer, lane-compatible node
-_CONSTELLATION_ROOT_SEED_AGE_PENALTY_PER_STEP = 0.02  # grows with distance, specifically for root/branch-seed candidates, so they fade out for genuinely late queries even though _BRANCH_CONTEXT_BONUS nudges toward them
-_CONSTELLATION_FANOUT_SCORE_PENALTY = 0.12  # per existing outgoing fallback edge already registered on a candidate -- discourages (not forbids, until the hard cap) reusing an already-busy parent
-_CONSTELLATION_HARD_FANOUT_CAP = 3          # absolute outgoing-edge cap per node, regardless of score
-
-# Lane-compatibility bonus per (this query's lane -> candidate's lane), over the
-# same 5 generic lanes as _classify_query_lane (nothing dataset-specific).
-_CONSTELLATION_LANE_COMPAT_BONUS: dict[str, dict[str, float]] = {
-    'analysis': {'analysis': 0.35, 'validation': 0.15, 'synthesis': 0.15, 'literature': 0.1, 'other': 0.1},
-    'validation': {'validation': 0.35, 'analysis': 0.3, 'synthesis': 0.25, 'literature': 0.15, 'other': 0.1},
-    'literature': {'literature': 0.35, 'analysis': 0.3, 'synthesis': 0.25, 'validation': 0.2, 'other': 0.1},
-    'synthesis': {'analysis': 0.3, 'validation': 0.3, 'literature': 0.25, 'other': 0.15, 'synthesis': 0.0},
-    'other': {'other': 0.2, 'analysis': 0.15, 'validation': 0.15, 'synthesis': 0.1, 'literature': 0.1},
-}
-
-
-def _build_round_constellation(
-    round_dir: Path,
-    query_dirs: list[Path],
-    infos_by_name: dict[str, dict | None],
-    summaries_by_name: dict[str, str],
-    statuses_by_name: dict[str, str],
-) -> dict:
-    """
-    Build a deterministic, visualization-only directed research-flow map of
-    how the round unfolded: an origin node (Selected Hypothesis, id
-    '__origin__'), one node per numeric query_* dir, and edges connecting
-    them. Non-numeric query_* dirs (no reliable ordering evidence) are
-    omitted here -- the constellation is inherently order-dependent, unlike
-    the plain Round Directory list.
-
-    Every edge carries edge_type ('primary_flow' | 'convergence' |
-    'secondary_reference') and direction ('downstream', since edges only
-    ever point from an earlier-processed node to a later one -- this is a
-    DAG by construction). Only primary_flow/convergence edges are meant to
-    be visible by default; secondary_reference edges are deliberately much
-    fainter/hover-only so a query that gets mentioned a lot in passing
-    doesn't read as more connected than one with genuine lineage.
-
-    This is a LAYERED graph, not a flat chain: the root sits under Selected
-    Hypothesis, its branch seeds side-by-side beneath it, later queries
-    downstream. The frontend derives each node's y from this structure plus
-    chronological order (see computeConstellationRankY), so the parent choice
-    here is what produces the layered look.
-
-    Edge inference priority per query (first match wins for the PRIMARY parent):
-      1. explicit_reference -- an earlier query named via a genuine-lineage
-         phrase ("building on query 3", etc; see _find_strong_lineage_query_ids).
-         A bare mention does NOT count here (see secondary_reference below).
-      2. branch_seed -- one of the root's first _CONSTELLATION_BRANCH_SEED_WINDOW
-         children: attach directly to the root.
-      3. recent_relevant_context -- score every earlier, not-yet-capped query as
-         a fallback parent (see _score_candidate) and pick the best; dominated
-         by recency, with a lane-compatibility bonus and a penalty for reaching
-         back to the root/a branch seed.
-      4. synthesis_convergence -- for a 'synthesis' query, the same scorer picks
-         the top _CONSTELLATION_SYNTHESIS_CONVERGENCE_CAP candidates (non-
-         synthesis first) as convergence parents.
-      5. order_fallback -- attach to the immediately preceding query when no
-         scoring candidate exists.
-      6. origin_fallback -- no earlier query exists (the root): attach to
-         Selected Hypothesis.
-
-    Every other (non-primary) mention becomes a fainter secondary_reference
-    edge, so a query named in passing never reads as a hub.
-
-    A final repair pass guarantees every node ends up with at least one
-    parent (see the loop after the main one) -- root/floating queries are a
-    visual-fallback concern, not a claim of true derivation.
-    """
-    jsonl_query_groups = _group_round_activity_jsonl_by_query(round_dir)
-
-    numeric_dirs: list[tuple[int, Path]] = []
-    for qd in query_dirs:
-        suffix = qd.name.split("query_", 1)[-1]
-        if suffix.isdigit():
-            numeric_dirs.append((int(suffix), qd))
-    numeric_dirs.sort(key=lambda item: item[0])
-
-    nodes: list[dict] = []
-    lanes_by_id: dict[str, str] = {}
-
-    for order, (num, qd) in enumerate(numeric_dirs, start=1):
-        query_id = qd.name
-        info = infos_by_name.get(query_id)
-        summary_text = summaries_by_name.get(query_id, '') or ''
-        status = statuses_by_name.get(query_id, 'unknown')
-        jsonl_objs = jsonl_query_groups.get(_canonical_query_id(query_id) or query_id, [])
-
-        lane = _classify_query_lane(jsonl_objs, info, summary_text, qd)
-        richness = _compute_artifact_richness(qd, info)
-        lanes_by_id[query_id] = lane
-
-        nodes.append({
-            'query_id': query_id,
-            'display_label': f"Query {num}",
-            'status': status,
-            'summary': summary_text,
-            'lane': lane,
-            'artifact_richness': richness,
-            'parents': [],  # filled in below -- primary_flow/convergence sources only, not secondary_reference
-            'order': order,
-        })
-
-    edges: list[dict] = []
-    processed_ids: list[str] = []  # ids in order, as they're resolved -- lets "nearest prior" look backward safely
-    known_ids = {n['query_id'] for n in nodes}
-    order_by_id = {n['query_id']: n['order'] for n in nodes}
-    fanout_counts: dict[str, int] = {}  # parent_id -> count of fallback-derived primary_flow/convergence edges out of it
-
-    # Root = earliest numeric query_* dir (order-based, never hardcoded).
-    root_id = nodes[0]['query_id'] if nodes else None
-    branch_seed_ids = {n['query_id'] for n in nodes[1:1 + _CONSTELLATION_BRANCH_SEED_WINDOW]}
-
-    def _at_fanout_cap(candidate_id: str) -> bool:
-        return fanout_counts.get(candidate_id, 0) >= _CONSTELLATION_HARD_FANOUT_CAP
-
-    def _register_fanout(candidate_id: str) -> None:
-        fanout_counts[candidate_id] = fanout_counts.get(candidate_id, 0) + 1
-
-    def _score_candidate(candidate_id: str, current_node: dict) -> float:
-        """
-        Recency-weighted fallback-parent score for `candidate_id` as a
-        parent of `current_node`. Recency dominates (so "attach to whatever
-        came right before" is the default outcome whenever nothing more
-        relevant stands out); lane compatibility adds a modest bonus;
-        candidates that already have several fallback children, or that are
-        the root/a branch seed being reached for by a now-distant later
-        query, are penalized so a late query doesn't default back to an
-        early hub just because it was the first thing that ever matched.
-        """
-        distance = current_node['order'] - order_by_id[candidate_id]
-        score = _CONSTELLATION_RECENCY_WEIGHT / (1.0 + distance)
-        score += _CONSTELLATION_LANE_COMPAT_BONUS.get(current_node['lane'], {}).get(lanes_by_id[candidate_id], 0.0)
-        if candidate_id == root_id or candidate_id in branch_seed_ids:
-            score += _CONSTELLATION_BRANCH_CONTEXT_BONUS
-            score -= _CONSTELLATION_ROOT_SEED_AGE_PENALTY_PER_STEP * distance
-        score -= _CONSTELLATION_FANOUT_SCORE_PENALTY * fanout_counts.get(candidate_id, 0)
-        return score
-
-    def _ranked_candidates(current_node: dict, exclude_lane: str | None = None) -> list[str]:
-        """processed_ids not yet at the hard fan-out cap, best score first."""
-        pool = [
-            pid for pid in processed_ids
-            if not _at_fanout_cap(pid) and (exclude_lane is None or lanes_by_id[pid] != exclude_lane)
-        ]
-        pool.sort(key=lambda pid: _score_candidate(pid, current_node), reverse=True)
-        return pool
-
-    for node in nodes:
-        query_id = node['query_id']
-        qd = round_dir / query_id
-        reference_text = _gather_query_reference_text(qd)
-        all_refs = [
-            ref for ref in _find_referenced_query_ids(reference_text, query_id)
-            if ref in known_ids and ref in processed_ids
-        ]
-        strong_refs = [
-            ref for ref in _find_strong_lineage_query_ids(reference_text, query_id)
-            if ref in known_ids and ref in processed_ids
-        ]
-
-        parents: list[str] = []
-        reason = 'origin_fallback'
-        edge_type = 'primary_flow'
-
-        if strong_refs:
-            parents = strong_refs
-            reason = 'explicit_reference'
-            # explicit_reference edges are exempt from the fan-out cap (see
-            # module docstring) -- deliberately not registered below.
-        elif query_id in branch_seed_ids and root_id in processed_ids and not _at_fanout_cap(root_id):
-            # Branch seeds attach directly under the root (rule 2).
-            parents = [root_id]
-            reason = 'branch_seed'
-            _register_fanout(root_id)
-        elif node['lane'] == 'synthesis' and processed_ids:
-            ranked = _ranked_candidates(node, exclude_lane='synthesis') or _ranked_candidates(node)
-            parents = ranked[:_CONSTELLATION_SYNTHESIS_CONVERGENCE_CAP]
-            reason = 'synthesis_convergence'
-            edge_type = 'convergence'
-            for pid in parents:
-                _register_fanout(pid)
-        elif processed_ids:
-            ranked = _ranked_candidates(node)
-            if ranked:
-                parents = [ranked[0]]
-                reason = 'recent_relevant_context'
-                _register_fanout(ranked[0])
-
-        if not parents and processed_ids:
-            parents = [processed_ids[-1]]
-            reason = 'order_fallback'
-            # Never subject to the fan-out cap -- see docstring.
-
-        if parents:
-            node['parents'] = parents
-            for parent_id in parents:
-                edges.append(_make_constellation_edge(parent_id, query_id, reason, edge_type))
-        else:
-            # Record the origin sentinel as this node's parent (not just as a
-            # bare edge) so the frontend's upstream traversal, which reads
-            # node.parents, sees Selected Hypothesis as an upstream neighbor.
-            node['parents'] = [_CONSTELLATION_ORIGIN_ID]
-            edges.append(_make_constellation_edge(_CONSTELLATION_ORIGIN_ID, query_id, 'origin_fallback', 'primary_flow'))
-
-        # Every other bare mention becomes a fainter secondary_reference edge.
-        for ref in all_refs:
-            if ref in strong_refs:
-                continue
-            edges.append(_make_constellation_edge(ref, query_id, 'weak_mention', 'secondary_reference'))
-
-        processed_ids.append(query_id)
-
-    # Defensive net: the loop above always assigns a parent, but never let a
-    # node render floating if a future rule change leaves one parentless.
-    for node in nodes:
-        if not node['parents']:
-            node['parents'] = [_CONSTELLATION_ORIGIN_ID]
-            edges.append(_make_constellation_edge(_CONSTELLATION_ORIGIN_ID, node['query_id'], 'origin_fallback', 'primary_flow'))
-
-    return {
-        'origin': {'label': 'Selected Hypothesis'},
-        'nodes': nodes,
-        'edges': edges,
-    }
 
 
 def _file_node(path: Path) -> dict:
@@ -12578,6 +12447,9 @@ ROUND_WORKSPACE_EXTERNAL_ARTIFACT_EXTENSIONS = (
     ROUND_WORKSPACE_FIGURE_EXTENSIONS | {'.pdf'}
 )
 ROUND_WORKSPACE_REFERENCE_MAX_BYTES = 10 * 1024 * 1024
+ROUND_REPORT_DOWNLOAD_MAX_BYTES = 20 * 1024 * 1024
+ROUND_WORKSPACE_MARKDOWN_DOWNLOAD_MAX_BYTES = 20 * 1024 * 1024
+AUDIT_CHAT_FIGURE_MARKDOWN_MAX_CHARS = 350_000
 ROUND_WORKSPACE_ARTIFACT_CACHE_TTL_SECS = float(
     os.environ.get('DISCOVERY_AGENT_ROUND_WORKSPACE_ARTIFACT_CACHE_TTL_SECS', '15')
 )
@@ -12691,7 +12563,7 @@ def _round_workspace_reference_strings(round_dir: Path) -> set[str]:
         ROUND_WORKSPACE_EXTERNAL_ARTIFACT_EXTENSIONS, key=len, reverse=True
     ))
     pattern = re.compile(
-        rf'(?P<path>(?:/[^\s`"\'<>()\[\]]+|(?:outputs|images|logs)/[^\s`"\'<>()\[\]]+)\.(?:{suffixes}))',
+        rf'(?P<path>(?:/[^\s`"\'<>()\[\]]+|(?:outputs|analysis_output|images|logs)/[^\s`"\'<>()\[\]]+)\.(?:{suffixes}))',
         re.IGNORECASE,
     )
 
@@ -12797,6 +12669,8 @@ def _build_round_workspace_artifact_registry(round_index: int) -> dict[str, dict
         display: PurePosixPath | None = None
         target_files: dict[str, dict] | None = None
         if reference_path.is_absolute():
+            if '..' in reference_path.parts:
+                continue
             try:
                 relative = reference_path.relative_to(remote_working)
                 source_root, display, target_files = code_root, relative, output_files
@@ -12805,12 +12679,41 @@ def _build_round_workspace_artifact_registry(round_index: int) -> dict[str, dict
                     relative = reference_path.relative_to(remote_log)
                     source_root, display, target_files = run_root, PurePosixPath('logs') / relative, run_files
                 except ValueError:
-                    continue
+                    # Historical memory reports can outlive the machine-specific
+                    # absolute root captured when they were generated. Map only
+                    # a recognized output/analysis-output/image suffix into this registered
+                    # project's already-approved local roots; never read the
+                    # historical absolute path itself.
+                    lowered_parts = [part.lower() for part in reference_path.parts]
+                    if 'outputs' in lowered_parts:
+                        marker = len(lowered_parts) - 1 - lowered_parts[::-1].index('outputs')
+                        relative = _round_workspace_safe_relative(
+                            PurePosixPath(*reference_path.parts[marker:]).as_posix()
+                        )
+                        source_root, display, target_files = code_root, relative, output_files
+                    elif 'analysis_output' in lowered_parts:
+                        marker = len(lowered_parts) - 1 - lowered_parts[::-1].index('analysis_output')
+                        relative = _round_workspace_safe_relative(
+                            PurePosixPath(*reference_path.parts[marker:]).as_posix()
+                        )
+                        source_root, display, target_files = code_root, relative, output_files
+                    elif 'images' in lowered_parts:
+                        marker = len(lowered_parts) - 1 - lowered_parts[::-1].index('images')
+                        relative = _round_workspace_safe_relative(
+                            PurePosixPath(*reference_path.parts[marker:]).as_posix()
+                        )
+                        source_root = run_root
+                        display = PurePosixPath('logs') / relative if relative else None
+                        target_files = run_files
+                    else:
+                        continue
+                    if relative is None:
+                        continue
         else:
             relative = _round_workspace_safe_relative(reference)
             if relative is None:
                 continue
-            if relative.parts[0].lower() == 'outputs':
+            if relative.parts[0].lower() in {'outputs', 'analysis_output'}:
                 source_root, display, target_files = code_root, relative, output_files
             elif relative.parts[0].lower() == 'images':
                 source_root, display, target_files = run_root, PurePosixPath('logs') / relative, run_files
@@ -12878,6 +12781,39 @@ def _round_workspace_artifact_registry(round_index: int) -> dict[str, dict]:
     return registry
 
 
+def _round_workspace_linked_artifacts(registry: dict[str, dict] | None) -> list[dict]:
+    """Expose only browser-safe identities from one round's trusted registry."""
+    artifacts: list[dict] = []
+    for source_id, source in (registry or {}).items():
+        if source.get('kind') == 'checkpoint':
+            continue
+        for descriptor in (source.get('files') or {}).values():
+            display = _round_workspace_safe_relative(descriptor.get('display_path', ''))
+            artifact = _round_workspace_safe_relative(descriptor.get('artifact_path', ''))
+            target = descriptor.get('target')
+            if display is None or artifact is None or not isinstance(target, Path):
+                continue
+            if not _round_workspace_external_file_allowed(target, source['root'], artifact):
+                continue
+            try:
+                size = target.stat().st_size
+            except OSError:
+                continue
+            artifacts.append({
+                'name': display.name,
+                'path': display.as_posix(),
+                'artifact_path': artifact.as_posix(),
+                'source': source_id,
+                'source_kind': 'external',
+                'size': size,
+                'visibility': 'research',
+            })
+    return sorted(
+        artifacts,
+        key=lambda item: (item['path'].casefold(), item['source'], item['artifact_path']),
+    )
+
+
 def _round_workspace_resolve_artifact(
     round_index: int,
     source_id: str,
@@ -12909,6 +12845,31 @@ def _round_workspace_resolve_artifact(
         return None
     target = descriptor['target']
     return target if _round_workspace_external_file_allowed(target, source['root'], relative) else None
+
+
+def _round_workspace_resolve_downloadable_markdown(
+    project: dict,
+    round_index: int,
+    relative_path: str,
+) -> Path | None:
+    """Resolve only Markdown exposed as research in one registered exact round."""
+    relative = _round_workspace_safe_relative(relative_path)
+    if relative is None or relative.suffix.lower() not in {'.md', '.markdown'}:
+        return None
+    round_dir = _v2_registered_exact_round_dir(project, round_index)
+    if round_dir is None:
+        return None
+    unresolved = round_dir.joinpath(*relative.parts)
+    try:
+        status = _v2_round_status(_inspect_latest_round(round_dir))
+        if _round_workspace_visibility(unresolved, round_dir, status) != 'research':
+            return None
+        resolved = unresolved.resolve()
+        if not resolved.is_relative_to(round_dir.resolve()) or not resolved.is_file():
+            return None
+        return resolved
+    except (OSError, ValueError):
+        return None
 
 
 def _round_workspace_visibility(path: Path, round_dir: Path, round_status: str) -> str:
@@ -13332,6 +13293,17 @@ def _round_workspace_entry(
             child for child in tree['children']
             if child.get('name') == 'round_report.md'
         )['primary_output'] = True
+    summary_path = round_dir / 'round_report_summary.md'
+    try:
+        valid_round_report_summary = (
+            valid_round_report
+            and summary_path.is_file()
+            and not summary_path.is_symlink()
+            and summary_path.stat().st_size > 0
+            and summary_path.resolve().is_relative_to(round_dir.resolve())
+        )
+    except OSError:
+        valid_round_report_summary = False
     return {
         'round_index': index,
         'storage_round_index': index,
@@ -13342,8 +13314,10 @@ def _round_workspace_entry(
         'status': status,
         'is_current': index == active_index,
         'tree': tree,
+        'linked_artifacts': _round_workspace_linked_artifacts(registry),
         'truncated': budget['truncated'],
         'has_round_report': valid_round_report,
+        'has_round_report_summary': valid_round_report_summary,
     }
 
 
@@ -13608,13 +13582,6 @@ def api_round_tree():
     log_text, _ = _read_log_tail(round_dir, max_bytes=20_000)
     query_statuses = _infer_query_statuses(query_dirs, has_round_report, log_text)
 
-    # Captured once per query dir here and reused for the Round Constellation
-    # below, so that visualization never recomputes (or re-triggers an LLM
-    # call for) a summary the tree above already has.
-    infos_by_name: dict[str, dict | None] = {}
-    summaries_by_name: dict[str, str] = {}
-    statuses_by_name: dict[str, str] = {}
-
     for qd in query_dirs:
         try:
             artifact_names = sorted(p.name for p in qd.iterdir())
@@ -13658,9 +13625,6 @@ def api_round_tree():
                 'children': qd_children,
             }
         children.append(node)
-        infos_by_name[qd.name] = info
-        summaries_by_name[qd.name] = query_summary_text
-        statuses_by_name[qd.name] = node['status']
 
     children.append(_file_node(round_dir / "round_report.md"))
     memory_report_path = round_dir / "memory_report.md"
@@ -13684,17 +13648,12 @@ def api_round_tree():
             'Selected hypothesis source not found, but query artifacts indicate this round has started.'
         )
 
-    constellation = _build_round_constellation(
-        round_dir, query_dirs, infos_by_name, summaries_by_name, statuses_by_name,
-    )
-
     return jsonify({
         'success': True,
         'round_path': str(round_dir),
         'checkpoint_path': str(project_cfg.get('checkpoint_dir') or ''),
         'active_query': active_query,
         'summary': summary,
-        'constellation': constellation,
         'root': {
             'name': round_dir.name,
             'type': 'dir',
@@ -14002,10 +13961,255 @@ def _round_chat_file_nav_inventory(
     )
 
 
+_ROUND_CHAT_SECRET_ASSIGNMENT_RE = re.compile(
+    r'(?i)\b(api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|'
+    r'password|passwd|secret|token)\b(\s*[:=]\s*)(["\']?)[^\s,;"\']+\3'
+)
+_ROUND_CHAT_BEARER_RE = re.compile(r'(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+')
+_ROUND_CHAT_URL_CREDENTIAL_RE = re.compile(
+    r'(?i)(https?://)([^\s/@:]+):([^\s/@]+)@'
+)
+_ROUND_CHAT_PRIVATE_KEY_RE = re.compile(
+    r'-----BEGIN [^-\n]*PRIVATE KEY-----.*?-----END [^-\n]*PRIVATE KEY-----',
+    re.DOTALL,
+)
+_ROUND_CHAT_SENSITIVE_FILENAME_RE = re.compile(
+    r'(?i)(^|[._-])(\.env|credentials?|secrets?|tokens?|passwords?|private[_-]?key)'
+    r'($|[._-])'
+)
+
+
+def _redact_round_chat_runtime_text(value) -> str:
+    """Redact common credentials before runtime evidence reaches the model."""
+    text = str(value or '')
+    text = _ROUND_CHAT_PRIVATE_KEY_RE.sub('[REDACTED PRIVATE KEY]', text)
+    text = _ROUND_CHAT_BEARER_RE.sub('Bearer [REDACTED]', text)
+    text = _ROUND_CHAT_URL_CREDENTIAL_RE.sub(r'\1[REDACTED]@', text)
+    return _ROUND_CHAT_SECRET_ASSIGNMENT_RE.sub(
+        lambda match: f'{match.group(1)}{match.group(2)}[REDACTED]',
+        text,
+    )
+
+
+def _round_chat_safe_artifact_name(name: str) -> bool:
+    """Do not expose names that themselves advertise credential material."""
+    candidate = str(name or '').strip()
+    return bool(candidate) and not _ROUND_CHAT_SENSITIVE_FILENAME_RE.search(candidate)
+
+
+ROUND_CHAT_REPORT_CONTEXT_MAX_CHARS = 16_000
+ROUND_CHAT_ARTIFACT_CONTEXT_MAX_CHARS = 12_000
+ROUND_CHAT_ARTIFACT_MAX_BYTES = 2 * 1024 * 1024
+ROUND_CHAT_HISTORY_MAX_EXCHANGES = 6
+ROUND_CHAT_HISTORY_MAX_CHARS = 12_000
+ROUND_CHAT_TEXTUAL_ARTIFACT_SUFFIXES = {
+    '.md', '.markdown', '.txt', '.py', '.r', '.js', '.ts', '.json', '.jsonl',
+    '.csv', '.tsv', '.yaml', '.yml', '.xml', '.tex', '.sh', '.sql',
+}
+
+
+def _round_chat_exact_report_context(
+    round_index: int,
+    round_dir: Path,
+    viewer_file: dict | None,
+) -> str:
+    """Bounded report grounding from this exact round only."""
+    requested_view = 'full'
+    if (
+        isinstance(viewer_file, dict)
+        and viewer_file.get('path') == 'round_report.md'
+        and viewer_file.get('reportView') == 'summary'
+    ):
+        requested_view = 'summary'
+    requested_name = (
+        'round_report_summary.md' if requested_view == 'summary'
+        else 'round_report.md'
+    )
+    target = round_dir / requested_name
+
+    def _eligible(path: Path) -> bool:
+        try:
+            return (
+                path.is_file()
+                and not path.is_symlink()
+                and path.stat().st_size > 0
+                and path.resolve().is_relative_to(round_dir.resolve())
+            )
+        except OSError:
+            return False
+
+    lines = [
+        f'## Exact Round {round_index} report grounding',
+        f'- Requested report view: {requested_view}',
+    ]
+    if not _eligible(target):
+        lines.append(f'- {requested_name}: unavailable for this exact round')
+        if requested_view == 'summary':
+            full = round_dir / 'round_report.md'
+            if _eligible(full):
+                content = _read_capped(full, ROUND_CHAT_REPORT_CONTEXT_MAX_CHARS)
+                if content:
+                    lines.extend([
+                        '- Exact-round full report is included as fallback context.',
+                        '',
+                        f'### round_report.md (Round {round_index})',
+                        content,
+                    ])
+        return '\n'.join(lines)
+
+    content = _read_capped(target, ROUND_CHAT_REPORT_CONTEXT_MAX_CHARS)
+    if not content:
+        lines.append(f'- {requested_name}: unreadable for this exact round')
+        return '\n'.join(lines)
+    lines.extend([
+        '',
+        f'### {requested_name} (Round {round_index})',
+        content,
+    ])
+    return '\n'.join(lines)
+
+
+def _round_chat_viewer_artifact_context(
+    round_index: int,
+    round_dir: Path,
+    viewer_file: dict | None,
+) -> str | None:
+    """Read bounded content for one currently open trusted textual artifact."""
+    if not isinstance(viewer_file, dict):
+        return None
+    relative_raw = str(
+        viewer_file.get('artifactPath')
+        or viewer_file.get('artifact_path')
+        or viewer_file.get('path')
+        or ''
+    ).strip()
+    relative = _round_workspace_safe_relative(relative_raw)
+    if relative is None or relative.as_posix() in {
+        'round_report.md', 'round_report_summary.md',
+    }:
+        return None
+    if (
+        relative.suffix.lower() not in ROUND_CHAT_TEXTUAL_ARTIFACT_SUFFIXES
+        or any(not _round_chat_safe_artifact_name(part) for part in relative.parts)
+    ):
+        return None
+
+    source_kind = str(
+        viewer_file.get('sourceKind') or viewer_file.get('source_kind') or 'checkpoint'
+    )
+    viewer_round = viewer_file.get('round')
+    if source_kind != 'project-code':
+        try:
+            if int(viewer_round) != round_index:
+                return None
+        except (TypeError, ValueError):
+            return None
+
+    source_id = str(viewer_file.get('source') or '').strip()
+    if source_kind == 'project-code':
+        target = _round_workspace_code_artifact_path(relative.as_posix())
+    elif source_id:
+        target = _round_workspace_resolve_artifact(
+            round_index, source_id, relative.as_posix(),
+        )
+    else:
+        target = _round_workspace_artifact_path(round_index, relative.as_posix())
+    if target is None:
+        return None
+
+    try:
+        if target.is_symlink() or target.stat().st_size > ROUND_CHAT_ARTIFACT_MAX_BYTES:
+            return None
+        if source_kind == 'checkpoint':
+            unresolved = round_dir.joinpath(*relative.parts)
+            status = _v2_round_status(_inspect_latest_round(round_dir))
+            if (
+                _round_workspace_visibility(unresolved, round_dir, status) != 'research'
+                or not target.resolve().is_relative_to(round_dir.resolve())
+            ):
+                return None
+        with target.open('rb') as stream:
+            if b'\x00' in stream.read(4096):
+                return None
+    except OSError:
+        return None
+
+    content = _read_capped(target, ROUND_CHAT_ARTIFACT_CONTEXT_MAX_CHARS)
+    if not content:
+        return None
+    return (
+        '## Currently open trusted textual artifact\n'
+        f'- Identity: Round {round_index} / {relative.as_posix()}\n\n'
+        f'{content}'
+    )
+
+
+def _round_chat_prior_messages(
+    project_id: str | None,
+    round_index: int,
+    current_request_id: str | None,
+) -> list[dict[str, str]]:
+    """Return bounded completed turns from this project's exact round thread."""
+    if not project_id:
+        return []
+    state = _read_conversation_surface_state(
+        'round_workspace_chat', 'main', project_id,
+    ) or {}
+    rounds = state.get('rounds') if isinstance(state, dict) else {}
+    messages = rounds.get(str(round_index), []) if isinstance(rounds, dict) else []
+    if not isinstance(messages, list):
+        return []
+
+    pairs: list[tuple[str, str]] = []
+    users: dict[str, str] = {}
+    for item in messages:
+        if not isinstance(item, dict):
+            continue
+        role = item.get('role')
+        request_key = str(item.get('requestId') or item.get('id') or '').strip()
+        text = str(item.get('text') or '').strip()
+        if role == 'user' and request_key and text:
+            users[request_key] = text
+            continue
+        if role != 'assistant' or not request_key or request_key == current_request_id:
+            continue
+        status = str(item.get('jobStatus') or '').lower()
+        completed = (
+            status == 'succeeded'
+            or (
+                not status
+                and item.get('pending') is not True
+                and item.get('failed') is not True
+                and item.get('cancelled') is not True
+            )
+        )
+        user_text = users.get(request_key)
+        if completed and user_text and text:
+            pairs.append((user_text, text))
+
+    selected: list[tuple[str, str]] = []
+    remaining = ROUND_CHAT_HISTORY_MAX_CHARS
+    for user_text, assistant_text in reversed(pairs[-ROUND_CHAT_HISTORY_MAX_EXCHANGES:]):
+        user_text = user_text[:2000]
+        assistant_text = assistant_text[:4000]
+        cost = len(user_text) + len(assistant_text)
+        if cost > remaining:
+            continue
+        selected.append((user_text, assistant_text))
+        remaining -= cost
+    prior: list[dict[str, str]] = []
+    for user_text, assistant_text in reversed(selected):
+        prior.extend([
+            {'role': 'user', 'content': user_text},
+            {'role': 'assistant', 'content': assistant_text},
+        ])
+    return prior
+
+
 def _round_chat_context_bundle(round_dir: Path, mode: str = 'queries') -> str:
     """
-    Build a bounded, read-only text bundle from current round files for the
-    Audit Agent Chat. Never reads the live backend's full message/tool
+    Build a bounded, read-only text bundle from current round files for
+    Round Chat. Never reads the live backend's full message/tool
     traces unbounded -- truncates aggressively to keep token usage sane.
 
     mode='queries': scientific grounding (selected hypothesis, prior-round
@@ -14021,6 +14225,7 @@ def _round_chat_context_bundle(round_dir: Path, mode: str = 'queries') -> str:
     if mode == 'code':
         log_text, log_name = _read_log_tail(round_dir, max_bytes=20_000)
         if log_text:
+            log_text = _redact_round_chat_runtime_text(log_text)
             # Pre-extracted, already-deterministic high-level events (same
             # extraction /api/round_activity uses) so the model has a
             # summarized starting point instead of needing to parse the raw
@@ -14048,7 +14253,10 @@ def _round_chat_context_bundle(round_dir: Path, mode: str = 'queries') -> str:
             lines = []
             for qd in query_dirs:
                 try:
-                    artifact_names = sorted(p.name for p in qd.iterdir())
+                    artifact_names = sorted(
+                        p.name for p in qd.iterdir()
+                        if _round_chat_safe_artifact_name(p.name)
+                    )
                 except OSError:
                     artifact_names = []
                 lines.append(f"- {qd.name}/: {', '.join(artifact_names) if artifact_names else '(empty)'}")
@@ -14066,9 +14274,13 @@ def _round_chat_context_bundle(round_dir: Path, mode: str = 'queries') -> str:
                 info = _summarize_query_status(status_data)
                 bits = [info['status']]
                 if info['current_step']:
-                    bits.append(f"step={info['current_step']}")
+                    bits.append(
+                        f"step={_redact_round_chat_runtime_text(info['current_step'])}"
+                    )
                 if info['error']:
-                    bits.append(f"error={info['error']}")
+                    bits.append(
+                        f"error={_redact_round_chat_runtime_text(info['error'])}"
+                    )
                 status_lines.append(f"- {qd.name}: {', '.join(bits)}")
             if status_lines:
                 sections.append("## Query execution state (from query_status.json)\n" + "\n".join(status_lines))
@@ -14085,7 +14297,9 @@ def _round_chat_context_bundle(round_dir: Path, mode: str = 'queries') -> str:
     if selected_context_path:
         selected = _read_capped(selected_context_path, 6000)
         if selected:
-            sections.append(f"## Selected Hypothesis / Framing (from {selected_context_path})\n{selected}")
+            sections.append(
+                f"## Selected Hypothesis / Framing (from {selected_context_path.name})\n{selected}"
+            )
     else:
         sections.append(
             "## Selected Hypothesis / Framing\n"
@@ -14104,7 +14318,10 @@ def _round_chat_context_bundle(round_dir: Path, mode: str = 'queries') -> str:
     if input_memory_report_path and input_memory_report_path.exists():
         prior_memory = _read_capped(input_memory_report_path, 12000)
         if prior_memory:
-            sections.append(f"## PRIOR CONTEXT: memory_report.md from previous round (from {input_memory_report_path})\n{prior_memory}")
+            sections.append(
+                "## PRIOR CONTEXT: memory_report.md from previous round\n"
+                + prior_memory
+            )
     else:
         sections.append(
             "## PRIOR CONTEXT: memory_report.md from previous round\n"
@@ -14131,7 +14348,7 @@ def _round_chat_context_bundle(round_dir: Path, mode: str = 'queries') -> str:
         sections.append("## CURRENT-ROUND Query Status Summary\nNone yet.")
 
     # ACTIVE-ROUND round_report.md/memory_report.md: rare while still in
-    # progress (Round Monitor only shows while round_report.md is absent),
+    # progress (normally absent until the round completes),
     # but included defensively in case this is called right at the boundary.
     # The explicit present/NOT YET WRITTEN status line (rather than just
     # omitting a section silently) is what the "Not Yet Available" heading in
@@ -14144,13 +14361,9 @@ def _round_chat_context_bundle(round_dir: Path, mode: str = 'queries') -> str:
         f"- memory_report.md: {'present' if active_round_memory_report_path.exists() else 'NOT YET WRITTEN'}"
     )
 
-    active_round_report = _read_capped(active_round_report_path, 6000)
-    if active_round_report:
-        sections.append(f"## CURRENT-ROUND round_report.md\n{active_round_report}")
-
     active_memory_report = _read_capped(active_round_memory_report_path, 6000)
     if active_memory_report:
-        sections.append(f"## CURRENT-ROUND memory_report.md (from {active_round_memory_report_path})\n{active_memory_report}")
+        sections.append(f"## CURRENT-ROUND memory_report.md\n{active_memory_report}")
 
     return "\n\n".join(sections)
 
@@ -14192,7 +14405,7 @@ Never invent events, \
 files, or outcomes that are not present in the evidence below. If the evidence does not contain the answer, say so \
 explicitly rather than guessing."""
 
-ROUND_CHAT_SYSTEM_PROMPT_ALL = """You are the unified read-only Audit Agent for a scientist monitoring a DiscoveryAgent \
+ROUND_CHAT_SYSTEM_PROMPT_ALL = """You are the unified read-only Round Chat assistant for a scientist monitoring a DiscoveryAgent \
 research round. Use both kinds of filesystem evidence provided below: scientific query/report evidence and runtime/code \
 execution evidence. Infer which evidence matters from the scientist's question; do not make them choose a mode. Connect \
 execution events to scientific artifacts when the files support that connection, but keep prior-round context distinct \
@@ -14213,6 +14426,25 @@ _PROGRESS_SUMMARY_INTENT_RE = re.compile(
     r')\b',
     re.IGNORECASE,
 )
+
+
+_ROUND_EXECUTION_INTENT_RE = re.compile(
+    r'\b('
+    r'errors?|exceptions?|tracebacks?|logs?|terminal|runtime|crash(?:ed|es|ing)?'
+    r'|execution\s+(?:status|state|progress|failure|error)'
+    r'|processing\s+step|current\s+step'
+    r'|why\s+(?:did\s+)?(?:query[_ -]?\d+|it|this)\s+fail(?:ed)?'
+    r'|(?:did|does|has|was|is)\s+[^?.]{0,80}\b(?:run|ran|running|execut(?:e|ed|ing))'
+    r'|query[_ -]?\d+\s+(?:status|state)'
+    r'|failed\s+(?:to\s+)?(?:run|execute|process)'
+    r')\b',
+    re.IGNORECASE,
+)
+
+
+def _is_round_execution_intent(message: str) -> bool:
+    """Whether unified Round Chat should emphasize bounded runtime evidence."""
+    return bool(_ROUND_EXECUTION_INTENT_RE.search(message or ''))
 
 
 def _is_progress_summary_intent(message: str) -> bool:
@@ -14598,7 +14830,7 @@ def api_round_feedback_delete():
 
 @app.route('/api/round_chat', methods=['POST'])
 def api_round_chat():
-    """Read-only Audit Agent Chat: answers questions using only current round filesystem evidence."""
+    """Answer in read-only Round Chat using curated, exact-round evidence."""
 
     data = request.json or {}
     message = (data.get('message') or '').strip()
@@ -14619,13 +14851,31 @@ def api_round_chat():
     try:
         import anthropic
 
+        viewer_file = data.get('viewer_file')
         file_nav_inventory = _round_chat_file_nav_inventory(
             round_index,
             round_dir,
-            data.get('viewer_file'),
+            viewer_file,
+        )
+        report_context = _round_chat_exact_report_context(
+            round_index, round_dir, viewer_file,
+        )
+        artifact_context = _round_chat_viewer_artifact_context(
+            round_index, round_dir, viewer_file,
+        )
+        exact_view_context = report_context
+        if artifact_context:
+            exact_view_context += '\n\n' + artifact_context
+
+        project = _active_project_record() or {}
+        project_id = str(project.get('id') or '').strip() or None
+        prior_messages = _round_chat_prior_messages(
+            project_id, round_index, request_id or None,
         )
 
-        # In queries mode, check if the message targets a specific query.
+        execution_intent = _is_round_execution_intent(message)
+
+        # In queries/all mode, check if the message targets a specific query.
         query_name = _detect_query_reference(message) if mode in ('queries', 'all') else None
         query_dir = _resolve_query_dir(round_dir, query_name) if query_name else None
 
@@ -14665,6 +14915,15 @@ def api_round_chat():
         if query_dir:
             # Targeted single-query answer — only load that query's files.
             context_bundle = _load_query_specific_context(round_dir, query_dir)
+            context_bundle += (
+                "\n\n# Exact report and current viewer grounding\n\n"
+                + exact_view_context
+            )
+            if mode == 'all' and execution_intent:
+                context_bundle += (
+                    "\n\n# Bounded runtime and execution evidence\n\n"
+                    + _round_chat_context_bundle(round_dir, mode='code')
+                )
             system_prompt = ROUND_CHAT_SYSTEM_PROMPT_ALL if mode == 'all' else ROUND_CHAT_SYSTEM_PROMPT_QUERIES
             progress_intent = False
             user_content = (
@@ -14676,7 +14935,7 @@ def api_round_chat():
                 f"Files are included in full when they fit within the budget; "
                 f"any file that was truncated is explicitly labeled as such — "
                 f"do not claim content is missing or truncated unless the label says so.\n\n"
-                f"Query folder contents for {query_dir.name} (from {round_dir}):\n\n{context_bundle}\n\n"
+                f"Query folder contents for {query_dir.name} in Round {round_index}:\n\n{context_bundle}\n\n"
                 f"{file_nav_inventory}\n\n"
                 "The File Nav inventory confirms which research artifacts exist and which one "
                 "the scientist currently has open. It does not provide the pixels of image files; "
@@ -14699,9 +14958,13 @@ def api_round_chat():
             else:
                 context_bundle = _round_chat_context_bundle(round_dir, mode=mode)
                 system_prompt = ROUND_CHAT_SYSTEM_PROMPT_CODE if mode == 'code' else ROUND_CHAT_SYSTEM_PROMPT_QUERIES
+            context_bundle += (
+                "\n\n# Exact report and current viewer grounding\n\n"
+                + exact_view_context
+            )
             progress_intent = _is_progress_summary_intent(message)
             user_content = (
-                f"Current round evidence (from {round_dir}):\n\n{context_bundle}\n\n"
+                f"Current evidence for exact Round {round_index}:\n\n{context_bundle}\n\n"
                 f"{file_nav_inventory}\n\n"
                 "The File Nav inventory confirms which research artifacts exist and which one "
                 "the scientist currently has open. It does not provide the pixels of image files; "
@@ -14710,15 +14973,24 @@ def api_round_chat():
             )
             if progress_intent:
                 user_content += (
-                    _PROGRESS_SUMMARY_INSTRUCTION_CODE if mode == 'code' else _PROGRESS_SUMMARY_INSTRUCTION_QUERIES
+                    _PROGRESS_SUMMARY_INSTRUCTION_CODE
+                    if mode == 'code' or (mode == 'all' and execution_intent)
+                    else _PROGRESS_SUMMARY_INSTRUCTION_QUERIES
                 )
+
+        job_id = str(data.get('job_id') or '').strip()
+        if job_id and _is_round_chat_job_cancel_requested(job_id):
+            return jsonify({'success': False, 'error': 'Round Chat request cancelled', 'cancelled': True}), 409
 
         client = anthropic.Anthropic()
         request_kwargs = dict(
             model=_resolve_code_chat_model(get_generator()),
             max_tokens=4096,
             system=system_prompt,
-            messages=[{'role': 'user', 'content': user_content}],
+            messages=[
+                *prior_messages,
+                {'role': 'user', 'content': user_content},
+            ],
         )
         try:
             response = client.messages.create(**request_kwargs)
@@ -14727,8 +14999,12 @@ def api_round_chat():
             # retry after a short pause instead of surfacing as a chat error.
             if exc.status_code not in (429, 500, 503, 529):
                 raise
+            if job_id and _is_round_chat_job_cancel_requested(job_id):
+                return jsonify({'success': False, 'error': 'Round Chat request cancelled', 'cancelled': True}), 409
             time.sleep(2)
             response = client.messages.create(**request_kwargs)
+        if job_id and _is_round_chat_job_cancel_requested(job_id):
+            return jsonify({'success': False, 'error': 'Round Chat request cancelled', 'cancelled': True}), 409
         answer = "".join(
             block.text for block in response.content if getattr(block, 'type', None) == 'text'
         )
@@ -14750,7 +15026,8 @@ def api_round_chat():
         })
         log_event('round_chat', {
             'round_path': str(round_dir), 'mode': mode,
-            'progress_intent': progress_intent, 'query_target': query_name,
+            'progress_intent': progress_intent, 'execution_intent': execution_intent,
+            'query_target': query_name,
             'stop_reason': stop_reason, 'request_id': request_id or None,
         })
         return jsonify({
@@ -14821,6 +15098,12 @@ def _persist_round_chat_job_exchange(
             'text': message,
         }
         messages.append(user)
+    user.update({
+        'requestId': request_id,
+        'jobId': job_id,
+        'jobStatus': status,
+        'queued': status == 'queued',
+    })
 
     assistant = next((
         item for item in messages
@@ -14840,6 +15123,7 @@ def _persist_round_chat_job_exchange(
         'jobId': job_id,
         'jobStatus': status,
         'pending': status in {'pending', 'running'},
+        'queued': status == 'queued',
     })
     if status == 'succeeded':
         assistant.update({'text': answer or '', 'failed': False, 'retryable': False})
@@ -14852,6 +15136,14 @@ def _persist_round_chat_job_exchange(
             'failed': True,
             'retryable': True,
         })
+    elif status == 'cancelled':
+        assistant.update({
+            'text': 'Round Chat response cancelled.',
+            'error': 'Cancelled by the scientist.',
+            'failed': False,
+            'retryable': False,
+            'cancelled': True,
+        })
 
     _write_conversation_surface_state(
         'round_workspace_chat', 'main', state, project_id,
@@ -14859,12 +15151,39 @@ def _persist_round_chat_job_exchange(
     return copy.deepcopy(assistant)
 
 
+def _clear_round_chat_conversation_round(project_id: str, round_index: int) -> bool:
+    """Clear one exact round without merging stale browser-owned messages back."""
+    path = _project_conversation_state_path(project_id)
+    if path is None:
+        return False
+    with _conversation_state_lock:
+        payload = read_conversation_state(path)
+        surfaces = payload.setdefault('surfaces', {})
+        surface_states = surfaces.setdefault('round_workspace_chat', {})
+        entry = surface_states.get('main')
+        state = copy.deepcopy(entry.get('state')) if isinstance(entry, dict) else {}
+        if not isinstance(state, dict):
+            state = {}
+        rounds = state.get('rounds')
+        if not isinstance(rounds, dict):
+            rounds = {}
+        rounds.pop(str(round_index), None)
+        state['rounds'] = rounds
+        surface_states['main'] = {
+            'updated_at': datetime.now(timezone.utc).isoformat(),
+            'state': state,
+        }
+        write_conversation_state(path, payload)
+    return True
+
+
 def _prune_round_chat_jobs(now: float | None = None) -> None:
     cutoff = (now or time.time()) - ROUND_CHAT_JOB_TTL_SECS
     with ROUND_CHAT_JOBS_LOCK:
         stale = [
             job_id for job_id, job in ROUND_CHAT_JOBS.items()
-            if job.get('status') in {'succeeded', 'failed'}
+            if job.get('status') in {'succeeded', 'failed', 'cancelled'}
+            and job.get('worker_active') is not True
             and job.get('updated_at', job.get('created_at', 0)) < cutoff
         ]
         for job_id in stale:
@@ -14885,13 +15204,85 @@ def _round_chat_job_payload(job: dict) -> dict:
     }
 
 
+def _is_round_chat_job_cancel_requested(job_id: str | None) -> bool:
+    if not job_id:
+        return False
+    with ROUND_CHAT_JOBS_LOCK:
+        job = ROUND_CHAT_JOBS.get(job_id)
+        return bool(
+            job
+            and (
+                job.get('cancel_requested') is True
+                or job.get('status') == 'cancelled'
+            )
+        )
+
+
+def _launch_next_round_chat_job(project_id: str, round_index: int) -> str | None:
+    """Claim and launch the oldest queued job for one project/round lane."""
+    with ROUND_CHAT_JOBS_LOCK:
+        lane_jobs = [
+            job for job in ROUND_CHAT_JOBS.values()
+            if job.get('project_id') == project_id
+            and job.get('round_index') == round_index
+        ]
+        if any(
+            job.get('lane_owner') is True
+            or (
+                'lane_owner' not in job
+                and job.get('status') in {'pending', 'running'}
+            )
+            for job in lane_jobs
+        ):
+            return None
+        queued = sorted(
+            (job for job in lane_jobs if job.get('status') == 'queued'),
+            key=lambda job: (job.get('created_at', 0), job.get('id', '')),
+        )
+        if not queued:
+            return None
+        job = queued[0]
+        job['status'] = 'pending'
+        job['lane_owner'] = True
+        job['updated_at'] = time.time()
+        snapshot = copy.deepcopy(job)
+
+    _persist_round_chat_job_exchange(
+        project_id=project_id,
+        round_index=round_index,
+        request_id=snapshot['request_id'],
+        job_id=snapshot['id'],
+        user_message_id=snapshot['user_message_id'],
+        assistant_message_id=snapshot['assistant_message_id'],
+        message=snapshot['request']['message'],
+        status='pending',
+    )
+    thread = threading.Thread(
+        target=_run_round_chat_job, args=(snapshot['id'],), daemon=True,
+    )
+    thread.start()
+    return snapshot['id']
+
+
+def _release_round_chat_worker(job_id: str, project_id: str, round_index: int) -> None:
+    """Release this job's worker and any remaining lane claim."""
+    with ROUND_CHAT_JOBS_LOCK:
+        current = ROUND_CHAT_JOBS.get(job_id)
+        if current is not None:
+            current['worker_active'] = False
+            current['lane_owner'] = False
+            current['updated_at'] = time.time()
+    _launch_next_round_chat_job(project_id, round_index)
+
+
 def _run_round_chat_job(job_id: str) -> None:
     """Run Round Chat independently of the browser connection that accepted it."""
     with ROUND_CHAT_JOBS_LOCK:
         job = ROUND_CHAT_JOBS.get(job_id)
-        if not job or job.get('status') not in {'pending', 'running'}:
+        if not job or job.get('status') != 'pending':
             return
         job['status'] = 'running'
+        job['worker_active'] = True
         job['updated_at'] = time.time()
         request_payload = copy.deepcopy(job['request'])
         session_snapshot = copy.deepcopy(job['session'])
@@ -14905,6 +15296,9 @@ def _run_round_chat_job(job_id: str) -> None:
         assistant_message_id=job['assistant_message_id'],
         message=request_payload['message'], status='running',
     )
+    if _is_round_chat_job_cancel_requested(job_id):
+        _release_round_chat_worker(job_id, job['project_id'], round_index)
+        return
     try:
         path = (
             '/api/round_chat?round=' + str(round_index)
@@ -14918,6 +15312,22 @@ def _run_round_chat_job(job_id: str) -> None:
         succeeded = status_code < 400 and payload.get('success') is True
         status = 'succeeded' if succeeded else 'failed'
         error = None if succeeded else str(payload.get('error') or 'Round Chat request failed')
+        cancelled_before_commit = False
+        with ROUND_CHAT_JOBS_LOCK:
+            current = ROUND_CHAT_JOBS.get(job_id)
+            if (
+                current is None
+                or current.get('cancel_requested') is True
+                or current.get('status') == 'cancelled'
+            ):
+                cancelled_before_commit = True
+            else:
+                current['status'] = status
+                current['status_code'] = status_code
+                current['updated_at'] = time.time()
+        if cancelled_before_commit:
+            _release_round_chat_worker(job_id, job['project_id'], round_index)
+            return
         durable_message = _persist_round_chat_job_exchange(
             project_id=job['project_id'], round_index=round_index,
             request_id=job['request_id'], job_id=job_id,
@@ -14936,14 +15346,29 @@ def _run_round_chat_job(job_id: str) -> None:
         with ROUND_CHAT_JOBS_LOCK:
             current = ROUND_CHAT_JOBS.get(job_id)
             if current:
-                current['status'] = status
-                current['status_code'] = status_code
                 current['result'] = job_result
                 current['updated_at'] = time.time()
+        _release_round_chat_worker(job_id, job['project_id'], round_index)
     except Exception as exc:
         import traceback
         traceback.print_exc()
         error = f'Unexpected server error ({type(exc).__name__}): {str(exc) or type(exc).__name__}'
+        cancelled_after_error = False
+        with ROUND_CHAT_JOBS_LOCK:
+            current = ROUND_CHAT_JOBS.get(job_id)
+            if (
+                current is None
+                or current.get('cancel_requested') is True
+                or current.get('status') == 'cancelled'
+            ):
+                cancelled_after_error = True
+            else:
+                current['status'] = 'failed'
+                current['status_code'] = 500
+                current['updated_at'] = time.time()
+        if cancelled_after_error:
+            _release_round_chat_worker(job_id, job['project_id'], round_index)
+            return
         durable_message = _persist_round_chat_job_exchange(
             project_id=job['project_id'], round_index=round_index,
             request_id=job['request_id'], job_id=job_id,
@@ -14954,12 +15379,11 @@ def _run_round_chat_job(job_id: str) -> None:
         with ROUND_CHAT_JOBS_LOCK:
             current = ROUND_CHAT_JOBS.get(job_id)
             if current:
-                current['status'] = 'failed'
-                current['status_code'] = 500
                 current['result'] = {
                     'success': False, 'error': error, 'message': durable_message,
                 }
                 current['updated_at'] = time.time()
+        _release_round_chat_worker(job_id, job['project_id'], round_index)
 
 
 @app.route('/api/round_chat_jobs', methods=['POST'])
@@ -14999,7 +15423,7 @@ def api_round_chat_jobs():
         if live is not None:
             return jsonify(_round_chat_job_payload(live))
         status = str(existing_assistant.get('jobStatus') or 'pending')
-        if status in {'pending', 'running'}:
+        if status in {'queued', 'pending', 'running'}:
             existing_assistant = _persist_round_chat_job_exchange(
                 project_id=project_id, round_index=existing_round if existing_round is not None else round_index,
                 request_id=request_id, job_id=existing_job_id,
@@ -15041,11 +15465,15 @@ def api_round_chat_jobs():
             'request': {
                 'message': message,
                 'request_id': request_id,
+                'job_id': job_id,
                 'mode': 'all',
                 'viewer_file': data.get('viewer_file'),
             },
             'session': dict(session),
-            'status': 'pending',
+            'status': 'queued',
+            'cancel_requested': False,
+            'worker_active': False,
+            'lane_owner': False,
             'created_at': now,
             'updated_at': now,
             'status_code': None,
@@ -15057,17 +15485,72 @@ def api_round_chat_jobs():
             project_id=project_id, round_index=round_index,
             request_id=request_id, job_id=job_id,
             user_message_id=user_message_id, assistant_message_id=assistant_message_id,
-            message=message, status='pending',
+            message=message, status='queued',
         )
     except Exception:
         with ROUND_CHAT_JOBS_LOCK:
             ROUND_CHAT_JOBS.pop(job_id, None)
         raise
-    thread = threading.Thread(target=_run_round_chat_job, args=(job_id,), daemon=True)
-    thread.start()
+    _launch_next_round_chat_job(project_id, round_index)
     with ROUND_CHAT_JOBS_LOCK:
         accepted = copy.deepcopy(ROUND_CHAT_JOBS[job_id])
     return jsonify(_round_chat_job_payload(accepted)), 202
+
+
+@app.route('/api/round_chat_jobs/reset', methods=['POST'])
+def api_round_chat_jobs_reset():
+    """Reset one project/round lane without waiting for stale workers to exit."""
+    project_key = str(request.args.get('project') or '').strip()
+    project, _matched = _v2_resolve_project_by_slug_or_id(project_key)
+    if project is None:
+        return jsonify({'success': False, 'error': 'Project is unavailable'}), 404
+    round_raw = str(request.args.get('round') or '').strip()
+    if not round_raw.isdigit():
+        return jsonify({'success': False, 'error': 'Valid round is required'}), 400
+    requested_round = int(round_raw)
+    if _v2_registered_exact_round_dir(project, requested_round) is None:
+        return jsonify({'success': False, 'error': 'Round is unavailable'}), 404
+    project_id = str(project.get('id') or '')
+    now = time.time()
+    reset_job_ids: list[str] = []
+
+    with ROUND_CHAT_JOBS_LOCK:
+        for candidate_id, job in list(ROUND_CHAT_JOBS.items()):
+            if (
+                job.get('project_id') != project_id
+                or job.get('round_index') != requested_round
+            ):
+                continue
+            reset_job_ids.append(candidate_id)
+            job['cancel_requested'] = True
+            job['status'] = 'cancelled'
+            job['lane_owner'] = False
+            job['status_code'] = 200
+            job['updated_at'] = now
+            # Keep a running worker's cancellation tombstone so in-request
+            # cancellation checks reject its late provider result. Jobs with no
+            # physical worker can be removed immediately.
+            if job.get('worker_active') is not True:
+                ROUND_CHAT_JOBS.pop(candidate_id, None)
+
+    try:
+        cleared = _clear_round_chat_conversation_round(project_id, requested_round)
+    except OSError as exc:
+        return jsonify({
+            'success': False,
+            'error': f'Could not reset Round Chat conversation: {exc}',
+        }), 500
+    if not cleared:
+        return jsonify({
+            'success': False,
+            'error': 'Round Chat conversation state is unavailable',
+        }), 500
+    return jsonify({
+        'success': True,
+        'project_id': project_id,
+        'round': requested_round,
+        'cancelled_job_ids': reset_job_ids,
+    })
 
 
 @app.route('/api/round_chat_jobs/<job_id>', methods=['GET'])
@@ -15078,19 +15561,26 @@ def api_round_chat_job_status(job_id: str):
     if project is None:
         return jsonify({'success': False, 'error': 'Project is unavailable'}), 404
     project_id = str(project.get('id') or '')
+    round_raw = str(request.args.get('round') or '').strip()
+    if not round_raw.isdigit():
+        return jsonify({'success': False, 'error': 'Valid round is required'}), 400
+    requested_round = int(round_raw)
     _prune_round_chat_jobs()
     with ROUND_CHAT_JOBS_LOCK:
         job = copy.deepcopy(ROUND_CHAT_JOBS.get(job_id))
     if job is not None:
-        if job.get('project_id') != project_id:
+        if (
+            job.get('project_id') != project_id
+            or job.get('round_index') != requested_round
+        ):
             return jsonify({'success': False, 'error': 'Round Chat job not found'}), 404
         return jsonify(_round_chat_job_payload(job))
 
     round_index, _user, assistant = _round_chat_job_exchange(project_id, job_id=job_id)
-    if assistant is None:
+    if assistant is None or round_index != requested_round:
         return jsonify({'success': False, 'error': 'Round Chat job not found'}), 404
     status = str(assistant.get('jobStatus') or 'pending')
-    if status in {'pending', 'running'}:
+    if status in {'queued', 'pending', 'running'}:
         assistant = _persist_round_chat_job_exchange(
             project_id=project_id, round_index=round_index or 0,
             request_id=str(assistant.get('requestId') or ''), job_id=job_id,
@@ -15112,43 +15602,99 @@ def api_round_chat_job_status(job_id: str):
     })
 
 
-@app.route('/background_report')
-def background_report():
-    """Render the research paper markdown (if available) on a dedicated page."""
-    if _is_audit_only_mode():
-        return redirect(url_for('app_interface'))
-    generator = get_generator()
-    if not generator:
-        return redirect(url_for('app_interface'))
+@app.route('/api/round_chat_jobs/<job_id>/cancel', methods=['POST'])
+def api_round_chat_job_cancel(job_id: str):
+    """Cancel one project/round-owned job and discard any eventual late result."""
+    project_key = str(request.args.get('project') or '').strip()
+    project, _matched = _v2_resolve_project_by_slug_or_id(project_key)
+    if project is None:
+        return jsonify({'success': False, 'error': 'Project is unavailable'}), 404
+    round_raw = str(request.args.get('round') or '').strip()
+    if not round_raw.isdigit():
+        return jsonify({'success': False, 'error': 'Valid round is required'}), 400
+    requested_round = int(round_raw)
+    project_id = str(project.get('id') or '')
+    with ROUND_CHAT_JOBS_LOCK:
+        live = ROUND_CHAT_JOBS.get(job_id)
+        if live is not None:
+            if (
+                live.get('project_id') != project_id
+                or live.get('round_index') != requested_round
+            ):
+                return jsonify({'success': False, 'error': 'Round Chat job not found'}), 404
+            if live.get('status') in {'succeeded', 'failed', 'cancelled'}:
+                return jsonify(_round_chat_job_payload(copy.deepcopy(live)))
+            live['cancel_requested'] = True
+            live['status'] = 'cancelled'
+            # Cancellation revokes logical ownership immediately. The provider
+            # transport may remain alive, but it no longer blocks this lane.
+            live['lane_owner'] = False
+            live['status_code'] = 200
+            live['updated_at'] = time.time()
+            job_snapshot = copy.deepcopy(live)
+    if live is None:
+        persisted_round, user, assistant = _round_chat_job_exchange(
+            project_id, job_id=job_id,
+        )
+        if assistant is None or persisted_round != requested_round:
+            return jsonify({'success': False, 'error': 'Round Chat job not found'}), 404
+        status = str(assistant.get('jobStatus') or 'pending')
+        if status in {'succeeded', 'failed', 'cancelled'}:
+            return jsonify({
+                'success': True,
+                'job_id': job_id,
+                'request_id': assistant.get('requestId'),
+                'project_id': project_id,
+                'round': persisted_round,
+                'status': status,
+                'result': {
+                    'success': status == 'succeeded',
+                    'answer': assistant.get('text') if status == 'succeeded' else None,
+                    'error': assistant.get('error'),
+                    'message': assistant,
+                },
+            })
+        job_snapshot = {
+            'id': job_id,
+            'request_id': str(assistant.get('requestId') or ''),
+            'project_id': project_id,
+            'round_index': requested_round,
+            'user_message_id': str((user or {}).get('id') or ''),
+            'assistant_message_id': str(assistant.get('id') or f'{job_id}:assistant'),
+            'request': {'message': str((user or {}).get('text') or '')},
+            'created_at': None,
+            'updated_at': time.time(),
+            'status': 'cancelled',
+        }
 
-    report_html = None
-    error_message = None
-    research_path = getattr(generator, 'research_paper_path', None)
-    if research_path and not isinstance(research_path, Path):
-        research_path = Path(research_path)
-
-    if research_path and research_path.exists():
-        try:
-            raw_markdown = research_path.read_text(encoding='utf-8')
-            report_html = render_report_html(raw_markdown, generator)
-        except Exception as exc:
-            error_message = f"Failed to load research_paper.md: {exc}"
-    else:
-        error_message = "research_paper.md is not available for this session."
-
-    return render_template(
-        'background_report.html',
-        report_html=Markup(report_html) if report_html else None,
-        report_available=bool(report_html),
-        error_message=error_message,
-        report_path=str(research_path) if research_path else None,
-        last_updated=datetime.fromtimestamp(research_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
-        if research_path and research_path.exists()
-        else None,
-        code_chat_available=_is_code_chat_available(_resolve_code_dir(generator)),
-        chat_storage_scope=_session_debug_id(),
-        durable_chat_scope=_report_chat_durable_scope(generator, 'background'),
+    durable_message = _persist_round_chat_job_exchange(
+        project_id=project_id,
+        round_index=requested_round,
+        request_id=str(job_snapshot.get('request_id') or ''),
+        job_id=job_id,
+        user_message_id=str(job_snapshot.get('user_message_id') or ''),
+        assistant_message_id=str(job_snapshot.get('assistant_message_id') or f'{job_id}:assistant'),
+        message=str((job_snapshot.get('request') or {}).get('message') or ''),
+        status='cancelled',
     )
+    result = {
+        'success': False,
+        'answer': None,
+        'error': 'Cancelled by the scientist.',
+        'message': durable_message,
+    }
+    with ROUND_CHAT_JOBS_LOCK:
+        current = ROUND_CHAT_JOBS.get(job_id)
+        if current is not None and current.get('status') == 'cancelled':
+            current['result'] = result
+            current['updated_at'] = time.time()
+            job_snapshot = copy.deepcopy(current)
+        else:
+            job_snapshot['result'] = result
+    next_job_id = _launch_next_round_chat_job(project_id, requested_round)
+    response_payload = _round_chat_job_payload(job_snapshot)
+    response_payload['next_job_id'] = next_job_id
+    return jsonify(response_payload)
 
 
 @app.route('/background_report/assets/<path:filename>')
@@ -15296,6 +15842,25 @@ def api_serve_asset():
 @app.route('/research_paper/pdf')
 def research_paper_pdf():
     """Serve the latest research paper PDF if available."""
+    project_key = str(request.args.get('project') or '').strip()
+    if project_key:
+        project, matched_by_id = _v2_resolve_project_by_slug_or_id(project_key)
+        if project is None:
+            abort(404)
+        if matched_by_id:
+            return redirect(url_for(
+                'research_paper_pdf', project=project['url_slug'],
+            ))
+        project = _v2_activate_project(project)
+        resource = _resolve_v2_research_paper_resource(
+            project, _get_project_config(),
+        )
+        if resource is None or resource.get('kind') != 'pdf':
+            abort(404)
+        pdf_path = resource['path']
+        return send_from_directory(pdf_path.parent, pdf_path.name)
+
+    # Retained session-only remote Audit compatibility.
     generator = get_or_restore_generator()
     project_cfg = _get_project_config()
     checkpoint_dir = project_cfg.get('checkpoint_dir') or _get_default_config_value('checkpoint_dir', CLI_CHECKPOINT_DIR)
@@ -15307,147 +15872,6 @@ def research_paper_pdf():
     if not pdf_path or not pdf_path.exists():
         abort(404)
     return send_from_directory(pdf_path.parent, pdf_path.name)
-
-
-@app.route('/report')
-def unified_report():
-    """
-    Unified report viewer with summary/full toggle.
-
-    Query params:
-    - type: 'background' | 'round' (default: 'background')
-    - view: 'summary' | 'full' (default: 'summary')
-    """
-    report_type = request.args.get('type', 'background')
-    view = request.args.get('view', 'summary')
-    return _render_unified_report(report_type, view)
-
-
-def _render_unified_report(report_type: str, view: str):
-    """Shared body of the unified report viewer, callable with explicit
-    params (not just via /report's query string) so the canonical
-    /projects/<id>/rounds/<n> route can render the latest completed round's
-    report directly, without duplicating this rendering logic."""
-    print(f"[/report] Request received. session_id={session.get('session_id')}")
-    generator = get_or_restore_generator()
-    resolved_code_dir = _resolve_code_dir(generator)
-    print(f"[/report] code_dir resolved to: {resolved_code_dir} (exists={_is_code_chat_available(resolved_code_dir)})")
-    if not generator:
-        # Generator missing and couldn't be restored - redirect to workspace
-        print("[/report] No generator available, redirecting to workspace")
-        if _is_audit_mode():
-            sync_payload = _compute_s3_sync_status()
-            sync_state = sync_payload.get('state')
-            sync_error = sync_payload.get('error')
-            if sync_payload.get('required'):
-                state = sync_payload.get('state')
-                if state in ('running', 'pending'):
-                    error_message = "Report data is still syncing from S3. Please wait a moment and try again."
-                elif state == 'error':
-                    error_message = f"Report data sync failed: {sync_payload.get('error') or 'Unknown error'}"
-                else:
-                    error_message = "Report data is not available for this session yet. Please try again shortly."
-            else:
-                error_message = "Report data is not available for this session yet. Please try again shortly."
-            return render_template(
-                'report.html',
-                report_available=False,
-                error_message=error_message,
-                title="Background Report",
-                report_type="background",
-                current_view="summary",
-                has_summary=False,
-                has_full=False,
-                n_rounds=0,
-                code_chat_available=False,
-                audit_mode=True,
-                audit_only=_is_audit_only_mode(),
-                sync_state=sync_state,
-                sync_error=sync_error,
-                chat_storage_scope=_session_debug_id(),
-                durable_chat_scope='background',
-            )
-        return redirect(url_for('app_interface'))
-
-    if _is_audit_mode():
-        report_type = 'background'
-    if _is_audit_only_mode():
-        report_type = 'background'
-
-    # Calculate number of completed rounds from checkpoint path
-    n_rounds = _get_completed_rounds_count(generator.checkpoint_dir)
-
-    # Determine which content to show based on type and view
-    if report_type == 'background':
-        summary_content = getattr(generator, 'memory_report_summary', None)
-        full_content = getattr(generator, 'memory_report', None)
-        title = "Background Report"
-    else:  # round — always resolve from the latest completed round on disk
-        _full, _summary, _report_dir = _load_latest_round_report_content(
-            Path(generator.checkpoint_dir)
-        )
-        if _report_dir is not None:
-            print(f"Round Report: using latest completed round report: {_report_dir / 'round_report.md'}")
-        else:
-            print("Round Report: no completed round_report.md found; falling back to session round")
-        full_content = _full or getattr(generator, 'round_report', None)
-        summary_content = _summary or getattr(generator, 'round_report_summary', None)
-        title = "Round Report"
-
-    has_summary = bool(summary_content)
-    has_full = bool(full_content)
-
-    # Fallback logic for initial view
-    if view == 'summary' and not has_summary:
-        view = 'full'
-    if view == 'full' and not has_full:
-        view = 'summary'
-
-    # Check if any content is available
-    if not summary_content and not full_content:
-        return render_template(
-            'report.html',
-            report_available=False,
-            error_message=f"No {report_type} report available.",
-            title=title,
-            report_type=report_type,
-            current_view=view,
-            has_summary=has_summary,
-            has_full=has_full,
-            n_rounds=n_rounds,
-            code_chat_available=_is_code_chat_available(_resolve_code_dir(generator)),
-            audit_mode=_is_audit_mode(),
-            audit_only=_is_audit_only_mode(),
-            chat_storage_scope=_session_debug_id(),
-            durable_chat_scope=_report_chat_durable_scope(generator, report_type),
-        )
-
-    # Render only the requested view to avoid loading both large reports into memory
-    if view == 'summary':
-        summary_html = render_report_html(summary_content, generator) if summary_content else None
-        full_html = None
-    else:
-        summary_html = None
-        full_html = render_report_html(full_content, generator) if full_content else None
-
-    return render_template(
-        'report.html',
-        summary_html=Markup(summary_html) if summary_html else None,
-        full_html=Markup(full_html) if full_html else None,
-        report_available=True,
-        report_type=report_type,
-        current_view=view,
-        has_summary=has_summary,
-        has_full=has_full,
-        has_round_report=getattr(generator, 'round_report', None) is not None or getattr(generator, 'round_report_summary', None) is not None,
-        title=title,
-        n_rounds=n_rounds,
-        code_chat_available=_is_code_chat_available(_resolve_code_dir(generator)),
-        audit_mode=_is_audit_mode(),
-        audit_only=_is_audit_only_mode(),
-        chat_storage_scope=_session_debug_id(),
-        durable_chat_scope=_report_chat_durable_scope(generator, report_type),
-    )
 
 
 @app.route('/report_assets/<root>/<path:filename>')
@@ -15466,52 +15890,6 @@ def report_asset(root, filename):
         abort(404)
 
     return send_from_directory(base_dir, filename)
-
-
-@app.route('/download_report', methods=['GET'])
-def download_report():
-    """Download a report view as markdown."""
-    generator = get_or_restore_generator()
-    if not generator:
-        abort(404)
-
-    report_type = request.args.get('type', 'background')
-    if _is_audit_only_mode():
-        report_type = 'background'
-    elif report_type not in ('background', 'round'):
-        report_type = 'background'
-    view = request.args.get('view', 'full')
-    report_text, _, resolved_view = _get_report_text_for_chat(generator, report_type, view)
-
-    if not report_text and getattr(generator, 'checkpoint_dir', None):
-        checkpoint_dir = Path(generator.checkpoint_dir)
-        if report_type == 'round':
-            # Use the latest round dir so downloads stay current when the
-            # session checkpoint points to an older round.
-            _latest_dir = _latest_round_checkpoint_dir(
-                checkpoint_dir.parent.parent if checkpoint_dir.name.startswith("round_") else checkpoint_dir.parent
-            )
-            _round_dir = _latest_dir if (_latest_dir / "round_report.md").exists() else checkpoint_dir
-            candidate_file = _round_dir / (
-                'round_report_summary.md' if resolved_view == 'summary' else 'round_report.md'
-            )
-        else:
-            candidate_file = checkpoint_dir / (
-                'memory_report_summary.md' if resolved_view == 'summary' else 'memory_report.md'
-            )
-        if candidate_file.exists():
-            report_text = _load_text_file(candidate_file)
-
-    if not report_text:
-        abort(404)
-
-    base_name = "round_report" if report_type == "round" else "memory_report"
-    filename = f"{base_name}_summary.md" if resolved_view == "summary" else f"{base_name}.md"
-
-    response = make_response(str(report_text))
-    response.headers['Content-Type'] = 'text/markdown; charset=utf-8'
-    response.headers['Content-Disposition'] = f'attachment; filename=\"{filename}\"'
-    return response
 
 
 def _build_report_context(generator: InteractiveHypothesisGenerator) -> dict:
@@ -15580,26 +15958,6 @@ def _report_chat_context_key(report_type: str | None) -> str:
     """Build the stable context key used across report summary/full views."""
     normalized_type = _normalize_report_type_for_chat(report_type)
     return f"{normalized_type}:shared"
-
-
-def _report_chat_durable_scope(
-    generator: InteractiveHypothesisGenerator | None,
-    report_type: str | None,
-) -> str:
-    """Return the project-local report discussion scope used across restarts."""
-    normalized_type = _normalize_report_type_for_chat(report_type)
-    if normalized_type == 'background':
-        return 'background'
-    checkpoint_dir = getattr(generator, 'checkpoint_dir', None) if generator else None
-    if checkpoint_dir:
-        try:
-            latest = _resolve_latest_completed_round_dir(generator)
-            round_index = _v2_round_index(latest) if latest else None
-            if round_index is not None:
-                return f'round:{round_index}'
-        except Exception:
-            pass
-    return 'round:latest'
 
 
 def _get_persistent_report_text_for_chat(
@@ -15829,7 +16187,7 @@ def _removed_api_login():
     _write_interaction_log('login', {'username': username, 'app_mode': requested_mode})
     log_event('login', {'username': username, 'project_key_digest': digest})
 
-    redirect_target = url_for('audit_home') if requested_mode == APP_MODE_AUDIT else url_for('app_interface')
+    redirect_target = url_for('audit_home') if requested_mode == APP_MODE_AUDIT else url_for('projects')
     return jsonify({'success': True, 'redirect': redirect_target})
 
 
@@ -16139,7 +16497,7 @@ def api_generation_status():
     is safe again.
     """
     session_id = session.get('session_id')
-    status = _generation_status_for_session(session_id)
+    status = _generation_status_for_session(session_id, scope=_generation_project_scope())
     return jsonify({
         'success': True,
         **status,
@@ -16225,7 +16583,7 @@ def api_initialize():
         # Initialize agent using CLI method
         generator.initialize_agent()
         restored_hypotheses = _restore_generated_hypotheses_if_available(generator)
-        # Match app_interface's routing: also scan sibling round_* dirs so a
+        # Also scan sibling round_* dirs so a
         # round the backend already started (round_N+1 while the session still
         # points at round_N) triggers the Round Monitor redirect here too.
         active_round_dir = _resolve_active_monitor_round(Path(generator.checkpoint_dir))
@@ -16399,39 +16757,6 @@ def readme_asset(filename):
         abort(404)
 
     return send_from_directory(base_dir, filename)
-
-
-@app.route('/website_guide')
-def website_guide():
-    """Render the website guide as a standalone markdown page."""
-    project_root = Path(__file__).parent.parent
-    guide_path = None
-    for candidate in (
-        project_root / 'guides' / 'WEBSITE_GUIDE.md',
-        project_root / 'WEBSITE_GUIDE.md',  # Backward-compatible legacy path
-    ):
-        if candidate.exists():
-            guide_path = candidate
-            break
-
-    guide_html = None
-    error_message = None
-
-    if not guide_path:
-        error_message = 'Website guide not available.'
-    else:
-        try:
-            with open(guide_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-            guide_html = render_markdown_to_html(content)
-        except Exception as e:
-            error_message = f'Error loading website guide: {str(e)}'
-
-    return render_template(
-        'website_guide.html',
-        guide_html=Markup(guide_html) if guide_html else None,
-        error_message=error_message,
-    )
 
 
 # =====================================================================
@@ -17009,24 +17334,26 @@ def api_generate():
 
     session_id = session.get('session_id')
     token = getattr(g, 'generation_token', None)
+    generation_scope = getattr(g, 'generation_scope', None)
+    attempt_id = getattr(g, 'generation_attempt_id', None)
     if not session_id or not token:
         return jsonify({'success': False, 'error': 'Session unavailable'})
-
-    previous_state = {
-        'hypotheses': list(generator.hypotheses) if getattr(generator, 'hypotheses', None) else [],
-        'last_generation_citations': copy.deepcopy(getattr(generator, 'last_generation_citations', [])),
-        'citation_documents': copy.deepcopy(getattr(generator, 'citation_documents', [])),
-        'agent_messages': copy.deepcopy(
-            getattr(getattr(generator, 'hypothesis_gen_agent', None), 'messages', [])
-        ),
-        'agent_last_response_citations': copy.deepcopy(
-            getattr(getattr(generator, 'hypothesis_gen_agent', None), 'last_response_citations', [])
-        ),
-    }
+    if not _bind_generation_generator(
+        session_id, token, generator, scope=generation_scope
+    ):
+        return jsonify({
+            'success': False,
+            'error': 'Generation cancelled',
+            'cancelled': True,
+            'attempt_id': attempt_id,
+        })
 
     try:
-        if _is_generation_cancelled(session_id, token):
-            return jsonify({'success': False, 'error': 'Generation cancelled', 'cancelled': True})
+        if _is_generation_cancelled(session_id, token, scope=generation_scope):
+            return jsonify({
+                'success': False, 'error': 'Generation cancelled',
+                'cancelled': True, 'attempt_id': attempt_id,
+            })
         data = request.json or {}
         requested_n = data.get('num_hypotheses')
         guidance = data.get('guidance')
@@ -17050,26 +17377,18 @@ def api_generate():
             model_name = getattr(generator, 'hypothesis_model', None) or CLI_HYPOTHESIS_MODEL
         print(f"[api_generate] Using hypothesis model: {model_name or 'unknown'}")
 
-        # On full regeneration, delete persisted files before generating so stale
-        # hypotheses cannot be restored if this generation fails or is cancelled.
-        is_regeneration = bool(getattr(generator, 'hypotheses', None))
-        if is_regeneration:
-            print("Clearing persisted generated hypotheses before regeneration")
-            generator.clear_persisted_generated_hypotheses()
-
         # Use CLI method to generate hypotheses
         n = generator.hypothesis_config.n_candidate_hypotheses
         guidance_payload = guidance if isinstance(guidance, str) else None
         candidate_hypotheses = generator.generate_candidates(n, guidance=guidance_payload)
 
-        if _is_generation_cancelled(session_id, token):
-            generator.hypotheses = previous_state['hypotheses']
-            generator.last_generation_citations = previous_state['last_generation_citations']
-            generator.citation_documents = previous_state['citation_documents']
-            if getattr(generator, 'hypothesis_gen_agent', None):
-                generator.hypothesis_gen_agent.messages = previous_state['agent_messages']
-                generator.hypothesis_gen_agent.last_response_citations = previous_state['agent_last_response_citations']
-            return jsonify({'success': False, 'error': 'Generation cancelled', 'cancelled': True})
+        if not _claim_generation_result(
+            session_id, token, generator, scope=generation_scope
+        ):
+            return jsonify({
+                'success': False, 'error': 'Generation cancelled',
+                'cancelled': True, 'attempt_id': attempt_id,
+            })
 
         # Full regeneration replaces all hypotheses, so rotate every state id and
         # assign fresh stable thread ids (generate_candidates already dropped the
@@ -17126,20 +17445,18 @@ def api_generate():
             'documents': getattr(generator, 'citation_documents', []),
             'generation_id': generation_id,
             'result_event_id': generation_result_event_id,
+            'attempt_id': attempt_id,
             'session_debug_id': _session_debug_id(),
         })
 
     except Exception as e:
         import traceback
         traceback.print_exc()
-        if _is_generation_cancelled(session_id, token):
-            generator.hypotheses = previous_state['hypotheses']
-            generator.last_generation_citations = previous_state['last_generation_citations']
-            generator.citation_documents = previous_state['citation_documents']
-            if getattr(generator, 'hypothesis_gen_agent', None):
-                generator.hypothesis_gen_agent.messages = previous_state['agent_messages']
-                generator.hypothesis_gen_agent.last_response_citations = previous_state['agent_last_response_citations']
-            return jsonify({'success': False, 'error': 'Generation cancelled', 'cancelled': True})
+        if _is_generation_cancelled(session_id, token, scope=generation_scope):
+            return jsonify({
+                'success': False, 'error': 'Generation cancelled',
+                'cancelled': True, 'attempt_id': attempt_id,
+            })
         return jsonify({'success': False, 'error': str(e)})
 @app.route('/api/cancel_generation', methods=['POST'])
 def api_cancel_generation():
@@ -17150,8 +17467,26 @@ def api_cancel_generation():
     if not session_id:
         return jsonify({'success': False, 'error': 'Session unavailable'})
 
-    _request_generation_cancel(session_id)
-    return jsonify({'success': True})
+    data = request.get_json(silent=True) or {}
+    attempt_id = sanitize_field(data.get('attempt_id'), 120) or None
+    generation_scope = _generation_project_scope()
+    result = _request_generation_cancel(
+        session_id,
+        scope=generation_scope,
+        attempt_id=attempt_id,
+    )
+    if result['newly_cancelled']:
+        # The cancelled request keeps its old lock object until its synchronous
+        # provider call returns. New work gets a fresh lane immediately.
+        with SESSION_OPERATION_LOCKS_GUARD:
+            SESSION_OPERATION_LOCKS[session_id] = threading.RLock()
+    status = _generation_status_for_session(session_id, scope=generation_scope)
+    return jsonify({
+        'success': True,
+        'cancelled': result['cancelled'],
+        'attempt_id': result['attempt_id'],
+        'status': status['status'],
+    })
 
 
 @app.route('/api/cancel_regeneration', methods=['POST'])
@@ -17170,22 +17505,6 @@ def api_cancel_regeneration():
     except (TypeError, ValueError):
         return jsonify({'success': False, 'error': 'Invalid hypothesis index'})
     cancelled = _request_hypothesis_regeneration_cancel(session_id, index=index)
-    return jsonify({'success': True, 'cancelled': cancelled})
-
-
-@app.route('/api/cancel_report_chat', methods=['POST'])
-def api_cancel_report_chat():
-    """Request cancellation of an in-flight report chat."""
-    if _is_audit_only_mode():
-        return _reject_audit_only('Report chat')
-
-    session_id = session.get('session_id')
-    if not session_id:
-        return jsonify({'success': False, 'error': 'Session unavailable'})
-
-    data = request.json or {}
-    request_id = sanitize_field(data.get('request_id'), 120)
-    cancelled = _request_report_chat_cancel(session_id, request_id=request_id or None)
     return jsonify({'success': True, 'cancelled': cancelled})
 
 
@@ -17684,23 +18003,35 @@ def api_chat():
 
             report_key = _report_chat_context_key('background')
             active_report_key = report_key
-            # Get or create conversation history
-            if not hasattr(generator, 'report_code_chat_conversations') or generator.report_code_chat_conversations is None:
-                generator.report_code_chat_conversations = {}
-            conversation = generator.report_code_chat_conversations.get(report_key)
-            legacy_report_key = 'background:summary'
-            if conversation is None and report_key != legacy_report_key:
-                legacy_conversation = generator.report_code_chat_conversations.get(legacy_report_key)
-                if isinstance(legacy_conversation, CodeChatConversation):
-                    conversation = legacy_conversation
-                    generator.report_code_chat_conversations[report_key] = legacy_conversation
-                    generator.report_code_chat_conversations.pop(legacy_report_key, None)
-            if conversation is None:
+            audit_job_id = getattr(g, 'audit_chat_job_id', None)
+            isolated_audit_job = bool(audit_job_id and request_messages is not None)
+            if isolated_audit_job:
+                # The browser submits the complete authoritative transcript for
+                # every background Audit job. Keep each physical worker on its
+                # own conversation object so a cancelled worker that returns
+                # late cannot mutate the next FIFO job's context.
                 conversation = CodeChatConversation()
-                generator.report_code_chat_conversations[report_key] = conversation
-            if request_messages is not None:
                 conversation.messages = [{'role': msg['role'], 'content': msg['content']} for msg in request_messages]
                 conversation.sdk_session_id = None
+            else:
+                # Get or create conversation history for compatibility callers
+                # that still rely on the server-owned Audit conversation.
+                if not hasattr(generator, 'report_code_chat_conversations') or generator.report_code_chat_conversations is None:
+                    generator.report_code_chat_conversations = {}
+                conversation = generator.report_code_chat_conversations.get(report_key)
+                legacy_report_key = 'background:summary'
+                if conversation is None and report_key != legacy_report_key:
+                    legacy_conversation = generator.report_code_chat_conversations.get(legacy_report_key)
+                    if isinstance(legacy_conversation, CodeChatConversation):
+                        conversation = legacy_conversation
+                        generator.report_code_chat_conversations[report_key] = legacy_conversation
+                        generator.report_code_chat_conversations.pop(legacy_report_key, None)
+                if conversation is None:
+                    conversation = CodeChatConversation()
+                    generator.report_code_chat_conversations[report_key] = conversation
+                if request_messages is not None:
+                    conversation.messages = [{'role': msg['role'], 'content': msg['content']} for msg in request_messages]
+                    conversation.sdk_session_id = None
             report_prompt_sections = []
             checkpoint_inventory = _build_audit_checkpoint_inventory(generator)
             if checkpoint_inventory:
@@ -17764,7 +18095,11 @@ def api_chat():
                 })
             thinking = reply.get('thinking') if isinstance(reply, dict) else None
             reply_text = reply.get('answer') if isinstance(reply, dict) else reply
-            full_conversation_messages = _get_report_conversation_snapshot(generator, report_key)
+            full_conversation_messages = (
+                _full_chat_messages_for_logging(conversation.messages)
+                if isolated_audit_job
+                else _get_report_conversation_snapshot(generator, report_key)
+            )
         elif mode == 'code':
             # Memory check before expensive code chat operation
             is_high, current_mem = check_memory_threshold(threshold_mb=2500.0)
@@ -17899,6 +18234,15 @@ def api_chat():
             return jsonify({'success': False, 'error': 'Failed to get response', **_response_time_payload(request_started_at)})
 
         timing_payload = _response_time_payload(request_started_at)
+
+        audit_job_id = getattr(g, 'audit_chat_job_id', None)
+        if active_report_key and audit_job_id and _is_audit_chat_job_cancel_requested(audit_job_id):
+            return jsonify({
+                'success': False,
+                'error': 'Request cancelled',
+                'cancelled': True,
+                **timing_payload,
+            })
 
         if source == 'agent' and _is_hypothesis_thread_cancelled(hypothesis_thread_session_id, hypothesis_thread_request_id):
             _end_hypothesis_thread_request(hypothesis_thread_session_id, hypothesis_thread_request_id)
@@ -18159,203 +18503,6 @@ def api_reset_chat_context():
     return jsonify({'success': False, 'error': 'Invalid scope'}), 400
 
 
-@app.route('/api/report_chat', methods=['POST'])
-@with_session_operation_lock('api_report_chat')
-def api_report_chat():
-    """Chat endpoint scoped to the research paper + background reports, with code mode available."""
-    if _is_audit_only_mode():
-        return _reject_audit_only('Report chat')
-    # Memory monitoring: check before starting expensive operation
-    mem_before = log_memory("report_chat: request received")
-    request_started_at = perf_counter()
-    is_high, current_mem = check_memory_threshold(threshold_mb=2500.0)
-    if is_high:
-        log_memory(f"report_chat: WARNING - memory already at {current_mem:.1f}MB before starting", level="warn")
-
-    data = request.json or {}
-    message = (data.get('message') or '').strip()
-    mode = (data.get('mode') or 'code').lower()
-    report_type = _normalize_report_type_for_chat(data.get('report_type'))
-    report_view = (data.get('report_view') or 'summary').lower()
-    report_key = _report_chat_context_key(report_type)
-    request_messages = (
-        _sanitize_restored_chat_messages(data.get('messages'))
-        if isinstance(data.get('messages'), list)
-        else None
-    )
-    client_request_id = sanitize_field(data.get('request_id'), 120)
-
-    if not message:
-        return jsonify({'success': False, 'error': 'Message is required', **_response_time_payload(request_started_at)})
-
-    session_id = session.get('session_id')
-    if not session_id:
-        return jsonify({'success': False, 'error': 'Session unavailable', **_response_time_payload(request_started_at)})
-
-    if not client_request_id:
-        client_request_id = os.urandom(8).hex()
-    _begin_report_chat_request(session_id, client_request_id)
-
-    generator = get_or_restore_generator()
-
-    full_conversation_messages = []
-    try:
-        report_text = None
-        report_label = None
-        if generator:
-            report_text, report_label, _ = _get_persistent_report_text_for_chat(generator, report_type)
-
-        if mode != 'code':
-            return jsonify({'success': False, 'error': 'Only code chat is supported in report view', **_response_time_payload(request_started_at)})
-
-        # Reuse the existing code chat helper
-        code_dir = None
-        if generator and getattr(generator, 'code_dir', None):
-            code_dir = generator.code_dir
-        else:
-            code_dir = _get_default_config_value('code_dir', CLI_CODE_DIR)
-
-        if not code_dir:
-            return jsonify({'success': False, 'error': 'Code chat unavailable (no code_dir configured)', **_response_time_payload(request_started_at)})
-
-        code_dir_path = Path(code_dir).expanduser().resolve()
-        working_dir = code_dir_path.parent
-
-        if not working_dir:
-            return jsonify({'success': False, 'error': 'Code chat unavailable (no code_dir configured)', **_response_time_payload(request_started_at)})
-
-        model_name = _resolve_code_chat_model(generator)
-
-        report_prompt_sections = []
-        if report_text and report_label:
-            if report_type == 'background':
-                prefix = "\nBelow is a report of all the research that has been done so far by the agent. Focus on answering questions about this report, and use the code and checkpoints to support your answers."
-            elif report_type == 'round':
-                prefix = "\nBelow is a report of the research that has been done in the previous round of research only. Focus on answering questions about this report, and use the code and checkpoints to support your answers."
-            else:
-                raise ValueError(f"Invalid report type: {report_type}")
-
-            report_prompt_sections.append(f"{prefix}\n## {report_label}\n{report_text}\n")
-
-        if _is_audit_only_mode():
-            research_paper_text = _load_research_paper_text(generator)
-            if research_paper_text:
-                report_prompt_sections.append(
-                    "\nBelow is the latest research paper for this session. "
-                    "Use it to answer questions, and say when the paper does not contain the answer.\n"
-                    f"## Research Paper\n{research_paper_text}\n"
-                )
-
-        report_prompt = "\n".join(report_prompt_sections)
-
-        conversation = None
-        if generator:
-            if not hasattr(generator, 'report_code_chat_conversations') or generator.report_code_chat_conversations is None:
-                generator.report_code_chat_conversations = {}
-            conversation = generator.report_code_chat_conversations.get(report_key)
-            if conversation is None:
-                conversation = CodeChatConversation()
-            if request_messages is not None:
-                conversation.messages = [
-                    {'role': item['role'], 'content': item['content']}
-                    for item in request_messages
-                ]
-                conversation.sdk_session_id = None
-            generator.report_code_chat_conversations[report_key] = conversation
-
-        # Memory monitoring: track the code_chat call which spawns Claude Agent SDK
-        log_memory("report_chat: starting run_code_chat (Claude Agent SDK)")
-        with MemoryTracker("report_chat:run_code_chat", warn_threshold_mb=400.0) as tracker:
-            reply = _run_code_chat_with_timeout(
-                CODE_CHAT_TIMEOUT_SECS,
-                question=message,
-                working_dir=working_dir,
-                model=model_name,
-                include_trace=True,
-                report_prompt=report_prompt,
-                conversation=conversation,
-                cancel_requested=lambda: _is_report_chat_cancelled(session_id, client_request_id),
-            )
-        log_memory(f"report_chat: run_code_chat completed (delta={tracker.delta_mb:+.1f}MB)")
-
-        if isinstance(reply, dict) and reply.get('cancelled'):
-            return jsonify({
-                'success': False,
-                'error': 'Request cancelled',
-                'cancelled': True,
-                **_response_time_payload(request_started_at),
-            })
-
-        if isinstance(reply, dict) and reply.get('error'):
-            reset_hint = reply.get('reset_hint')
-            return jsonify({
-                'success': False,
-                'error': reply['error'],
-                'reset_hint': reset_hint,
-                **_response_time_payload(request_started_at),
-            })
-
-        thinking = reply.get('thinking') if isinstance(reply, dict) else None
-        reply_text = reply.get('answer') if isinstance(reply, dict) else reply
-
-        if not reply_text:
-            return jsonify({'success': False, 'error': 'Failed to get response', **_response_time_payload(request_started_at)})
-
-        timing_payload = _response_time_payload(request_started_at)
-
-        full_conversation_messages = _get_report_conversation_snapshot(generator, report_key)
-        _write_interaction_log('report_chat', {
-            'mode': 'code',
-            'report_type': report_type,
-            'report_view': report_view,
-            'report_scope': _report_chat_durable_scope(generator, report_type),
-            'message': message,
-            'reply': reply_text,
-            'thinking': thinking,
-            'conversation_messages': full_conversation_messages,
-            'response_time_ms': timing_payload['response_time_ms'],
-        })
-
-        log_full_event_to_s3(
-            'report_chat',
-            {
-                'mode': 'code',
-                'report_type': report_type,
-                'report_view': report_view,
-                'message': message,
-                'reply': reply_text,
-                'thinking': thinking,
-                'citations': [] if not generator else getattr(generator, 'last_report_answer_citations', []),
-                'conversation_messages': full_conversation_messages,
-                'response_time_ms': timing_payload['response_time_ms'],
-            },
-            source='code',
-        )
-        log_event('report_chat', {'mode': 'code', 'report_type': report_type, 'report_view': report_view, 'message': message})
-        mem_after = log_memory("report_chat: response ready")
-        return jsonify({
-            'success': True,
-            'reply': reply_text,
-            'mode': 'code',
-            'thinking': thinking,
-            'citations': [] if not generator else getattr(generator, 'last_report_answer_citations', []),
-            'documents': [],
-            '_debug_memory': {'before_mb': round(mem_before, 1), 'after_mb': round(mem_after, 1)},
-            **timing_payload,
-        })
-
-    except MemoryError as e:
-        log_memory("report_chat: MemoryError caught", level="error")
-        return jsonify({'success': False, 'error': f'Memory limit exceeded: {str(e)}', **_response_time_payload(request_started_at)})
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        log_memory(f"report_chat: exception - {type(e).__name__}", level="error")
-        return jsonify({'success': False, 'error': str(e), **_response_time_payload(request_started_at)})
-    finally:
-        _end_report_chat_request(session_id, client_request_id)
-
-
 @app.route('/api/edit', methods=['POST'])
 @with_hypothesis_card_operation_lock('api_edit', direct_manual_is_independent=True)
 def api_edit():
@@ -18514,8 +18661,9 @@ def api_edit():
                 preserved_title = generator.parse_hypothesis_sections(pre_edit_full_text).get('title')
             except Exception:
                 preserved_title = _parse_hypothesis_sections_standalone(pre_edit_full_text).get('title')
-            generator.hypotheses[idx - 1] = generator._sanitize_hypothesis_text(
-                manual_hypothesis, title_override=preserved_title
+            generator.hypotheses[idx - 1] = preserve_manual_hypothesis_text(
+                manual_hypothesis,
+                title=preserved_title,
             )
             if hasattr(generator, 'log_interaction'):
                 generator.log_interaction('manual_edit', {
@@ -18574,7 +18722,8 @@ def api_edit():
                     generator.hypothesis_chat_threads = prior_chat_threads
                 _end_hypothesis_thread_request(session_id, thread_request_id)
                 return jsonify({'success': False, 'error': 'Request cancelled', 'cancelled': True})
-            edited_hypothesis = generator._sanitize_hypothesis_text(edited_hypothesis)
+            if not (manual_hypothesis and not feedback):
+                edited_hypothesis = generator._sanitize_hypothesis_text(edited_hypothesis)
             sections = generator.parse_hypothesis_sections(edited_hypothesis)
             state_id = _rotate_hypothesis_state_id(generator, idx)
             creates_version = bool(feedback)
@@ -19445,47 +19594,6 @@ def api_get_qa_history():
     })
 
 
-@app.route('/api/preview_feedback', methods=['POST'])
-def api_preview_feedback():
-    """Apply feedback to a hypothesis draft without saving."""
-    if _is_audit_only_mode():
-        return _reject_audit_only('Hypothesis preview')
-    generator = get_generator()
-    if not generator:
-        return jsonify({'success': False, 'error': 'No active session'})
-
-    data = request.json or {}
-    hypothesis_text = (data.get('hypothesis_text') or '').strip()
-    feedback = (data.get('feedback') or '').strip()
-
-    if not hypothesis_text:
-        return jsonify({'success': False, 'error': 'Missing hypothesis text'})
-    if not feedback:
-        return jsonify({'success': False, 'error': 'Missing feedback'})
-
-    try:
-        revised = generator.apply_scientist_feedback(hypothesis_text, feedback)
-        revised = generator._sanitize_hypothesis_text(revised)
-        sections = generator.parse_hypothesis_sections(revised)
-        return jsonify({
-            'success': True,
-            'hypothesis': {
-                'full_text': revised,
-                'title': sections.get('title'),
-                'hypothesis': sections['hypothesis'],
-                'justification': sections['justification'],
-                'interpretation': sections['interpretation'],
-                'plan': sections.get('plan'),
-            },
-            'citations': getattr(generator.hypothesis_gen_agent, 'last_response_citations', []),
-            'documents': getattr(generator, 'citation_documents', []),
-        })
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)})
-
-
 @app.route('/api/select', methods=['POST'])
 @with_independent_session_operation('api_select')
 def api_select():
@@ -20297,49 +20405,6 @@ def _get_checkpoint_base() -> Path | None:
     return None
 
 
-def _build_tree(base: Path, rel: str = "", depth: int = 0, max_depth: int = 5) -> list[dict]:
-    """Recursively build a directory tree (relative paths, max depth)."""
-    if depth > max_depth:
-        return []
-    current = base / rel if rel else base
-    if not current.is_dir():
-        return []
-    entries = []
-    try:
-        children = sorted(current.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
-    except PermissionError:
-        return []
-    for child in children:
-        child_rel = f"{rel}/{child.name}" if rel else child.name
-        if child.is_dir():
-            entries.append({
-                'name': child.name,
-                'type': 'dir',
-                'path': child_rel,
-                'children': _build_tree(base, child_rel, depth + 1, max_depth),
-            })
-        else:
-            entries.append({
-                'name': child.name,
-                'type': 'file',
-                'path': child_rel,
-            })
-    return entries
-
-
-@app.route('/checkpoint_browser')
-def checkpoint_browser():
-    """Render the checkpoint file browser."""
-    guide_html = ''
-    guide_path = Path(__file__).resolve().parent.parent / 'guides' / 'CHECKPOINT_STRUCTURE.md'
-    if guide_path.is_file():
-        try:
-            guide_html = render_markdown_to_html(guide_path.read_text(encoding='utf-8'))
-        except Exception:
-            pass
-    return render_template('checkpoint_browser.html', guide_html=Markup(guide_html))
-
-
 @app.route('/checkpoint_assets/<path:filename>')
 def checkpoint_browser_asset(filename):
     """Serve files from the checkpoint browser tree."""
@@ -20377,6 +20442,17 @@ _ROUND_WORKSPACE_MARKDOWN_IMAGE_RE = re.compile(
     r'(?P<title>\s+(?:"[^"]*"|\'[^\']*\'))?\s*\)'
 )
 
+# Audit answers are model-authored and occasionally contain otherwise-valid
+# local Markdown destinations with unescaped spaces. Keep this parser scoped to
+# image references on one line; the trusted resolver below remains authoritative
+# about whether any referenced file may be exposed.
+_AUDIT_CHAT_MARKDOWN_IMAGE_RE = re.compile(
+    r'!\[(?P<alt>[^\]\r\n]*)\]\(\s*(?P<body>[^\r\n]*?)\s*\)'
+)
+_AUDIT_CHAT_MARKDOWN_IMAGE_BODY_RE = re.compile(
+    r'^(?P<dest>.*?)(?P<title>\s+(?:"[^"]*"|\'[^\']*\'))?$'
+)
+
 
 def _prepare_round_workspace_report_figures(
     round_index: int,
@@ -20409,12 +20485,33 @@ def _prepare_round_workspace_report_figures(
         if suffix == '.pdf' or suffix not in ROUND_WORKSPACE_FIGURE_EXTENSIONS:
             return match.group(0)
 
-        resolved_url: str | None = None
-        if not PurePosixPath(dest).is_absolute():
-            candidate = _round_workspace_safe_relative(
-                (report_parent / PurePosixPath(dest)).as_posix()
+        dest_path = PurePosixPath(dest.replace('\\', '/'))
+        if dest_path.is_absolute() and '..' in dest_path.parts:
+            return f'**Figure unavailable:** {alt or "Referenced figure"}'
+        relative_candidate: PurePosixPath | None = None
+        if not dest_path.is_absolute():
+            normalized_parts = list(report_parent.parts)
+            escaped_root = False
+            for part in dest_path.parts:
+                if part in {'', '.'}:
+                    continue
+                if part == '..':
+                    if not normalized_parts:
+                        escaped_root = True
+                        break
+                    normalized_parts.pop()
+                else:
+                    normalized_parts.append(part)
+            if escaped_root:
+                return f'**Figure unavailable:** {alt or "Referenced figure"}'
+            relative_candidate = _round_workspace_safe_relative(
+                PurePosixPath(*normalized_parts).as_posix()
             )
-            if candidate is not None and checkpoint_source:
+
+        resolved_url: str | None = None
+        if relative_candidate is not None:
+            candidate = relative_candidate
+            if checkpoint_source:
                 target = _round_workspace_resolve_artifact(
                     round_index, checkpoint_source, candidate.as_posix(),
                 )
@@ -20476,6 +20573,229 @@ def _prepare_round_workspace_report_figures(
     return _ROUND_WORKSPACE_MARKDOWN_IMAGE_RE.sub(replace, markdown), figures
 
 
+def _audit_chat_round_indices() -> list[int]:
+    """Return this project's real round indices, newest first."""
+    checkpoint_dir = _round_workspace_checkpoint_dir_for_session()
+    if checkpoint_dir is None:
+        return []
+    rounds_root = _v2_round_dirs_root_from_any_checkpoint_path(checkpoint_dir)
+    return [index for index, _round_dir in reversed(_v2_iter_round_dirs(rounds_root))]
+
+
+def _audit_chat_registry_figure_url(
+    relative: PurePosixPath,
+    *,
+    absolute_target: Path | None = None,
+) -> str | None:
+    """Resolve one exact run-artifact identity through existing round registries."""
+    project_query = {}
+    if session.get('v2_active_project_slug'):
+        project_query['project'] = session['v2_active_project_slug']
+    comparable = relative.as_posix()
+    for round_index in _audit_chat_round_indices():
+        registry = _round_workspace_artifact_registry(round_index)
+        for source_id, source in registry.items():
+            if source.get('kind') == 'checkpoint':
+                continue
+            for artifact_path, descriptor in (source.get('files') or {}).items():
+                display_path = str(descriptor.get('display_path') or artifact_path)
+                if comparable not in {artifact_path, display_path}:
+                    continue
+                target = _round_workspace_resolve_artifact(
+                    round_index, source_id, artifact_path,
+                )
+                if target is None:
+                    continue
+                if absolute_target is not None:
+                    artifact_relative = _round_workspace_safe_relative(artifact_path)
+                    source_root = source.get('root')
+                    if artifact_relative is None or not isinstance(source_root, Path):
+                        continue
+                    try:
+                        lexical_relative = absolute_target.relative_to(source_root.resolve())
+                    except (OSError, ValueError):
+                        continue
+                    if (
+                        lexical_relative.as_posix() != artifact_relative.as_posix()
+                        or not _round_workspace_external_file_allowed(
+                            absolute_target, source_root, artifact_relative,
+                        )
+                    ):
+                        continue
+                return url_for(
+                    'api_round_workspace_artifact',
+                    round=round_index,
+                    source=source_id,
+                    path=artifact_path,
+                    **project_query,
+                )
+    return None
+
+
+def _audit_chat_trusted_figure_url(raw_destination: str) -> str | None:
+    """Map one Audit image reference without reading its historical location."""
+    destination = raw_destination.strip()
+    if destination.startswith('<') and destination.endswith('>'):
+        destination = destination[1:-1].strip()
+    if not destination or '\x00' in destination:
+        return None
+    normalized = destination.replace('\\', '/')
+    destination_path = PurePosixPath(normalized)
+    if (
+        destination_path.suffix.lower() not in ROUND_WORKSPACE_FIGURE_EXTENSIONS
+        or '..' in destination_path.parts
+    ):
+        return None
+
+    relative: PurePosixPath | None = None
+    absolute_target: Path | None = None
+    if destination_path.is_absolute():
+        code_root = _round_workspace_code_root_for_session()
+        local_path = Path(normalized)
+        if code_root is not None:
+            try:
+                code_relative = local_path.relative_to(code_root)
+            except ValueError:
+                code_relative = None
+            if code_relative is not None:
+                relative = _round_workspace_safe_relative(
+                    PurePosixPath(*code_relative.parts).as_posix()
+                )
+                if relative is None or relative.parts[0].lower() not in {
+                    'outputs', 'analysis_output',
+                }:
+                    return None
+                target = _round_workspace_code_artifact_path(relative.as_posix())
+                if target is None:
+                    return None
+                project_query = {}
+                if session.get('v2_active_project_slug'):
+                    project_query['project'] = session['v2_active_project_slug']
+                return url_for(
+                    'api_round_workspace_code_artifact',
+                    path=relative.as_posix(),
+                    **project_query,
+                )
+
+        # A current absolute run-artifact path is accepted only when it exactly
+        # matches an existing descriptor in this project's trusted registry.
+        if not normalized.startswith('/lustre/'):
+            for round_index in _audit_chat_round_indices():
+                registry = _round_workspace_artifact_registry(round_index)
+                for source in registry.values():
+                    if source.get('kind') == 'checkpoint':
+                        continue
+                    root = source.get('root')
+                    if not isinstance(root, Path):
+                        continue
+                    try:
+                        run_relative = local_path.relative_to(root.resolve())
+                    except (OSError, ValueError):
+                        continue
+                    relative = _round_workspace_safe_relative(
+                        PurePosixPath(*run_relative.parts).as_posix()
+                    )
+                    if relative is None:
+                        continue
+                    absolute_target = local_path
+                    resolved = _audit_chat_registry_figure_url(
+                        relative, absolute_target=absolute_target,
+                    )
+                    if resolved:
+                        return resolved
+            return None
+
+        # Historical Lustre paths are inert references. Extract only the last
+        # approved project-relative shape and resolve that inside this project.
+        lowered = [part.lower() for part in destination_path.parts]
+        marker_positions = [
+            index for index, part in enumerate(lowered)
+            if part in {'outputs', 'analysis_output', 'images'}
+        ]
+        if not marker_positions:
+            return None
+        marker = marker_positions[-1]
+        relative = _round_workspace_safe_relative(
+            PurePosixPath(*destination_path.parts[marker:]).as_posix()
+        )
+    else:
+        relative = _round_workspace_safe_relative(normalized.lstrip('./'))
+
+    if relative is None:
+        return None
+    lowered_parts = tuple(part.lower() for part in relative.parts)
+    if lowered_parts[:2] == ('logs', 'images'):
+        return _audit_chat_registry_figure_url(relative)
+    if not lowered_parts or lowered_parts[0] not in {
+        'outputs', 'analysis_output', 'images',
+    }:
+        return None
+    if lowered_parts[0] in {'outputs', 'analysis_output'}:
+        target = _round_workspace_code_artifact_path(relative.as_posix())
+        if target is None:
+            return None
+        project_query = {}
+        if session.get('v2_active_project_slug'):
+            project_query['project'] = session['v2_active_project_slug']
+        return url_for(
+            'api_round_workspace_code_artifact',
+            path=relative.as_posix(),
+            **project_query,
+        )
+    return _audit_chat_registry_figure_url(relative)
+
+
+def _prepare_audit_chat_figures(markdown: str) -> tuple[str, list[dict]]:
+    """Prepare raw Audit Markdown for the shared collapsible figure renderer."""
+    figures: list[dict] = []
+
+    def replace(match: re.Match) -> str:
+        alt = match.group('alt').strip()
+        body = match.group('body').strip()
+        body_match = _AUDIT_CHAT_MARKDOWN_IMAGE_BODY_RE.fullmatch(body)
+        destination = (body_match.group('dest') if body_match else body).strip()
+        title = (body_match.group('title') if body_match else '') or ''
+        resolved_url = _audit_chat_trusted_figure_url(destination)
+        token = f'rw_fig_{len(figures)}'
+        figures.append({
+            'token': token,
+            'alt': alt,
+            'available': resolved_url is not None,
+            'url': resolved_url,
+        })
+        return f'![{alt}](rw-report-figure:{token}{title})'
+
+    return _AUDIT_CHAT_MARKDOWN_IMAGE_RE.sub(replace, markdown), figures
+
+
+@app.route('/api/audit_chat_figures', methods=['POST'])
+def api_audit_chat_figures():
+    """Return trusted figure tokens for one persisted or live Audit response."""
+    project_key = str(request.args.get('project') or '').strip()
+    project, _matched_by_id = _v2_resolve_project_by_slug_or_id(project_key)
+    active_project = _active_project_record()
+    if (
+        project is None
+        or active_project is None
+        or str(project.get('id') or '') != str(active_project.get('id') or '')
+    ):
+        return jsonify({'success': False, 'error': 'Project is unavailable'}), 404
+    if request.content_length and request.content_length > AUDIT_CHAT_FIGURE_MARKDOWN_MAX_CHARS + 32_768:
+        return jsonify({'success': False, 'error': 'Audit response is too large'}), 413
+    data = request.get_json(silent=True) or {}
+    markdown = data.get('markdown')
+    if not isinstance(markdown, str):
+        return jsonify({'success': False, 'error': 'Markdown is required'}), 400
+    if len(markdown) > AUDIT_CHAT_FIGURE_MARKDOWN_MAX_CHARS:
+        return jsonify({'success': False, 'error': 'Audit response is too large'}), 413
+    display, figures = _prepare_audit_chat_figures(markdown)
+    return jsonify({
+        'success': True,
+        'display_text': display,
+        'figures': figures,
+    })
+
+
 @app.route('/api/round_workspace_markdown')
 def api_round_workspace_markdown():
     """Return display-normalized Markdown while leaving raw artifacts intact."""
@@ -20520,106 +20840,6 @@ def api_round_workspace_markdown():
         # Compatibility for older cached clients. This is display content, not
         # raw disk content; raw bytes remain available only from artifact routes.
         'markdown': display,
-    })
-
-
-@app.route('/api/checkpoint_tree')
-def api_checkpoint_tree():
-    """Return the checkpoint directory tree as JSON."""
-    base = _get_checkpoint_base()
-    if not base or not base.is_dir():
-        return jsonify({'success': False, 'error': 'Checkpoint directory not found'}), 404
-    tree = _build_tree(base)
-    return jsonify({'success': True, 'tree': tree})
-
-
-_CHECKPOINT_TEXT_EXTENSIONS = frozenset({'.md', '.json', '.yaml', '.yml', '.txt', '.log', '.jsonl', '.csv', '.py', '.cfg'})
-_CHECKPOINT_TRUNCATE_EXTENSIONS = frozenset({'.jsonl', '.log', '.csv'})
-_CHECKPOINT_TRUNCATE_LINES = 200
-
-
-@app.route('/api/checkpoint_file')
-def api_checkpoint_file():
-    """Return the contents of a checkpoint file."""
-    base = _get_checkpoint_base()
-    if not base or not base.is_dir():
-        return jsonify({'success': False, 'error': 'Checkpoint directory not found'}), 404
-
-    rel_path = request.args.get('path', '')
-    if not rel_path:
-        return jsonify({'success': False, 'error': 'Missing path parameter'}), 400
-
-    unresolved_target = base / rel_path
-    try:
-        relative = unresolved_target.relative_to(base)
-    except ValueError:
-        return jsonify({'success': False, 'error': 'Access denied'}), 403
-    if not relative.parts or not re.fullmatch(r'round_\d+', relative.parts[0]):
-        return jsonify({'success': False, 'error': 'File not found'}), 404
-    round_dir = base / relative.parts[0]
-    try:
-        status = _v2_round_status(_inspect_latest_round(round_dir))
-    except OSError:
-        return jsonify({'success': False, 'error': 'File not found'}), 404
-    if _round_workspace_visibility(unresolved_target, round_dir, status) == 'hidden':
-        return jsonify({'success': False, 'error': 'File not found'}), 404
-
-    # Canonical containment protects against traversal and links into another
-    # round or project. The visibility classifier rejects links themselves.
-    target = unresolved_target.resolve()
-    if not _path_within_root(target, base.resolve()) or not _path_within_root(target, round_dir.resolve()):
-        return jsonify({'success': False, 'error': 'Access denied'}), 403
-    if not target.is_file():
-        return jsonify({'success': False, 'error': 'File not found'}), 404
-
-    ext = target.suffix.lower()
-    if ext not in _CHECKPOINT_TEXT_EXTENSIONS:
-        return jsonify({'success': False, 'error': f'Unsupported file type: {ext}'}), 400
-
-    try:
-        raw = target.read_text(encoding='utf-8', errors='replace')
-    except Exception as exc:
-        return jsonify({'success': False, 'error': f'Could not read file: {exc}'}), 500
-
-    truncated = False
-    if ext in _CHECKPOINT_TRUNCATE_EXTENSIONS:
-        lines = raw.splitlines(True)
-        if len(lines) > _CHECKPOINT_TRUNCATE_LINES:
-            raw = ''.join(lines[:_CHECKPOINT_TRUNCATE_LINES])
-            truncated = True
-
-    html = None
-    if ext == '.md':
-        generator = get_generator()
-        checkpoint_dir = base.resolve()
-        code_dir = _resolve_code_dir(generator)
-        if code_dir is not None:
-            try:
-                code_dir = code_dir.resolve()
-            except Exception:
-                code_dir = None
-        html = render_checkpoint_markdown_html(
-            raw,
-            checkpoint_dir=checkpoint_dir,
-            code_dir=code_dir,
-            source_path=target,
-        )
-
-    # Determine render mode for the frontend
-    if ext == '.md':
-        render = 'markdown'
-    elif ext in ('.json', '.yaml', '.yml', '.py', '.cfg'):
-        render = 'code'
-    else:
-        render = 'plain'
-
-    return jsonify({
-        'success': True,
-        'content': raw,
-        'html': html,
-        'render': render,
-        'truncated': truncated,
-        'truncated_at': _CHECKPOINT_TRUNCATE_LINES if truncated else None,
     })
 
 

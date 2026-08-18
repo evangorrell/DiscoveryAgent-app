@@ -352,21 +352,6 @@ def test_report_discussions_are_isolated_by_round_scope(tmp_path):
     assert "round zero" not in json.dumps(restored_one)
 
 
-def test_report_chat_rehydrates_backend_context_from_durable_ui_transcript():
-    source = Path(app_module.__file__).read_text(encoding="utf-8")
-    script = (Path(app_module.app.static_folder) / "script.js").read_text(encoding="utf-8")
-    route = source.split("def api_report_chat():", 1)[1].split("@app.route", 1)[0]
-    send = script.split("async function sendReportChat()", 1)[1].split(
-        "hydrateReportChatStateFromStorage();", 1
-    )[0]
-
-    assert "_sanitize_restored_chat_messages(data.get('messages'))" in route
-    assert "conversation.messages = [" in route
-    assert "conversation.sdk_session_id = None" in route
-    assert "messages: reportChatMessages" in send
-    assert ".slice(0, -1)" in send
-
-
 def test_explicit_dev_override_remains_project_namespaced(monkeypatch, tmp_path):
     client = _client()
     created = _create(client, "Override Interactions")

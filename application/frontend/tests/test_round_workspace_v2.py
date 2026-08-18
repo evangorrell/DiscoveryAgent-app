@@ -47,7 +47,10 @@ def test_workspace_frontend_has_independent_round_and_split_controls():
     assert "activeRoundStorageKey" in js and "sessionStorage.setItem" in js
     assert "const reviewEntry = entryParams.get('review') === '1'" in js
     assert "const startedEntry = entryParams.get('started') === '1'" in js
-    assert "activeRound: startedEntry ? startedRound" in js
+    assert "activeRound: explicitRoundEntry ? (exactRoundEntry ? requestedRound : null)" in js
+    assert "const exactRoundUnavailable = explicitRoundEntry" not in js
+    assert "unavailable for this project" not in js
+    assert "if (!explicitRoundEntry && (state.activeRound == null" in js
     assert "panelTab: startedEntry || reviewEntry ? 'activity'" in js
     assert "panelWidth: startedEntry || reviewEntry ? 25" in js
     assert "panelCollapsed: startedEntry || reviewEntry ? false" in js
@@ -64,18 +67,26 @@ def test_workspace_frontend_has_independent_round_and_split_controls():
     assert "const shouldStickToBottom=options.forceBottom===true||distanceFromBottom<=48" in js
     assert "els.messages.scrollTop=shouldStickToBottom?els.messages.scrollHeight:previousScrollTop" in js
     assert "renderChat({forceBottom:true})" in js
-    assert "Remove queued message" in js and "chat.splice(index,1)" in js
+    assert "Remove queued message" in js and "cancelQueuedRoundMessage" in js
     assert "chat.filter(m=>!m.queued)" in js
     assert 'id="rw-chat-queue"' in html
-    assert "updateChatSubmitButton" in js and "Round Chat response pending" in js
+    assert "updateChatSubmitButton" in js and "Stop response" in (static / "round_workspace_chat_state.js").read_text(encoding="utf-8")
+    assert 'id="rw-chat-cancel"' not in html and ">Cancel</button>" not in html
+    assert "button.dataset.action=control.action" in js and "els.input.disabled=false" in js
+    assert "control.icon==='stop'" in js and '<rect x="6" y="6" width="8" height="8"' in js
+    assert "ChatState.performComposerAction" in js and "ChatState.composerKeyboardAction" in js
+    assert "roundChatJobCancelUrl" in js and "cancelRoundChatJob" in js
     assert "chatStorageKey" in js and "restoreChats()" in js and "persistChats()" in js
     chat_state = (static / "round_workspace_chat_state.js").read_text(encoding="utf-8")
     assert "ChatState.recoverMessages(messages,roundIndex)" in js
     assert "return normalized;" in chat_state
     assert "m.role==='assistant'&&m.pending?{pending:true}" in js
-    assert "pausedQueueStorageKey" in js and "persistPausedQueues" in js
-    assert "state.pausedQueues.delete(round)" in js
-    assert "rw-queue-resume" in js
+    assert "pausedQueueStorageKey" not in js and "persistPausedQueues" not in js
+    assert "pausedQueues" not in js
+    assert "Queue paused because you interrupted" not in js
+    assert "rw-queue-resume" not in js
+    assert ".rw-queue-paused" not in (static / "round_workspace.css").read_text(encoding="utf-8")
+    assert "20260817-round-chat-markdown" in html
     assert "resumeInterruptedChats" not in js
     assert "interrupted by page navigation" not in chat_state
     assert "resumePendingRoundChatJobs()" in js
@@ -210,8 +221,11 @@ def test_activity_frontend_has_only_status_and_query_progress_sections():
     assert "finalCount+' of '+finalCount" not in activity_js
     css = (static / "round_workspace.css").read_text(encoding="utf-8")
     assert ".rw-activity-subagents{display:flex" in css
-    assert ".rw-activity-state-icon.active,.rw-activity-query-indicator.active{animation:rw-activity-pulse" in css
-    assert "@media (prefers-reduced-motion:reduce)" in css
+    shared_css = (static / "style.css").read_text(encoding="utf-8")
+    assert ".v2-pill-active .v2-pill-dot," in shared_css
+    assert ".rw-activity-state-icon.active," in shared_css
+    assert "animation: v2-round-activity-pulse" in shared_css
+    assert "@media (prefers-reduced-motion: reduce)" in shared_css
     assert ".rw-stop-run{border-color:#b85b5b;background:#a24949;color:#fff}" in css
     assert "rw-delete-round" not in css
     assert "window.V2Dialog.confirm" in activity_js
@@ -1855,9 +1869,11 @@ def test_completed_report_is_ordinary_sorted_primary_file(tmp_path):
 def test_report_uses_standard_viewer_and_activity_action_only():
     static = Path(app_module.app.static_folder)
     template = Path(app_module.app.root_path) / app_module.app.template_folder / "round_workspace.html"
+    audit_template = Path(app_module.app.root_path) / app_module.app.template_folder / "project_audit_agent.html"
     js = (static / "round_workspace.js").read_text(encoding="utf-8")
     css = (static / "round_workspace.css").read_text(encoding="utf-8")
     html = template.read_text(encoding="utf-8")
+    audit_html = audit_template.read_text(encoding="utf-8")
 
     assert "item.primary_output" in js and "rw-primary-star" in js
     assert "const disclosure = node('span', 'rw-tree-disclosure-slot')" in js
@@ -1918,7 +1934,15 @@ def test_report_uses_standard_viewer_and_activity_action_only():
     assert "rw-pane-empty" in js and "Open a file from the round explorer." in js
     assert "rw-pane-breadcrumb" in js and "aria-label','File path" in js
     assert "function fileLocation(file)" in js and "String(file.path||file.name).split('/')" in js
-    assert "rw-pane-download" not in js and "rw-pane-context" not in js
+    assert "rw-pane-context" not in js
+    assert "rw-report-view-toggle" in js and "rw-report-download" in js
+    assert 'class="rw-report-download-icon" viewBox="0 0 20 20" width="16" height="16" aria-hidden="true" focusable="false"' in js
+    download_icon_path = 'M10 2.8c.5 0 .9.4.9.9v7.1l2.4-2.4c.3-.3.9-.3 1.2 0 .3.3.3.9 0 1.2l-3.9 3.9c-.3.3-.9.3-1.2 0L5.5 9.6c-.3-.3-.3-.9 0-1.2.3-.3.9-.3 1.2 0l2.4 2.4V3.7c0-.5.4-.9.9-.9ZM4.2 15.4c0-.5.4-.9.9-.9h9.8c.5 0 .9.4.9.9s-.4.9-.9.9H5.1c-.5 0-.9-.4-.9-.9Z'
+    assert download_icon_path in js
+    assert download_icon_path in audit_html
+    assert ".rw-report-download{display:inline-flex;align-items:center;gap:6px" in css
+    assert ".rw-report-download:hover,.rw-report-download:focus-visible{text-decoration:underline" in css
+    assert "report_view" in js and "reportDownloadUrl" in js
     assert "'/api/round_workspace_artifact?round='" in js
     assert "'/checkpoint_assets/round_'" in js
     assert "file.sourceKind==='external'" in js
@@ -2025,6 +2049,13 @@ def test_trusted_round_registry_aggregates_external_figures(monkeypatch, tmp_pat
         ) == tracked.resolve()
 
         entry = app_module._round_workspace_entry(2, round_dir, 2, registry)
+        linked = entry["linked_artifacts"]
+        assert {(item["path"], item["artifact_path"], item["source_kind"]) for item in linked} == {
+            ("outputs/figures/regeneration_score.png", "outputs/figures/regeneration_score.png", "external"),
+            ("logs/images/img_004.png", "images/img_004.png", "external"),
+        }
+        assert all(item["name"] in {"regeneration_score.png", "img_004.png"} for item in linked)
+        assert not any("target" in item or "root" in item for item in linked)
         assert "outputs" not in {child["name"] for child in entry["tree"]["children"]}
         code_tree = app_module._round_workspace_code_tree()
         output = next(child for child in code_tree["children"] if child["name"] == "outputs")
@@ -2034,6 +2065,28 @@ def test_trusted_round_registry_aggregates_external_figures(monkeypatch, tmp_pat
         assert external["artifact_path"] == "outputs/figures/regeneration_score.png"
         assert external["source_kind"] == "project-code"
         assert not str(tmp_path) in json.dumps(entry)
+
+
+def test_round_chat_artifact_links_reuse_exact_round_inventory_and_viewer():
+    static = Path(app_module.app.static_folder)
+    template = Path(app_module.app.root_path) / app_module.app.template_folder / "round_workspace.html"
+    js = (static / "round_workspace.js").read_text(encoding="utf-8")
+    helper = (static / "round_workspace_artifact_links.js").read_text(encoding="utf-8")
+    html = template.read_text(encoding="utf-8")
+
+    assert "round_workspace_artifact_links.js" in html
+    assert html.index("round_workspace_artifact_links.js") < html.index("round_workspace.js")
+    assert "function trustedArtifactIndex(roundIndex)" in js
+    assert "state.rounds.find(item=>item.round_index===roundIndex)" in js
+    assert "state.codeTree" not in js[js.index("function trustedArtifactIndex"):js.index("function renderTreeNode")]
+    assert "round.linked_artifacts" in js
+    assert "ArtifactLinks.linkifyElement" in js
+    assert "file=>openFile(file,false)" in js
+    assert "renderRoundChatMarkdown(c,m.text,roundIndex)" in js
+    assert "BLOCKED_PARENT_TAGS = new Set(['A', 'PRE', 'SCRIPT', 'STYLE'])" in helper
+    assert "event.preventDefault()" in helper
+    assert "openArtifact(file)" in helper
+    assert "persistChats" in js and "artifactUrl" not in js[js.index("function persistChats"):js.index("function persistActivityExpanded")]
 
 
 def test_round_registry_reuses_cache_and_invalidates_when_round_state_changes(
@@ -2353,15 +2406,17 @@ def test_generated_figures_use_standard_open_drag_and_split_viewer_paths():
 
 def test_embedded_figures_are_collapsible_and_closed_by_default():
     static_root = Path(app_module.app.static_folder)
-    js = (static_root / "round_workspace.js").read_text(encoding="utf-8")
-    css = (static_root / "round_workspace.css").read_text(encoding="utf-8")
+    workspace_js = (static_root / "round_workspace.js").read_text(encoding="utf-8")
+    figure_js = (static_root / "report_figures.js").read_text(encoding="utf-8")
+    css = (static_root / "style.css").read_text(encoding="utf-8")
 
-    assert "function collapseEmbeddedFigures(el)" in js
-    assert "node('details','rw-embedded-figure')" in js
-    assert "node('summary','rw-embedded-figure-summary'" in js
-    assert "details.open=false" in js
-    assert "collapseEmbeddedFigures(el)" in js
-    assert "if(figures.length)renderReportMarkdown(article,text,figures);else renderMarkdown(article,text)" in js
+    assert "function collapseEmbeddedFigures(element)" in figure_js
+    assert "node('details', 'rw-embedded-figure')" in figure_js
+    assert "'rw-embedded-figure-summary'" in figure_js
+    assert "details.open = false" in figure_js
+    assert "collapseEmbeddedFigures(element)" in figure_js
+    assert "window.DiscoveryReportFigures" in workspace_js
+    assert "if(figures.length)renderReportMarkdown(article,text,figures);else renderMarkdown(article,text)" in workspace_js
     assert ".rw-embedded-figure-summary::before{content:'▸'" in css
     assert ".rw-embedded-figure[open]>.rw-embedded-figure-summary::before{transform:rotate(90deg)}" in css
 
@@ -2387,22 +2442,22 @@ def test_running_round_status_uses_an_evenly_timed_staggered_letter_bounce():
 
 def test_embedded_figures_have_proportional_drag_resize_controls():
     static_root = Path(app_module.app.static_folder)
-    js = (static_root / "round_workspace.js").read_text(encoding="utf-8")
-    css = (static_root / "round_workspace.css").read_text(encoding="utf-8")
+    js = (static_root / "report_figures.js").read_text(encoding="utf-8")
+    css = (static_root / "style.css").read_text(encoding="utf-8")
 
-    assert "function attachEmbeddedFigureResizer(shell,stage)" in js
-    assert "node('button','rw-figure-resize-handle')" in js
-    assert "node('span','rw-figure-resize-icon')" in js
+    assert "function attachEmbeddedFigureResizer(shell, stage)" in js
+    assert "node('button', 'rw-figure-resize-handle')" in js
+    assert "node('span', 'rw-figure-resize-icon')" in js
     assert "rw-figure-resize-arrow is-northwest" in js
     assert "rw-figure-resize-arrow is-southeast" in js
-    assert "node('div','rw-figure-image-stage')" in js
+    assert "node('div', 'rw-figure-image-stage')" in js
     assert "stage.append(handle)" in js
-    assert "Math.min(240,max)" in js
-    assert "diagonalDelta=((event.clientX-drag.startX)+(event.clientY-drag.startY))/2" in js
-    assert "shell.style.width=width>=range.max-1?'100%'" in js
+    assert "Math.min(240, max)" in js
+    assert "const diagonalDelta = (" in js
+    assert "shell.style.width = width >= range.max - 1 ? '100%'" in js
     assert "handle.setPointerCapture(event.pointerId)" in js
-    assert "if(event.key==='Home')next=range.min" in js
-    assert "if(event.key==='End')next=range.max" in js
+    assert "if (event.key === 'Home') next = range.min" in js
+    assert "if (event.key === 'End') next = range.max" in js
     assert ".rw-figure-resize-shell{box-sizing:border-box;width:100%;max-width:100%" in css
     assert ".rw-figure-image-stage{position:relative;width:100%;max-width:100%" in css
     assert "right:-10px;bottom:-10px" in css
@@ -2497,7 +2552,7 @@ def test_round_tree_borrows_legacy_launcher_hypothesis_from_previous_round(tmp_p
     assert selected["visibility"] == "research"
 
 
-def test_hidden_artifacts_are_not_served_by_either_checkpoint_endpoint(monkeypatch, tmp_path):
+def test_hidden_artifacts_are_not_served_by_checkpoint_assets(monkeypatch, tmp_path):
     base = tmp_path / "checkpoints"
     round_dir = base / "round_0"
     execution = round_dir / "query_001" / "execution_agent"
@@ -2546,10 +2601,7 @@ def test_hidden_artifacts_are_not_served_by_either_checkpoint_endpoint(monkeypat
         "round_0/%2e%2e/round_1/report.md",
         "%2fetc/passwd",
     ):
-        api_path = path.replace("%2e%2e", "..").replace("%2f", "/")
         assert client.get("/checkpoint_assets/" + path, follow_redirects=True).status_code in {403, 404}
-        assert client.get("/api/checkpoint_file", query_string={"path": api_path}).status_code in {403, 404}
-        assert client.get("/api/checkpoint_file", query_string={"path": path.replace("%2e%2e", "..")}).status_code in {403, 404}
 
 
 def test_invalid_memory_report_is_not_servable(monkeypatch, tmp_path):
@@ -2566,18 +2618,12 @@ def test_invalid_memory_report_is_not_servable(monkeypatch, tmp_path):
         session["authenticated"] = True
 
     assert client.get("/checkpoint_assets/round_0/memory_report.md").status_code == 404
-    assert client.get(
-        "/api/checkpoint_file", query_string={"path": "round_0/memory_report.md"}
-    ).status_code == 404
 
     memory.unlink()
     outside = tmp_path / "outside.md"
     outside.write_text("# Outside", encoding="utf-8")
     memory.symlink_to(outside)
     assert client.get("/checkpoint_assets/round_0/memory_report.md").status_code == 404
-    assert client.get(
-        "/api/checkpoint_file", query_string={"path": "round_0/memory_report.md"}
-    ).status_code == 404
 
 
 def test_explorer_displays_only_research_classified_entries():
@@ -2601,19 +2647,23 @@ def test_explorer_displays_only_research_classified_entries():
 def test_markdown_document_uses_scoped_report_layout_and_responsive_typography():
     static = Path(app_module.app.static_folder)
     js = (static / "round_workspace.js").read_text(encoding="utf-8")
+    home_js = (static / "project_home.js").read_text(encoding="utf-8")
     css = (static / "round_workspace.css").read_text(encoding="utf-8")
+    shared_css = (static / "style.css").read_text(encoding="utf-8")
 
-    assert "rw-markdown rw-markdown-document" in js
+    assert "rw-markdown rw-markdown-document v2-report-markdown" in js
+    assert "v2-prose v2-report-markdown" in home_js
     assert ".rw-markdown-document{" in css
     document_rules = css[css.index(".rw-markdown-document{"):]
     assert "width:100%" in document_rules
     assert "max-width:none" in document_rules
     assert "margin:0" in document_rules
     assert "max-width:780px" not in document_rules
-    assert "font:400 1rem/1.62 var(--v2-sans)" in document_rules
-    assert ".rw-markdown-document h1" in document_rules and "font-size:2.05rem" in document_rules
-    assert ".rw-markdown-document h2" in document_rules and "font-size:1.65rem" in document_rules
-    assert ".rw-markdown-document h3" in document_rules and "font-size:1.32rem" in document_rules
+    assert "font: 400 1.03rem/1.64 var(--v2-serif)" in shared_css
+    assert ".v2-report-markdown h1" in shared_css and "font-size: 1.55rem" in shared_css
+    assert ".v2-report-markdown h2" in shared_css and "font-size: 1.32rem" in shared_css
+    assert ".v2-report-markdown h3" in shared_css and "font-size: 1.14rem" in shared_css
+    assert "font-size:2.05rem" not in document_rules
     assert "@container (max-width:600px)" in document_rules
     assert "@container (max-width:380px)" in document_rules
 
@@ -2631,36 +2681,75 @@ def test_text_file_content_aligns_with_first_round_chat_label():
 
 
 def test_markdown_lists_have_outside_markers_and_positive_nested_indentation():
-    css = (Path(app_module.app.static_folder) / "round_workspace.css").read_text(encoding="utf-8")
-    document_rules = css[css.index(".rw-markdown-document{"):]
+    static = Path(app_module.app.static_folder)
+    css = (static / "round_workspace.css").read_text(encoding="utf-8")
+    shared_css = (static / "style.css").read_text(encoding="utf-8")
+    report_rules = shared_css[shared_css.index(".v2-report-markdown {"):]
 
-    assert ".rw-markdown-document ul,.rw-markdown-document ol" in document_rules
-    assert "list-style-position:outside" in document_rules
-    assert "padding-inline-start:1.65rem" in document_rules
-    assert ".rw-markdown-document li{" in document_rules
-    assert "padding-inline-start:.18rem" in document_rules
-    assert ".rw-markdown-document li>ul,.rw-markdown-document li>ol" in document_rules
-    assert "padding-inline-start:1.55rem" in document_rules
-    list_section = document_rules[document_rules.index(".rw-markdown-document ul,.rw-markdown-document ol"):document_rules.index(".rw-markdown-document hr")]
+    assert "--v2-report-list-indent: 2rem" in shared_css
+    assert ".v2-report-markdown ul" in report_rules
+    assert ".v2-report-markdown ol" in report_rules
+    assert "padding-inline-start: var(--v2-report-list-indent)" in shared_css
+    assert "list-style-position: outside" in report_rules
+    assert ".v2-report-markdown li" in report_rules
+    assert "padding-inline-start: 0.18rem" in report_rules
+    assert ".v2-report-markdown li > ul" in report_rules
+    assert "padding-inline-start: 1.55rem" in report_rules
+    list_section = report_rules[report_rules.index(".v2-report-markdown ul"):report_rules.index(".v2-report-markdown hr")]
     assert "margin-left:-" not in list_section
     assert "margin-inline-start:-" not in list_section
     assert "padding-inline-start:-" not in list_section
     assert "list-style-position:inside" not in list_section
+    assert ".rw-markdown-document ul,.rw-markdown-document ol{" not in css
 
 
 def test_markdown_overflow_media_and_elements_remain_viewer_scoped():
-    css = (Path(app_module.app.static_folder) / "round_workspace.css").read_text(encoding="utf-8")
-    document_rules = css[css.index(".rw-markdown-document{"):]
+    shared_css = (Path(app_module.app.static_folder) / "style.css").read_text(encoding="utf-8")
+    report_rules = shared_css[shared_css.index(".v2-report-markdown {"):]
 
-    assert ".rw-markdown-document pre{" in document_rules
-    assert ".rw-markdown-document table{" in document_rules
-    assert document_rules.count("overflow-x:auto") >= 2
-    assert ".rw-markdown-document img{" in document_rules
-    assert "max-width:100%" in document_rules and "height:auto" in document_rules
-    assert ".rw-markdown-document blockquote{" in document_rules
-    assert ".rw-markdown-document :not(pre)>code" in document_rules
-    assert ".rw-activity h1" not in document_rules
-    assert ".rw-chat-turn-body h1" not in document_rules
+    assert ".v2-report-markdown pre" in report_rules
+    assert ".v2-report-markdown table" in report_rules
+    assert report_rules.count("overflow-x: auto") >= 2
+    assert ".v2-report-markdown img" in report_rules
+    assert "max-width: 100%" in report_rules and "height: auto" in report_rules
+    assert ".v2-report-markdown blockquote" in report_rules
+    assert ".v2-report-markdown :not(pre) > code" in report_rules
+    assert "min-width: 8rem" in report_rules
+    assert "border-bottom: 1px solid var(--v2-border-soft)" in report_rules
+    assert 'th[align="center"]' in report_rules and 'th[align="right"]' in report_rules
+    assert ".rw-activity h1" not in report_rules
+    assert ".rw-chat-turn-body h1" not in report_rules
+
+
+def test_round_chat_assistant_markdown_reuses_shared_scientific_presentation():
+    static = Path(app_module.app.static_folder)
+    workspace_js = (static / "round_workspace.js").read_text(encoding="utf-8")
+    workspace_css = (static / "round_workspace.css").read_text(encoding="utf-8")
+    shared_css = (static / "style.css").read_text(encoding="utf-8")
+
+    assert "m.role==='assistant'?'rw-chat-turn-body v2-report-markdown rw-chat-markdown':'rw-chat-turn-body'" in workspace_js
+    assert "else if(m.role==='assistant')renderRoundChatMarkdown(c,m.text,roundIndex)" in workspace_js
+    assert "else c.textContent=m.text" in workspace_js
+    assert ".rw-chat-markdown{box-sizing:border-box;min-width:0;max-width:100%}" in workspace_css
+    assert ".rw-chat-turn.assistant{align-self:flex-start;width:100%;min-width:0}" in workspace_css
+
+    for selector in (
+        ".v2-report-markdown h1",
+        ".v2-report-markdown p",
+        ".v2-report-markdown ul",
+        ".v2-report-markdown hr",
+        ".v2-report-markdown table",
+        ".v2-report-markdown :not(pre) > code",
+        ".v2-report-markdown blockquote",
+        ".v2-report-markdown a",
+    ):
+        assert selector in shared_css
+    assert "display: block" in shared_css[shared_css.index(".v2-report-markdown table"):]
+    assert "overflow-x: auto" in shared_css[shared_css.index(".v2-report-markdown table"):]
+    assert ".rw-chat-artifact-link{color:var(--v2-accent)" in workspace_css
+    assert "ArtifactLinks.linkifyElement" in workspace_js
+    assert ".rw-chat-turn-body table" not in workspace_css
+    assert ".rw-chat-turn.assistant .rw-chat-turn-body>ul" not in workspace_css
 
 
 def test_file_tabs_merge_with_workspace_and_show_path_breadcrumb():
@@ -2756,9 +2845,12 @@ def test_round_chat_queue_matches_audit_controls_without_send_button_bleed():
         assert declaration in workspace_css
         assert declaration.replace(":", ": ") in audit_css
     assert ".rw-chat-queued-delete:hover,.rw-chat-queued-delete:focus-visible" in workspace_css
-    assert "padding-inline-start:1.75em" in workspace_css
-    assert "list-style-position:outside" in workspace_css
-    assert ".rw-chat-turn.assistant .rw-chat-turn-body li+li" in workspace_css
+    assert "v2-report-markdown rw-chat-markdown" in (
+        static / "round_workspace.js"
+    ).read_text(encoding="utf-8")
+    assert "padding-inline-start: var(--v2-report-list-indent)" in (
+        static / "style.css"
+    ).read_text(encoding="utf-8")
 
 
 def _generated_report_fixture(name):

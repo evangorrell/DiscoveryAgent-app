@@ -61,7 +61,7 @@ The key telemetry `event_type` values for chat reconstruction are:
 | Event Type | Purpose | Key payload fields |
 |---|---|---|
 | `chat` | Main `/api/chat` exchanges (includes Audit UI chat) | `message`, `reply`, `source`, `chat_scope`, `thinking`, `conversation_messages` |
-| `report_chat` | `/api/report_chat` exchanges | `message`, `reply`, `report_type`, `report_view`, `thinking`, `conversation_messages` |
+| `report_chat` | Historical Report Chat exchanges | `message`, `reply`, `report_type`, `report_view`, `thinking`, `conversation_messages` |
 | `ask` | `/api/ask` exchanges | `question`, `answer`, `conversation_messages` |
 | `chat_reset` | Reset boundary marker | `scope`, `report_type` (if report), `conversation_messages` (pre-reset snapshot) |
 | `audit_chat_restore` | Audit restore boundary marker | `report_key`, `conversation_messages` |

@@ -62,6 +62,145 @@ ROUND_REPORT_SUMMARY_SYSTEM_PROMPT = (
     "Do not add new information or speculate."
 )
 
+
+_HYPOTHESIS_SECTION_NAMES = {
+    'title': 'title',
+    'primary factor': 'primary_factor',
+    'interpretation': 'interpretation',
+    'hypothesis': 'hypothesis',
+    'justification': 'justification',
+    'plan': 'plan',
+}
+_HYPOTHESIS_SECTION_LABEL = (
+    r'Title|Primary[ \t]+factor|Interpretation|Hypothesis|Justification|Plan'
+)
+_EMPHASIZED_HYPOTHESIS_SECTION_RE = re.compile(
+    rf'^(?P<marker>\*{{1,3}}|_{{1,3}})[ \t]*'
+    rf'(?P<label>{_HYPOTHESIS_SECTION_LABEL})[ \t]*'
+    rf'(?::[ \t]*)?(?P=marker)[ \t]*:?[ \t]*(?P<content>.*)$',
+    re.IGNORECASE,
+)
+_PLAIN_HYPOTHESIS_SECTION_RE = re.compile(
+    rf'^(?P<label>{_HYPOTHESIS_SECTION_LABEL})[ \t]*:[ \t]*(?P<content>.*)$',
+    re.IGNORECASE,
+)
+_HEADING_HYPOTHESIS_SECTION_RE = re.compile(
+    rf'^(?P<label>{_HYPOTHESIS_SECTION_LABEL})(?:[ \t]*:[ \t]*|[ \t]+)?(?P<content>.*)$',
+    re.IGNORECASE,
+)
+
+
+def _match_hypothesis_section_line(line: str):
+    """Return a tolerant section-label match for one hypothesis document line."""
+    candidate = line.strip()
+    if not candidate:
+        return None
+
+    heading_match = re.match(r'^#{1,6}[ \t]+(.*)$', candidate)
+    if heading_match:
+        heading_content = heading_match.group(1).strip()
+        return (
+            _EMPHASIZED_HYPOTHESIS_SECTION_RE.match(heading_content)
+            or _HEADING_HYPOTHESIS_SECTION_RE.match(heading_content)
+        )
+
+    return (
+        _EMPHASIZED_HYPOTHESIS_SECTION_RE.match(candidate)
+        or _PLAIN_HYPOTHESIS_SECTION_RE.match(candidate)
+    )
+
+
+def parse_hypothesis_sections_text(
+    hypothesis: str | None,
+    *,
+    fallback_to_full_text: bool = True,
+) -> Dict[str, Optional[str]]:
+    """Parse the user-editable hypothesis-card document format.
+
+    Section labels may be plain, Markdown-emphasized, or headings. Colons are
+    accepted either inside or outside emphasis and are optional for emphasized
+    labels, so harmless punctuation edits cannot hide a card's content.
+
+    If no usable Hypothesis section is found, the complete document is returned
+    as the hypothesis visibility fallback unless ``fallback_to_full_text`` is
+    disabled by a caller that specifically needs structured-only detection.
+    """
+    text = str(hypothesis or '')
+    sections: Dict[str, Optional[str]] = {
+        'title': None,
+        'interpretation': None,
+        'hypothesis': None,
+        'justification': None,
+        'plan': None,
+        'primary_factor': None,
+    }
+    current_key = None
+    current_lines: List[str] = []
+
+    def flush_current_section() -> None:
+        nonlocal current_lines
+        if current_key is not None:
+            content = '\n'.join(current_lines).strip()
+            sections[current_key] = content or None
+        current_lines = []
+
+    for line in text.splitlines():
+        match = _match_hypothesis_section_line(line)
+        if match:
+            flush_current_section()
+            label = re.sub(r'[ \t]+', ' ', match.group('label')).strip().lower()
+            current_key = _HYPOTHESIS_SECTION_NAMES[label]
+            inline_content = (match.group('content') or '').strip()
+            current_lines = [inline_content] if inline_content else []
+        elif current_key is not None:
+            current_lines.append(line)
+    flush_current_section()
+
+    if fallback_to_full_text and text.strip() and not sections['hypothesis']:
+        sections['hypothesis'] = text.strip()
+    return sections
+
+
+def preserve_manual_hypothesis_text(
+    hypothesis: str | None,
+    *,
+    title: str | None = None,
+) -> str:
+    """Keep a direct manual edit verbatim while retaining its existing title.
+
+    The V2 manual editor normally submits only the editable body. If a caller
+    does include a Title section, replace only that section with the trusted
+    existing title; do not normalize punctuation in the remaining sections.
+    """
+    text = str(hypothesis or '').strip()
+    if not title:
+        return text
+
+    lines = text.splitlines()
+    title_start = None
+    title_end = None
+    for index, line in enumerate(lines):
+        match = _match_hypothesis_section_line(line)
+        if not match:
+            continue
+        label = re.sub(r'[ \t]+', ' ', match.group('label')).strip().lower()
+        if title_start is None and _HYPOTHESIS_SECTION_NAMES[label] == 'title':
+            title_start = index
+            continue
+        if title_start is not None:
+            title_end = index
+            break
+
+    if title_start is not None:
+        end = title_end if title_end is not None else len(lines)
+        lines = lines[:title_start] + lines[end:]
+        text = '\n'.join(lines).strip()
+
+    parts = [f"**Title**: {title.strip()}"]
+    if text:
+        parts.append(text)
+    return '\n\n'.join(parts)
+
 # Template for the domain-general literature survey query sent to the deep
 # research provider.  Must not produce hypotheses directly — the output is used
 # as context by HypothesisGenAgent, not as a final deliverable.
@@ -1702,62 +1841,7 @@ Expected title style — a good **Title** is concise, title-like, specific enoug
         Returns:
             Dict with keys: 'title', 'interpretation', 'hypothesis', 'justification', 'plan', 'primary_factor'
         """
-        # Extract Primary factor (optional)
-        primary_match = re.search(
-            r'(?:^|\n)\s*(?:\*\*)?Primary factor(?:\*\*)?\s*:(.*?)(?=\n\s*(?:\*\*)?Hypothesis(?:\*\*)?\s*:|$)',
-            hypothesis,
-            re.DOTALL | re.IGNORECASE
-        )
-        primary_factor = primary_match.group(1).strip() if primary_match else None
-
-        # Extract Title section (appears before Primary factor or Hypothesis)
-        title_match = re.search(
-            r'(?:^|\n)\s*(?:\*\*)?Title(?:\*\*)?\s*:(.*?)(?=\n\s*(?:\*\*)?(?:Primary factor|Hypothesis)(?:\*\*)?\s*:|$)',
-            hypothesis,
-            re.DOTALL | re.IGNORECASE
-        )
-        title = title_match.group(1).strip() if title_match else None
-
-        # Extract Interpretation section
-        interp_match = re.search(
-            r'(?:^|\n)\s*(?:\*\*)?Interpretation(?:\*\*)?\s*:(.*?)(?=\n\s*(?:\*\*)?Hypothesis(?:\*\*)?\s*:|$)',
-            hypothesis,
-            re.DOTALL | re.IGNORECASE
-        )
-        interpretation = interp_match.group(1).strip() if interp_match else None
-
-        # Extract Hypothesis section
-        hyp_match = re.search(
-            r'(?:^|\n)\s*(?:\*\*)?Hypothesis(?:\*\*)?\s*:(.*?)(?=\n\s*(?:\*\*)?(?:Justification|Plan)(?:\*\*)?\s*:|$)',
-            hypothesis,
-            re.DOTALL | re.IGNORECASE
-        )
-        hypothesis_content = hyp_match.group(1).strip() if hyp_match else None
-
-        # Extract Justification section (stop at Plan section if present)
-        just_match = re.search(
-            r'(?:^|\n)\s*(?:\*\*)?Justification(?:\*\*)?\s*:(.*?)(?=\n\s*(?:\*\*)?Plan(?:\*\*)?\s*:|$)',
-            hypothesis,
-            re.DOTALL | re.IGNORECASE
-        )
-        justification = just_match.group(1).strip() if just_match else None
-
-        # Extract Plan section (should come after Justification)
-        plan_match = re.search(
-            r'(?:^|\n)\s*(?:\*\*)?Plan(?:\*\*)?\s*:(.*?)$',
-            hypothesis,
-            re.DOTALL | re.IGNORECASE
-        )
-        plan = plan_match.group(1).strip() if plan_match else None
-
-        return {
-            'title': title,
-            'interpretation': interpretation,
-            'hypothesis': hypothesis_content,
-            'justification': justification,
-            'plan': plan,
-            'primary_factor': primary_factor,
-        }
+        return parse_hypothesis_sections_text(hypothesis)
 
     def _sanitize_hypothesis_text(self, hypothesis: str, title_override: Optional[str] = None) -> str:
         """
@@ -1768,7 +1852,10 @@ Expected title style — a good **Title** is concise, title-like, specific enoug
         Used by manual-edit save, which must preserve a version's existing title
         rather than deriving one from the edited body.
         """
-        sections = self.parse_hypothesis_sections(hypothesis)
+        sections = parse_hypothesis_sections_text(
+            hypothesis,
+            fallback_to_full_text=False,
+        )
         parsed_anything = any(sections.values())
         if title_override is not None:
             sections['title'] = title_override

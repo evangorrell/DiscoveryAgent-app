@@ -3,7 +3,7 @@
 {% block title %}Hypothesis Studio &middot; DiscoveryAgent{% endblock %}
 
 {% block head %}
-<link rel="stylesheet" href="{{ url_for('static', filename='hypothesis_studio.css') }}?v=20260808-top-packed-overflow">
+<link rel="stylesheet" href="{{ url_for('static', filename='hypothesis_studio.css') }}?v=20260817-review-simplification">
 <!--
   Configuration for the Hypothesis Studio controller. The count is passed as
   data (default 3, allowed 1-10) so 3 is never hardcoded into the reusable
@@ -17,6 +17,8 @@
     minNumHypotheses: {{ min_num_hypotheses | tojson }},
     maxNumHypotheses: {{ max_num_hypotheses | tojson }},
     roundWorkspaceUrl: {{ round_workspace_url | tojson }},
+    projectHomeUrl: {{ url_for('project_home_canonical', project_slug=project_slug) | tojson }},
+    projectsUrl: {{ url_for('projects') | tojson }},
     // True while autonomous Round 0 is incomplete. In this state the studio
     // does not initialize; the first-round blocking overlay owns the screen.
     initialExploration: {{ initial_exploration | default(false) | tojson }},
@@ -124,6 +126,8 @@
 
             <section class="hs-thread" id="hs-thread" aria-live="polite"
                      aria-label="Refinement conversation for the focused hypothesis"></section>
+
+            <div class="hs-queued-messages" id="hs-queued-messages" aria-live="polite" hidden></div>
 
             <!-- Composer: one natural input scoped to the currently focused
                  hypothesis. The visible Chat/Edit mode controls whether submit
@@ -235,8 +239,8 @@
      controller consumes them via window.HSEvents. -->
 <script src="{{ url_for('static', filename='hypothesis_events.js') }}?v=20260808-selected-lineage-reindex"></script>
 <!-- Pure visual placement rule for the single fourth-card overflow. -->
-<script src="{{ url_for('static', filename='hypothesis_layout.js') }}?v=20260808-first-full-expansion-floor"></script>
+<script src="{{ url_for('static', filename='hypothesis_layout.js') }}?v=20260817-regeneration-independent-expansion"></script>
 <!-- Shared, single-seam round-start action for the Start round overlay button. -->
 <script src="{{ url_for('static', filename='round_start.js') }}?v=20260808-post-selection-modal"></script>
-<script src="{{ url_for('static', filename='hypothesis_studio.js') }}?v=20260808-first-full-split"></script>
+<script src="{{ url_for('static', filename='hypothesis_studio.js') }}?v=20260817-version-scoped-operation-lanes"></script>
 {% endblock %}

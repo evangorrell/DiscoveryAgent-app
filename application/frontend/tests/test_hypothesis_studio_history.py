@@ -60,6 +60,7 @@ class FakeGenerator:
         self.ask_reply = "Because mTOR drives axon regrowth."
         self.edit_calls = []
         self.regen_calls = []
+        self.saved_agent_guidance = None
         self.hypothesis_config = type("C", (), {"n_candidate_hypotheses": 2,
                                                 "llm_config": type("L", (), {"model_name": "m"})()})()
 
@@ -148,6 +149,7 @@ class FakeGenerator:
 
     # select
     def save_selection_raw(self, output_content, agent_guidance=None, username=None):
+        self.saved_agent_guidance = agent_guidance
         self.final_selection = {"final_hypothesis": output_content, "output_path": "[test]"}
         (self.checkpoint_dir / "selected_hypothesis.md").write_text(output_content, encoding="utf-8")
         return "[test]"
@@ -186,9 +188,12 @@ def _wire(monkeypatch, gen):
 
 
 def _wire_generate(monkeypatch):
-    monkeypatch.setattr(app_module, "_begin_generation", lambda sid: "tok")
-    monkeypatch.setattr(app_module, "_end_generation", lambda sid, tok: None)
-    monkeypatch.setattr(app_module, "_is_generation_cancelled", lambda sid, tok: False)
+    monkeypatch.setattr(app_module, "_begin_generation", lambda sid, **kwargs: "tok")
+    monkeypatch.setattr(app_module, "_generation_attempt_id", lambda sid, tok, **kwargs: "tok")
+    monkeypatch.setattr(app_module, "_bind_generation_generator", lambda sid, tok, gen, **kwargs: True)
+    monkeypatch.setattr(app_module, "_claim_generation_result", lambda sid, tok, gen, **kwargs: True)
+    monkeypatch.setattr(app_module, "_end_generation", lambda sid, tok, **kwargs: None)
+    monkeypatch.setattr(app_module, "_is_generation_cancelled", lambda sid, tok, **kwargs: False)
     monkeypatch.setattr(app_module, "_reset_hypothesis_state_ids", lambda g: [f"s{i}" for i in range(len(g.hypotheses))])
     seq = {"n": 0}
     def _inc():
@@ -752,6 +757,83 @@ def test_selection_appends_exact_hypothesis(monkeypatch, tmp_path):
     sel = events[-1]["hypothesis"]
     assert "mTOR" in sel["hypothesis"]
     assert sel["plan"] and "Compare" in sel["plan"]
+
+
+def test_v2_selection_review_omits_execution_guidance():
+    root = Path(app_module.app.root_path)
+    template = root / app_module.app.template_folder / "hypothesis_studio.html"
+    javascript = Path(app_module.app.static_folder) / "hypothesis_studio.js"
+    stylesheet = Path(app_module.app.static_folder) / "hypothesis_studio.css"
+
+    html = template.read_text(encoding="utf-8")
+    js = javascript.read_text(encoding="utf-8")
+    css = stylesheet.read_text(encoding="utf-8")
+
+    assert "Execution guidance (optional)" not in html
+    assert "Add any instructions you want the execution agent" not in html
+    assert 'id="hs-review-guidance"' not in html
+    assert "reviewGuidance" not in js
+    assert "agent_guidance" not in js
+    assert ".hs-review-guidance" not in css
+    assert "selection: h.index" in js
+    assert "final_text: h.full_text || h.hypothesis" in js
+
+
+def test_selection_review_uses_neutral_dialog_focus_treatment():
+    stylesheet = Path(app_module.app.static_folder) / "hypothesis_studio.css"
+    css = stylesheet.read_text(encoding="utf-8")
+
+    assert ".hs-review:focus," in css
+    assert ".hs-review:focus-visible" in css
+    assert "outline: 1px solid var(--v2-border);" in css
+
+
+def test_selection_api_accepts_optional_execution_guidance(monkeypatch, tmp_path):
+    rd = _round_dir(tmp_path)
+    gen = FakeGenerator(rd)
+    gen.hypotheses = [HYP1]
+    client = _wire(monkeypatch, gen)
+    _allow_test_selection(monkeypatch)
+
+    without_guidance = client.post("/api/select", json={
+        "selection": "custom",
+        "custom_source": "direct_custom",
+        "final_text": HYP1,
+    })
+    assert without_guidance.status_code == 200
+    assert without_guidance.get_json()["success"] is True
+    assert gen.saved_agent_guidance is None
+
+    guidance = "Prioritize lineage tracing and include negative controls."
+    with_guidance = client.post("/api/select", json={
+        "selection": "custom",
+        "custom_source": "direct_custom",
+        "final_text": HYP1,
+        "agent_guidance": guidance,
+    })
+    assert with_guidance.status_code == 200
+    assert with_guidance.get_json()["success"] is True
+    assert gen.saved_agent_guidance == guidance
+
+
+def test_existing_selection_contract_persists_execution_guidance(tmp_path):
+    generator = InteractiveHypothesisGenerator.__new__(InteractiveHypothesisGenerator)
+    generator.checkpoint_dir = tmp_path
+    generator.output_file = None
+    generator.final_selection = None
+
+    guidance = "Compare both sexes and preserve blinded analysis."
+    selected = "**Hypothesis**: A defined perturbation improves regeneration."
+    output_path = generator.save_selection_raw(selected, guidance, username="scientist")
+
+    assert Path(output_path).read_text(encoding="utf-8").endswith(
+        f"**Overall Research Feedback**: {guidance}\n"
+    )
+    assert (tmp_path / "next_round_instructions.md").read_text(encoding="utf-8") == guidance + "\n"
+    assert generator.final_selection["agent_guidance"] == guidance
+    assert generator.final_selection["agent_guidance_path"] == str(
+        tmp_path / "next_round_instructions.md"
+    )
 
 
 def test_remove_and_select_do_not_wait_for_the_shared_llm_lock(monkeypatch, tmp_path):
@@ -1348,12 +1430,19 @@ def test_generation_status_endpoint_reports_in_progress_without_initialize_lock(
     session_id = "status-test-session"
     with client.session_transaction() as sess:
         sess["session_id"] = session_id
+        project_scope = (
+            f"project-id:{sess['v2_active_project_id']}"
+            if sess.get("v2_active_project_id") else "session"
+        )
 
     with app_module.GENERATION_LOCK:
-        app_module.GENERATION_STATE[session_id] = {
+        generation_key = app_module._generation_state_key(session_id, project_scope)
+        app_module.GENERATION_STATE[generation_key] = {
             "in_progress": True,
             "cancel_requested": False,
             "token": "tok",
+            "attempt_id": "attempt-status",
+            "status": "running",
         }
 
     try:
@@ -1361,7 +1450,7 @@ def test_generation_status_endpoint_reports_in_progress_without_initialize_lock(
         body = resp.get_json()
     finally:
         with app_module.GENERATION_LOCK:
-            app_module.GENERATION_STATE.pop(session_id, None)
+            app_module.GENERATION_STATE.pop(generation_key, None)
 
     assert resp.status_code == 200
     assert body["success"] is True
@@ -1402,12 +1491,183 @@ def test_generation_is_visible_while_waiting_for_session_operation_lock():
         operation_lock.release()
         worker.join(timeout=2)
         with app_module.GENERATION_LOCK:
-            app_module.GENERATION_STATE.pop(session_id, None)
+            app_module.GENERATION_STATE.pop(
+                app_module._generation_state_key(session_id, "session"), None
+            )
         with app_module.SESSION_OPERATION_LOCKS_GUARD:
             app_module.SESSION_OPERATION_LOCKS.pop(session_id, None)
 
     assert finished.is_set() is True
     assert entered_view.is_set() is True
+
+
+def test_cancelled_generation_releases_retry_and_late_result_is_discarded(monkeypatch, tmp_path):
+    """A synchronous provider call may return after Cancel, but it no longer owns
+    the session generator, persistence, history, selection, or completion state."""
+    session_id = "generation-cancel-retry-session"
+    scope = "project-id:project-a"
+    round_dir = _round_dir(tmp_path)
+    selected_path = round_dir / "selected_hypothesis.md"
+    selected_path.write_text("authoritative selection", encoding="utf-8")
+    a_entered = threading.Event()
+    release_a = threading.Event()
+    persisted = []
+
+    class ControlledGenerator(FakeGenerator):
+        def __init__(self, checkpoint_dir, result, entered=None, release=None):
+            super().__init__(checkpoint_dir)
+            self.result = result
+            self.entered = entered
+            self.release = release
+
+        def generate_candidates(self, n, guidance=None, **kwargs):
+            if self.entered:
+                self.entered.set()
+            if self.release:
+                assert self.release.wait(3), "test did not release generation A"
+            self.hypotheses = [self.result]
+            return list(self.hypotheses)
+
+    generation_a = ControlledGenerator(round_dir, HYP1, a_entered, release_a)
+    generation_b = ControlledGenerator(round_dir, HYP2)
+    app_module.GENERATORS[session_id] = generation_a
+
+    def current_generator():
+        generator = app_module.GENERATORS.get(session_id)
+        if generator is None:
+            app_module.GENERATORS[session_id] = generation_b
+            generator = generation_b
+        return generator
+
+    monkeypatch.setattr(app_module, "get_or_restore_generator", current_generator)
+    monkeypatch.setattr(app_module, "_active_v2_project_pre_round_0", lambda: False)
+    monkeypatch.setattr(app_module, "_v2_studio_mutation_lock_response", lambda: None)
+    monkeypatch.setattr(app_module, "_studio_pending_full_set_lock_response", lambda gen: None)
+    monkeypatch.setattr(
+        app_module,
+        "_check_project_readiness",
+        lambda gen=None: {"task_description": "Objective", "project_context": "Ctx", "missing": None},
+    )
+    monkeypatch.setattr(app_module, "log_event", lambda *a, **k: None)
+    monkeypatch.setattr(app_module, "log_full_event_to_s3", lambda *a, **k: None)
+    monkeypatch.setattr(
+        app_module,
+        "_persist_generated_hypotheses",
+        lambda gen, **kwargs: persisted.append((gen, list(gen.hypotheses))),
+    )
+
+    results = {}
+
+    def invoke_generation(label, attempt_id):
+        with app_module.app.test_request_context(
+            "/api/generate",
+            method="POST",
+            json={"num_hypotheses": 1, "attempt_id": attempt_id},
+        ):
+            app_module.session["session_id"] = session_id
+            app_module.session["v2_active_project_id"] = "project-a"
+            response = app_module.app.view_functions["api_generate"]()
+            results[label] = response.get_json()
+
+    worker_a = threading.Thread(target=invoke_generation, args=("a", "attempt-a"))
+    worker_a.start()
+    assert a_entered.wait(2)
+
+    # A genuinely active attempt still owns the duplicate-start guard.
+    invoke_generation("duplicate", "attempt-duplicate")
+    assert results["duplicate"]["error"] == "Generation already in progress"
+    assert results["duplicate"]["attempt_id"] == "attempt-a"
+
+    def cancel(attempt_id):
+        with app_module.app.test_request_context(
+            "/api/cancel_generation", method="POST", json={"attempt_id": attempt_id}
+        ):
+            app_module.session["session_id"] = session_id
+            app_module.session["v2_active_project_id"] = "project-a"
+            return app_module.app.view_functions["api_cancel_generation"]().get_json()
+
+    first_cancel = cancel("attempt-a")
+    assert first_cancel["cancelled"] is True
+    assert first_cancel["status"] == "cancelled"
+    terminal = app_module._generation_status_for_session(session_id, scope=scope)
+    assert terminal == {
+        "in_progress": False,
+        "cancel_requested": True,
+        "attempt_id": "attempt-a",
+        "status": "cancelled",
+    }
+    # A refreshed Studio learns the same terminal attempt identity from the
+    # unlocked status endpoint and can retry without retaining client memory.
+    with app_module.app.test_request_context("/api/generation_status", method="GET"):
+        app_module.session["session_id"] = session_id
+        app_module.session["v2_active_project_id"] = "project-a"
+        refreshed_status = app_module.app.view_functions["api_generation_status"]().get_json()
+    assert refreshed_status["status"] == "cancelled"
+    assert refreshed_status["attempt_id"] == "attempt-a"
+    # The same terminal cancellation is idempotent after that refresh.
+    assert cancel("attempt-a")["cancelled"] is True
+
+    # B completes through the newly rotated operation lane while A is still
+    # physically blocked in its provider call.
+    invoke_generation("b", "attempt-b")
+    assert worker_a.is_alive()
+    assert results["b"]["success"] is True
+    assert results["b"]["attempt_id"] == "attempt-b"
+
+    release_a.set()
+    worker_a.join(timeout=3)
+    assert not worker_a.is_alive()
+    assert results["a"]["cancelled"] is True
+    assert results["a"]["attempt_id"] == "attempt-a"
+    assert app_module.GENERATORS[session_id] is generation_b
+    assert persisted == [(generation_b, [HYP2])]
+    events = hypothesis_history.load_history(round_dir)["events"]
+    assert len(events) == 1
+    assert events[0]["type"] == hypothesis_history.TYPE_HYPOTHESIS_SET_GENERATED
+    assert events[0]["hypotheses"][0]["full_text"] == HYP2
+    assert selected_path.read_text(encoding="utf-8") == "authoritative selection"
+    final_status = app_module._generation_status_for_session(session_id, scope=scope)
+    assert final_status["status"] == "completed"
+    assert final_status["attempt_id"] == "attempt-b"
+
+    with app_module.GENERATION_LOCK:
+        app_module.GENERATION_STATE.pop(
+            app_module._generation_state_key(session_id, scope), None
+        )
+    with app_module.GENERATION_ID_LOCK:
+        app_module.GENERATION_IDS.pop(session_id, None)
+    with app_module.SESSION_OPERATION_LOCKS_GUARD:
+        app_module.SESSION_OPERATION_LOCKS.pop(session_id, None)
+    app_module.GENERATORS.pop(session_id, None)
+
+
+def test_generation_attempt_identity_scopes_cancel_to_project_and_current_tab():
+    session_id = "generation-scope-session"
+    scope_a = "project-id:a"
+    scope_b = "project-id:b"
+    token_a = app_module._begin_generation(session_id, scope=scope_a, attempt_id="tab-a")
+    token_b = app_module._begin_generation(session_id, scope=scope_b, attempt_id="tab-b")
+    assert token_a and token_b
+
+    cancelled_a = app_module._request_generation_cancel(
+        session_id, scope=scope_a, attempt_id="tab-a"
+    )
+    assert cancelled_a["cancelled"] is True
+    assert app_module._generation_status_for_session(session_id, scope=scope_b)["in_progress"] is True
+
+    # A late Cancel from the old tab cannot cancel a newer authoritative attempt.
+    token_a2 = app_module._begin_generation(session_id, scope=scope_a, attempt_id="tab-a-new")
+    assert token_a2
+    stale_cancel = app_module._request_generation_cancel(
+        session_id, scope=scope_a, attempt_id="tab-a"
+    )
+    assert stale_cancel["cancelled"] is False
+    assert app_module._generation_status_for_session(session_id, scope=scope_a)["attempt_id"] == "tab-a-new"
+    assert app_module._is_generation_cancelled(session_id, token_a, scope=scope_a) is True
+
+    with app_module.GENERATION_LOCK:
+        app_module.GENERATION_STATE.pop(app_module._generation_state_key(session_id, scope_a), None)
+        app_module.GENERATION_STATE.pop(app_module._generation_state_key(session_id, scope_b), None)
 
 
 def test_cancel_regeneration_marks_single_hypothesis_regeneration_cancelled(monkeypatch, tmp_path):
@@ -1499,9 +1759,9 @@ def test_studio_render_keeps_pristine_overlay_but_enables_eligible_generation(mo
     assert 'class="v2-modal-overlay v2-blocking-overlay"' in html
     assert 'class="v2-modal v2-blocking-box"' in html
     assert "hypothesis_studio.css') }}" not in html
-    assert "hypothesis_studio.css?v=20260808-top-packed-overflow" in html
-    assert "hypothesis_layout.js?v=20260808-first-full-expansion-floor" in html
-    assert "hypothesis_studio.js?v=20260808-first-full-split" in html
+    assert "hypothesis_studio.css?v=20260817-review-simplification" in html
+    assert "hypothesis_layout.js?v=20260817-regeneration-independent-expansion" in html
+    assert "hypothesis_studio.js?v=20260817-version-scoped-operation-lanes" in html
     assert "hypothesis_events.js?v=20260808-selected-lineage-reindex" in html
     assert "hypothesis_activity.js?v=20260711-unseen-activity" in html
     assert 'Select <span class="v2-arrow" aria-hidden="true">&rarr;</span>' in html
@@ -1532,12 +1792,15 @@ def test_studio_controller_wires_welcome_cta_to_generate_endpoint():
     assert "function clearStudioSnapshot()" in js
     assert "state.events = [];" in js
     assert "clearStudioSnapshot();" in js
-    assert "pollGenerationCompletion()" in js
-    assert "apiJson('/api/cancel_generation', 'POST', {})" in js
-    assert "if (resp.ok && data && data.success !== false)" in js
+    assert "pollGenerationCompletion(generationEpoch)" in js
+    assert "apiJson('/api/cancel_generation', 'POST', {" in js
+    assert "attempt_id: attemptId || undefined" in js
+    assert "data.success !== false && data.cancelled !== false" in js
     assert "state.generating = false;" in js
     assert "persistStudioSnapshot();" in js
-    assert "if (status && status.cancel_requested)" in js
+    assert "status.status === 'cancelled' || status.cancel_requested" in js
+    assert "generationEpoch !== generationUiEpoch" in js
+    assert "attempt_id: attemptId" in js
     assert "activityCancel.addEventListener('click', cancelGeneration)" in js
     assert "function canceledRegenerationKey()" in js
     assert "function isCanceledRegeneration(regeneration)" in js
@@ -1585,11 +1848,11 @@ def test_studio_controller_wires_welcome_cta_to_generate_endpoint():
     assert "els.input.addEventListener('change', syncComposerInput);" in js
     assert "els.input.addEventListener('keyup', refreshSendEnabled);" in js
     assert "state.busyIndex === idx && state.busyKind !== null" in js
-    assert "state.busyIndex === state.focusIndex && state.busyKind !== null" in js
+    assert "isLlmEditActive(state.focusIndex, focusedResultEventId)" in js
     assert "if (state.busy && !pendingHere) return;" not in js
     assert 'class="hs-mode-menu-title">Mode' in html
     assert "if (els.modeEdit) els.modeEdit.addEventListener('click', () => setComposerMode('edit'))" in js
-    assert "Cancel response" in js
+    assert "Stop response" in js
     assert "<rect x=\"5.25\" y=\"5.25\" width=\"9.5\" height=\"9.5\"" in js
     assert ".hs-send.is-stop" in css
     assert ".hs-send.is-stop:hover:not(:disabled) { background: var(--v2-accent-hover); }" in css
@@ -1604,16 +1867,17 @@ def test_studio_controller_wires_welcome_cta_to_generate_endpoint():
     assert "if (!data.hypotheses.length) returnToGenerationWelcome();" in js
     assert "function returnToGenerationWelcome()" in js
     assert "state.events = [];" in js
-    assert "queueThreadMessage" not in js
-    assert "queuedThreadMessages" not in js
+    assert "function queueThreadMessage" in js
+    assert "queuedThreadMessages: {}" in js
     assert "pausedThreadQueues" not in js
-    assert "promoteNextQueuedThreadMessage" not in js
-    assert "hs-queued-messages" not in html
-    assert ".hs-queued-" not in css
+    assert "function promoteNextQueuedThreadMessage" in js
+    assert 'id="hs-queued-messages"' in html
+    assert ".hs-queued-item" in css
     assert ".hs-queue-" not in css
     assert "function isFocusedThreadPending()" in js
+    assert "hasPendingThread(state.focusIndex, currentThreadResultEventId(state.focusIndex))" in js
     assert "function cancelActiveThreadResponse()" in js
-    assert "if (isFocusedThreadPending() && !els.input.value.trim()) {" in js
+    assert "if (isFocusedThreadPending()) {" in js
     assert "submitThreadMessage();" in js
     assert "function stopActiveThreadRequest()" in js
     assert "apiJson('/api/cancel_hypothesis_thread', 'POST'" in js
@@ -1625,7 +1889,11 @@ def test_studio_controller_wires_welcome_cta_to_generate_endpoint():
     assert "Wait for the active hypothesis response to finish before removing a hypothesis." not in js
     assert "hs-card-regenerating" in js
     assert "const loading = el('div', 'hs-card-regenerating');" in js
-    assert "return card;" in js
+    regenerating_card = js[js.index("if (isRegenerating) {"):
+                           js.index("// Header: number + title")]
+    assert "return card;" in regenerating_card
+    assert "card.appendChild(cancel);" in regenerating_card
+    assert ".hs-card-regenerating.is-inline" not in css
     assert "Selected to direct this round" not in js
     assert "hs-selected-label" not in css
     assert "if (isSelected) {" in js
@@ -1687,11 +1955,12 @@ def test_studio_controller_wires_welcome_cta_to_generate_endpoint():
     assert "function hasAnyRegeneration()" in js
     assert "const requestId = ++activeThreadRequestSeq;" in js
     assert "pendingThreadRequests: {}" in js
-    assert "const pendingHere = focused && hasPendingThread(state.focusIndex);" in js
-    assert "if (hasPendingThread(idx) || activeThreadRequests[idx]) return null;" in js
+    assert "const focusedResultEventId = focused" in js
+    assert "hasPendingThread(state.focusIndex, focusedResultEventId)" in js
+    assert "hasPendingThread(idx, resultEventId) || activeThreadRequest(idx, resultEventId)" in js
     assert "const pendingAny = state.pendingThreadIndex != null;" not in js
-    assert "activeThreadRequests[idx] = active;" in js
-    assert "delete activeThreadRequests[idx];" in js
+    assert "activeThreadRequests[laneKey] = active;" in js
+    assert "delete activeThreadRequests[laneKey];" in js
     assert "clearThreadEventsForIndex(idx);" not in js
     assert ".hs-history-note" in css
     assert "text-align: center;" in css
@@ -1748,18 +2017,20 @@ def test_studio_routes_llm_edits_but_not_manual_edits_through_version_append():
     manual = js[js.index("async function runManualEdit"):js.index("async function runRemove")]
 
     assert "source: 'regenerated'" in revise
-    assert "id: data.result_event_id || nextEventId()" in revise
+    assert "const createdResultEventId = data.result_event_id || nextEventId();" in revise
+    assert "id: createdResultEventId" in revise
     assert "const durableSourceResultId = data.source_result_event_id || versionView.viewedResultEventId;" in revise
     assert "sourceResultEventId: durableSourceResultId" in revise
-    assert "delete state.viewedRegenerationPositions[responseIndex];" in revise
-    assert "const reconciled = await restoreCurrentCardsFromHistory();" in revise
+    assert "setViewedVersionResultId(responseIndex, createdResultEventId);" in revise
+    assert "await restoreCurrentCardsFromHistory();" not in revise
     assert "role: 'assistant'" in revise
     assert "content: data.version_created_message" in revise
     assert "'Created Version ' +" in revise
     assert "'I created Version '" not in revise
     assert "resultEventId: durableSourceResultId" in revise
-    assert revise.index("state.events.push({") < revise.index("await restoreCurrentCardsFromHistory()")
-    assert revise.index("await restoreCurrentCardsFromHistory()") < revise.rindex("render();")
+    append_revision = revise.index("kind: 'revision'")
+    terminal_success = revise.index("finishLlmEditRequest(idx, started);", append_revision)
+    assert append_revision < terminal_success < revise.index("render();", terminal_success)
     assert "source: editingHistorical ? 'historical-edit' : 'revised'" in manual
     assert "resultEventId: versionView.viewedResultEventId" in manual
     assert "data.result_event_id" not in manual
@@ -1784,7 +2055,8 @@ def test_historical_version_keeps_card_level_regenerate_and_remove_actions():
     regenerate = js[js.index("async function runRegenerate"):js.index("function cancelRegenerate")]
     remove = js[js.index("async function runRemove"):js.index("function returnToGenerationWelcome")]
 
-    assert "menu.appendChild(menuItem('Regenerate', () => runRegenerate(h, '')));" in overflow
+    assert "const regenerateItem = menuItem('Regenerate', () => runRegenerate(h, ''));" in overflow
+    assert "menu.appendChild(regenerateItem);" in overflow
     assert "menu.appendChild(removeMenuItem(h));" in overflow
     assert "versionView.isViewingCurrent" not in overflow
 
@@ -1792,8 +2064,9 @@ def test_historical_version_keeps_card_level_regenerate_and_remove_actions():
     # opened while an older rendered snapshot was visible.
     assert regenerate.index("h = activeMutationHypothesis(h);") < regenerate.index("const payload =")
     assert "request_hypothesis: hypothesisMarkdown(h)" in regenerate
-    assert "source: 'regenerated', before: h, hypothesis: data.hypothesis" in regenerate
-    assert "delete state.viewedRegenerationPositions[responseIndex];" in regenerate
+    assert "source: 'regenerated', before: h," in regenerate
+    assert "hypothesis: data.hypothesis" in regenerate
+    assert "setViewedVersionResultId(responseIndex, createdResultEventId);" in regenerate
     assert remove.index("h = activeMutationHypothesis(h);") < remove.index("apiJson('/api/remove_hypothesis'")
     assert "state.events.push({\n                    kind: 'removal'" in remove
 
@@ -1844,7 +2117,7 @@ def test_regeneration_in_flight_state_is_scoped_to_each_hypothesis():
     assert "regenerationRequests: {}" in js
     assert "function regenerationRequest(index)" in js
     assert "function isRegeneratingHypothesis(index)" in js
-    assert "isRegeneratingHypothesis(idx) ||\n            hasPendingThread(idx);" in js
+    assert "isRegeneratingHypothesis(idx) ||\n            hasAnyLlmEditActive(idx);" in js
     assert "(state.busyIndex === idx && state.busyKind !== null)" in js
     assert "state.busyIndex != null ||\n            isRegeneratingHypothesis(idx)" not in js
     assert "state_id: h.state_id" in js
@@ -1856,20 +2129,76 @@ def test_regeneration_in_flight_state_is_scoped_to_each_hypothesis():
     assert "readPendingRegenerations().filter" in js
 
 
-def test_pending_request_blocks_only_same_hypothesis_submission():
+def test_single_regeneration_poll_refreshes_locally_without_global_initialization():
+    js = (Path(app_module.app.static_folder) / "hypothesis_studio.js").read_text(encoding="utf-8")
+    refresh = js[js.index("async function refreshAfterRegenerationCompletion"):
+                 js.index("async function restoreRequestedRoundFromLocation")]
+    poll = js[js.index("function pollRegenerationCompletion"):
+              js.index("function pollGenerationCompletion")]
+
+    assert "await refreshAfterRegenerationCompletion(index);" in poll
+    assert "initialize(" not in poll
+    assert "showLoading(" not in poll
+    assert "window.location" not in poll
+
+    assert "const priorSurfaceScrollTop" in refresh
+    assert "const restored = await restoreCurrentCardsFromHistory({ followNewCurrentIndex: idx });" in refresh
+    assert "renderCards({ restoreScrollTop: priorSurfaceScrollTop });" in refresh
+    assert "if (Number(state.focusIndex) === idx)" in refresh
+    assert "showLoading(" not in refresh
+    assert "showError(" not in refresh
+    assert "window.location" not in refresh
+
+
+def test_pending_normal_chat_queues_only_on_the_same_hypothesis():
     js = (Path(app_module.app.static_folder) / "hypothesis_studio.js").read_text(encoding="utf-8")
     submit = js[js.index("async function submitThreadMessage()"):
                 js.index("function beginThreadRequest")]
 
-    assert "if (hasPendingThread(idx) || activeThreadRequests[idx]) {" in submit
-    assert "queueThreadMessage" not in submit
+    assert "const pendingHere = hasPendingThread(idx, targetResultEventId) ||" in submit
+    assert "!!activeThreadRequest(idx, targetResultEventId);" in submit
+    assert "state.composerMode === 'chat' && pendingHere" in submit
+    assert "threadRequestKind(idx, targetResultEventId) !== 'discuss'" in submit
+    assert "const targetResultEventId = currentThreadResultEventId(idx);" in submit
+    assert "queueThreadMessage(idx, message, targetResultEventId)" in submit
     assert "hasAnyPendingThread()" not in submit
     assert "isRegeneratingHypothesis(idx)" in submit
-    assert "state.busyIndex === idx" in submit
-    assert "if (state.composerMode === 'edit') await sendRevise(message, idx);" in submit
+    assert "isLlmEditActive(idx, targetResultEventId)" in submit
+    assert "state.composerMode === 'edit' && hasAnyLlmEditActive(idx)" in submit
+    assert "await sendRevise(message, idx);" in submit
+    assert "await sendDiscuss(message, idx);" in submit
 
 
-def test_hypothesis_llm_submission_lock_preserves_draft_and_advances_context_before_unlock():
+def test_thread_operation_lock_is_scoped_to_exact_hypothesis_version():
+    js = (Path(app_module.app.static_folder) / "hypothesis_studio.js").read_text(encoding="utf-8")
+    helpers = js[js.index("function threadLaneKey"):
+                 js.index("function normalizeQueuedThreadMessages")]
+    submit = js[js.index("async function submitThreadMessage"):
+                js.index("function beginThreadRequest")]
+    begin = js[js.index("function beginThreadRequest"):
+               js.index("function finishThreadRequest")]
+    discuss = js[js.index("async function sendDiscuss"):
+                 js.index("async function sendRevise")]
+    revise = js[js.index("async function sendRevise"):
+                js.index("// ---- regenerate / manual edit / remove")]
+
+    assert "String(idx) + ':' + String(resultEventId || '')" in helpers
+    assert "pendingThreadRequest(idx, targetResultEventId)" in helpers
+    assert "activeThreadRequest(idx, targetResultEventId)" in helpers
+    assert "sameThreadResultEventId(state.busyResultEventId, targetResultEventId)" in helpers
+    assert "const targetResultEventId = currentThreadResultEventId(idx);" in submit
+    assert "hasPendingThread(idx, targetResultEventId)" in submit
+    assert "activeThreadRequest(idx, targetResultEventId)" in submit
+    assert "kind === 'revise' && hasAnyLlmEditActive(idx)" in begin
+    assert "index: idx" in begin
+    assert "resultEventId: resultEventId || null" in begin
+    assert "activeThreadRequests[started.laneKey] !== started.active" in discuss
+    assert "activeThreadRequests[started.laneKey] !== started.active" in revise
+    assert "payload.regeneration_result_id = versionView.viewedResultEventId" in discuss
+    assert "payload.regeneration_result_id = versionView.viewedResultEventId" in revise
+
+
+def test_hypothesis_chat_fifo_and_llm_edit_lock_advance_context_before_unlock():
     js = (Path(app_module.app.static_folder) / "hypothesis_studio.js").read_text(encoding="utf-8")
     submit = js[js.index("async function submitThreadMessage()"):
                 js.index("function beginThreadRequest")]
@@ -1884,39 +2213,61 @@ def test_hypothesis_llm_submission_lock_preserves_draft_and_advances_context_bef
     wire = js[js.index("function wire()"):
               js.index("document.addEventListener('DOMContentLoaded'")]
 
-    # The duplicate gate runs before the draft is read or cleared. Both a
-    # second button submission and Enter therefore return without creating an
-    # optimistic user turn or losing text typed during the first request.
-    gate = submit.index("if (hasPendingThread(idx) || activeThreadRequests[idx]) {")
+    # Edit remains single-flight and its blocked draft is not cleared. Normal
+    # Chat takes the separate FIFO branch and clears only after enqueueing.
     read_draft = submit.index("const message = els.input.value.trim();")
-    clear_draft = submit.index("els.input.value = '';")
-    optimistic_dispatch = submit.index("await sendRevise(message, idx)")
-    assert gate < read_draft < clear_draft < optimistic_dispatch
-    assert "refreshSendEnabled();\n            return;" in submit[gate:read_draft]
-    assert "if (hasPendingThread(idx) || activeThreadRequests[idx]) return null;" in begin
-    assert "pendingHere || selectedEditLocked || focusedMutationInProgress" in refresh
-    assert "if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitThreadMessage(); }" in wire
-    assert "queueThreadMessage" not in js
-    assert "queuedThreadMessages" not in js
+    any_version_edit_gate = submit.index(
+        "state.composerMode === 'edit' && hasAnyLlmEditActive(idx)"
+    )
+    edit_gate = submit.index("state.composerMode === 'edit' && pendingHere")
+    queue_gate = submit.index("state.composerMode === 'chat' && pendingHere")
+    queue_write = submit.index("queueThreadMessage(idx, message, targetResultEventId)")
+    clear_draft = submit.index("els.input.value = '';", queue_write)
+    assert read_draft < any_version_edit_gate < edit_gate < queue_gate < queue_write < clear_draft
+    assert "Another edit is already in progress for this hypothesis." in submit
+    assert "hasPendingThread(idx, resultEventId) || activeThreadRequest(idx, resultEventId)" in begin
+    assert "kind === 'revise' && hasAnyLlmEditActive(idx)" in begin
+    defensive_edit_gate = revise.index("if (hasAnyLlmEditActive(idx))")
+    revise_begin = revise.index("const started = beginThreadRequest(")
+    accepted_clear = revise.index("els.input.value = '';", revise_begin)
+    assert defensive_edit_gate < revise_begin < accepted_clear
+    assert "editRequestBlocked || selectedEditLocked || focusedMutationInProgress" in refresh
+    assert "if (pendingHere)" in refresh
+    assert "Queue message" not in refresh
+    assert "if (e.key === 'Enter' && !e.shiftKey && !e.isComposing)" in wire
+    assert "submitThreadMessage();" in wire
+    assert "queuedThreadMessages: {}" in js
+    assert "resultEventId: targetResultEventId" in js
+    assert "sameThreadResultEventId(entry.resultEventId, targetResultEventId)" in js
+    assert "function promoteNextQueuedThreadMessage(index)" in js
+    assert "sendDiscuss(next.text, idx, next.resultEventId);" in js
+    assert "const versionView = regenerationViewForResult(active, forcedResultEventId);" in discuss
+    assert "queuedThreadMessages: cloneJsonSafe(state.queuedThreadMessages || {}, {})" in js
+    assert "state.queuedThreadMessages = normalizeQueuedThreadMessages(" in js
+    assert "snap.queuedThreadMessages,\n            currentThreadResultEventId" in js
 
     # A completed ordinary response enters the transcript before the request
     # lock is released.
     assistant_reply = discuss.index("content: data.reply")
-    discuss_finish = discuss.index("finishThreadRequest(idx, started.requestId);", assistant_reply)
-    assert assistant_reply < discuss_finish < discuss.index("renderThread();", discuss_finish)
+    discuss_finish = discuss.index(
+        "finishThreadRequest(idx, started.resultEventId, started.requestId);", assistant_reply
+    )
+    promote = discuss.index("promoteNextQueuedThreadMessage(idx);", discuss_finish)
+    assert assistant_reply < discuss_finish < discuss.index("renderThread();", discuss_finish) < promote
 
-    # An LLM edit stays locked through durable history reconciliation. Thus
-    # Version N+1 and its thread identity are current before Send is available.
-    reconcile = revise.index("const reconciled = await restoreCurrentCardsFromHistory();")
-    revise_finish = revise.index("finishThreadRequest(idx, started.requestId);", reconcile)
-    clear_busy = revise.index("state.busyIndex = null;", revise_finish)
-    assert reconcile < revise_finish < clear_busy < revise.index("render();", clear_busy)
+    # Version N+1 enters local state before edit ownership is released. The
+    # exact response event is authoritative, so no global history replacement
+    # can race a newly-started chat or overwrite visible navigation.
+    append_revision = revise.index("kind: 'revision'")
+    revise_finish = revise.index("finishLlmEditRequest(idx, started);", append_revision)
+    assert append_revision < revise_finish < revise.index("render();", revise_finish)
+    assert "restoreCurrentCardsFromHistory" not in revise
 
-    # Every later chat resolves the active card and viewed version at submission
-    # time. Historical ordinary chat sends the durable result id to the server,
-    # stays on that result, and remains protected by the same in-flight lock.
+    # Every chat resolves the active card and its captured version. Historical
+    # queued chat therefore keeps its durable result id even if the scientist
+    # navigates to another version before the FIFO lane promotes it.
     active = discuss.index("const active = activeMutationHypothesis({ index: idx });")
-    version = discuss.index("const versionView = regenerationViewFor(active);")
+    version = discuss.index("const versionView = regenerationViewForResult(active, forcedResultEventId);")
     request = discuss.index("const started = beginThreadRequest(")
     assert active < version < request
     assert "Edit this historical result to create a new version before chatting about it." not in discuss
@@ -1929,7 +2280,7 @@ def test_hypothesis_llm_submission_lock_preserves_draft_and_advances_context_bef
     assert "delete state.viewedRegenerationPositions[idx]" not in discuss
 
 
-def test_pending_hypothesis_llm_request_locks_manual_edit_on_the_same_card():
+def test_only_llm_edit_locks_regenerate_and_manual_edit_on_the_same_card():
     static = Path(app_module.app.static_folder)
     js = (static / "hypothesis_studio.js").read_text(encoding="utf-8")
     css = (static / "hypothesis_studio.css").read_text(encoding="utf-8")
@@ -1946,29 +2297,61 @@ def test_pending_hypothesis_llm_request_locks_manual_edit_on_the_same_card():
 
     # The overflow action communicates the lock, while the handler repeats it
     # before changing focus/editor state to protect stale rendered menus.
-    assert "const manualEditLocked = hasPendingThread(Number(h.index)) ||" in overflow
-    assert "manualEditItem.disabled = manualEditLocked;" in overflow
-    assert "manualEditItem.setAttribute('aria-disabled', manualEditLocked ? 'true' : 'false');" in overflow
-    guard = open_manual.index("if (hasPendingThread(idx) || activeThreadRequests[idx]) {")
+    assert "const llmEditLocked = hasAnyLlmEditActive(Number(h.index));" in overflow
+    assert "const mutationLocked = llmEditLocked || isRegeneratingHypothesis(Number(h.index));" in overflow
+    assert "regenerateItem.disabled = mutationLocked;" in overflow
+    assert "regenerateItem.setAttribute('aria-disabled', mutationLocked ? 'true' : 'false');" in overflow
+    assert "manualEditItem.disabled = mutationLocked;" in overflow
+    assert "manualEditItem.setAttribute('aria-disabled', mutationLocked ? 'true' : 'false');" in overflow
+    guard = open_manual.index("if (hasAnyLlmEditActive(idx)) {")
     assert guard < open_manual.index("state.manualEditIndex = idx;")
 
     # If the editor was already open, its draft remains visible but cannot be
     # changed or saved until the same card's LLM request completes.
-    assert "ta.disabled = llmRequestPending || savePending;" in manual_block
-    assert "save.disabled = llmRequestPending || savePending;" in manual_block
+    assert "ta.disabled = llmEditLocked || savePending;" in manual_block
+    assert "save.disabled = llmEditLocked || savePending;" in manual_block
     assert "cancelManualEdit(idx);" in manual_block
     assert ".hs-card-overflow .v2-menu-item:disabled" in css
 
     # Saving is guarded independently and scoped by idx, so another card is
     # not blocked merely because this hypothesis has an in-flight request.
-    assert "hasActiveHypothesisRequest(idx)" in save_manual
+    assert "const mutationLocked = isRegeneratingHypothesis(idx) || hasAnyLlmEditActive(idx) ||" in save_manual
     assert "hasAnyRegeneration()" not in save_manual
     assert "hasAnyPendingThread()" not in save_manual
-    assert save_manual.index("hasActiveHypothesisRequest(idx)") < save_manual.index("const { resp, data } = await apiJson(")
+    assert save_manual.index("if (mutationLocked)") < save_manual.index("const { resp, data } = await apiJson(")
 
-    # Ordinary chat requests repaint the card action at lock/unlock as well;
-    # LLM revisions already repaint through their busy/version transition.
+    # Ordinary Chat still repaints card actions, but hasAnyLlmEditActive remains
+    # false for its `discuss` kind so those menu items stay available.
     assert discuss.count("renderCards();") >= 3
+
+
+def test_llm_edit_terminal_paths_release_the_lock_and_reject_late_cancelled_results():
+    js = (Path(app_module.app.static_folder) / "hypothesis_studio.js").read_text(encoding="utf-8")
+    stop = js[js.index("function stopActiveThreadRequest"):
+              js.index("function promoteNextQueuedThreadMessage")]
+    revise = js[js.index("async function sendRevise"):
+                js.index("// ---- regenerate / manual edit / remove")]
+    finish = js[js.index("function finishLlmEditRequest"):
+                js.index("async function sendRevise")]
+
+    # Cancellation invalidates the request identity before repainting. A late
+    # provider response therefore cannot apply its revision to newer state.
+    assert "activeRequest.stopped = true;" in stop
+    assert "delete activeThreadRequests[laneKey];" in stop
+    assert "sameThreadResultEventId(state.busyResultEventId, resultEventId)" in stop
+    assert "state.busyResultEventId = null;" in stop
+    assert "started.active.stopped || activeThreadRequests[started.laneKey] !== started.active" in revise
+
+    # Success, removed-card reconciliation, API failure, and network failure
+    # all finish the request and clear the scoped revise busy marker.
+    assert revise.count("finishLlmEditRequest(idx, started);") == 4
+    assert "finishThreadRequest(idx, started.resultEventId, started.requestId);" in finish
+    assert "state.busyIndex === idx && state.busyKind === 'revise'" in finish
+    assert "state.composerMode = 'chat';" in finish
+
+    # Chat cancellation advances queued Chat; an edit cancellation never
+    # promotes a queue that was forbidden while the edit lock was active.
+    assert "if (stoppedKind === 'discuss') promoteNextQueuedThreadMessage(idx);" in stop
 
 
 def test_manual_edit_is_scoped_but_selection_remains_available_during_mutations():
@@ -1985,8 +2368,8 @@ def test_manual_edit_is_scoped_but_selection_remains_available_during_mutations(
     # H2's LLM request and H3's regeneration must not disable H1. The common
     # predicate considers only the requested card's operation state.
     assert "isRegeneratingHypothesis(idx)" in helper
-    assert "hasPendingThread(idx)" in helper
-    assert "!!activeThreadRequests[idx]" in helper
+    assert "Object.values(state.pendingThreadRequests || {}).some" in helper
+    assert "Object.values(activeThreadRequests).some" in helper
     assert "state.busyIndex === idx" in helper
     assert "hasAnyRegeneration()" not in helper
     assert "hasAnyPendingThread()" not in helper
@@ -2038,6 +2421,8 @@ def test_completed_llm_edit_preserves_another_cards_manual_editor_and_save_state
                 js.index("// ---- regenerate / manual edit / remove")]
     manual = js[js.index("async function runManualEdit"):
                 js.index("async function runRemove")]
+    finish = js[js.index("function finishLlmEditRequest"):
+                js.index("async function sendRevise")]
 
     # H1's response owns only H1 state. It must not close or erase a manual
     # draft that was opened on H3 while the LLM request was in flight.
@@ -2048,7 +2433,7 @@ def test_completed_llm_edit_preserves_another_cards_manual_editor_and_save_state
 
     # Manual saves use their own per-card request registry, so an H3 save never
     # replaces H1's revise marker and neither completion can clobber the other.
-    assert revise.count("state.busyIndex === idx && state.busyKind === 'revise'") >= 3
+    assert "state.busyIndex === idx && state.busyKind === 'revise'" in finish
     assert "activeManualEditRequests[idx] = activeRequest;" in manual
     assert "manualEditRequest(idx) !== activeRequest" in manual
     assert "state.busyKind = 'manual-edit';" not in manual
@@ -2063,13 +2448,35 @@ def test_version_navigation_remains_available_during_scoped_agent_response():
     controls = js[js.index("function regenerationVersionControls"):js.index("function manualEditBlock")]
     assert "hasPendingThread(idx)" not in navigate
     assert "hasPendingThread(idx)" not in controls
+    assert "isRegeneratingHypothesis(idx)" not in navigate
+    assert "isRegeneratingHypothesis(idx)" not in controls
+    assert "previous.disabled = blocked || view.viewedPosition <= 0" in controls
+    assert "next.disabled = blocked || view.viewedPosition >= view.results.length - 1" in controls
     assert "function isViewedThreadPending(index)" in js
-    assert "pending.resultEventId === view.viewedResultEventId" in js
+    assert "hasPendingThread(idx, currentThreadResultEventId(idx))" in js
     assert "if (isViewedThreadPending(state.focusIndex))" in js
     assert "function hasBlockingCardMutation()" not in js
     assert "isManualEditSaving(idx)" in navigate
     assert "isManualEditSaving(idx)" in controls
     assert "state.events.indexOf(optimisticRequestEvent)" in js
+
+
+def test_request_provenance_never_reapplies_visible_version_ownership():
+    js = (Path(app_module.app.static_folder) / "hypothesis_studio.js").read_text(encoding="utf-8")
+    pending = js[js.index("function applyPendingThreadFromStorage"):
+                 js.index("async function pollPendingThreadCompletion")]
+    restore = js[js.index("async function restoreCurrentCardsFromHistory"):
+                 js.index("async function refreshAfterRegenerationCompletion")]
+    revise = js[js.index("async function sendRevise"):
+                js.index("// ---- regenerate / manual edit / remove")]
+
+    assert "state.focusIndex = pending.index" not in pending
+    assert "state.viewedRegenerationPositions[pending.index]" not in pending
+    assert "busyResultEventId = pending.resultEventId" in pending
+    assert "const preservedViewedResultIds = viewedVersionResultIds();" in restore
+    assert "restoreViewedVersionResultIds(preservedViewedResultIds);" in restore
+    assert "const sourceStillViewed = sameThreadResultEventId(" in revise
+    assert "state.focusIndex = responseIndex" not in revise
 
 
 def test_background_regeneration_completion_does_not_rerender_focused_transcript():
@@ -2172,22 +2579,29 @@ def test_each_round_defaults_to_exact_card_height_then_persists_only_user_split(
     assert js.count("requestGeneratedHypothesisFit();") == 2
 
 
-def test_zero_to_one_expansion_uses_half_height_floor_for_any_card():
+def test_full_view_and_manual_edit_share_half_height_expansion_floor():
     js = (Path(app_module.app.static_folder) / "hypothesis_studio.js").read_text(encoding="utf-8")
     card = js[js.index("function renderCard"):
               js.index("function regenerationVersionControls")]
+    prime = js[js.index("function primeHypothesisExpansionPanel"):
+               js.index("function manualEditRequest")]
+    manual = js[js.index("function openManualEdit"):
+                js.index("async function runManualEdit")]
     layout = js[js.index("function applyHypothesisPanelLayout"):
                 js.index("function syncHypothesisWorkspaceDivider")]
 
     assert "const EXPANDED_VIEW_DEFAULT_RATIO = 0.5;" in js
-    assert "const expandedCountBefore = Object.keys(state.expanded)" in card
-    assert "const expandedCountAfter = expandedCountBefore + (nextExpanded ? 1 : -1);" in card
-    assert "expandedCountBefore === 0 && expandedCountAfter === 1" in card
-    assert "if (openingFirstFullHypothesis)" in card
-    assert "HSL.hypothesisExpansionPanelRatio(" in card
-    assert "EXPANDED_VIEW_DEFAULT_RATIO" in card
+    assert "HSL.isOpeningFirstVisibleExpansion(" in prime
+    assert "state.regenerationRequests" in prime
+    assert "if (!openingFirstFullHypothesis) return;" in prime
+    assert "HSL.hypothesisExpansionPanelRatio(" in prime
+    assert "EXPANDED_VIEW_DEFAULT_RATIO" in prime
     expand_handler = card[card.index("expandBtn.addEventListener"):
                           card.index("if (expanded) {")]
+    assert "primeHypothesisExpansionPanel(idx, nextExpanded);" in expand_handler
+    manual_prime = manual.index("primeHypothesisExpansionPanel(idx, true);")
+    manual_expand = manual.index("state.expanded = { [idx]: true };")
+    assert manual_prime < manual_expand
     assert "idx === 1" not in expand_handler
     assert "firstExpansionAdjusted" not in js
 
@@ -2197,6 +2611,7 @@ def test_zero_to_one_expansion_uses_half_height_floor_for_any_card():
     assert "workspaceHeight * hypothesisSplit.temporaryExpandedRatio" in layout
     assert "applyHypothesisPanelHeight(" in layout
     assert "temporaryExpandedRatio = null" in card
+    assert "visibleExpandedHypotheses()" in card
     assert "if (rememberRatio && limits.workspaceHeight > 0)" in js
     remember = js[js.index("if (rememberRatio && limits.workspaceHeight > 0)"):
                   js.index("function observeAutomaticHypothesisHeight")]
@@ -2257,10 +2672,6 @@ def test_legacy_interview_and_chat_import_routes_are_removed():
     routes = {rule.rule for rule in app_module.app.url_map.iter_rules()}
     assert "/api/hypothesis_intent" not in routes
     assert "/api/import_chat_context" not in routes
-
-    legacy_js = (Path(app_module.app.static_folder) / "script.js").read_text(encoding="utf-8")
-    assert "/api/import_chat_context" not in legacy_js
-    assert "chat-import-modal" not in legacy_js
 
 
 def test_studio_controller_declares_all_referenced_elements():
@@ -4149,6 +4560,44 @@ def test_repeated_manual_edits_preserve_v1_title(monkeypatch, tmp_path):
     assert all(e["after"]["title"] == ATF3_REPORTED_TITLE for e in saved_revisions)
     assert "co-occupies Vangl2 and Rgs3" in gen.hypotheses[0]
     assert gen.hypotheses[0].startswith(f"**Title**: {ATF3_REPORTED_TITLE}")
+
+
+def test_manual_edit_without_label_colons_stays_visible_and_preserves_history(monkeypatch, tmp_path):
+    rd, gen, client = _guided_client(monkeypatch, tmp_path)
+    gen.hypotheses = [
+        f"**Title**: {ATF3_REPORTED_TITLE}\n\n"
+        "**Hypothesis**: Original ATF3 claim.\n\n"
+        "**Justification**: Original evidence."
+    ]
+    gen.hypothesis_state_ids = ["sid-1"]
+    original_result_id = _seed_current_version_history(rd, gen)
+
+    resp = client.post("/api/edit", json={
+        "index": 1,
+        "state_id": "sid-1",
+        "manual_hypothesis": (
+            "**Hypothesis** ATF3 directly represses Vangl2 and Rgs3.\n\n"
+            "**Justification** The edited evidence remains visible."
+        ),
+    })
+    body = resp.get_json()
+
+    assert resp.status_code == 200 and body["success"] is True
+    assert body["hypothesis"]["title"] == ATF3_REPORTED_TITLE
+    assert body["hypothesis"]["hypothesis"] == "ATF3 directly represses Vangl2 and Rgs3."
+    assert body["hypothesis"]["justification"] == "The edited evidence remains visible."
+    assert "**Hypothesis** ATF3 directly" in body["hypothesis"]["full_text"]
+    assert "**Hypothesis**:" not in body["hypothesis"]["full_text"]
+    assert "**Justification** The edited" in body["hypothesis"]["full_text"]
+    assert "created_version_number" not in body
+    assert "result_event_id" not in body
+
+    history = _version_history(gen)
+    assert history["active_position"] == 0
+    assert len(history["results"]) == 1
+    assert history["results"][0]["result_event_id"] == original_result_id
+    assert history["results"][0]["snapshot"]["hypothesis"] == body["hypothesis"]["hypothesis"]
+    assert history["results"][0]["snapshot"]["justification"] == body["hypothesis"]["justification"]
 
 
 def test_manual_edit_of_historical_v1_preserves_v1_title_and_leaves_later_versions_unchanged(monkeypatch, tmp_path):

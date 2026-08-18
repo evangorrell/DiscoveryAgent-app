@@ -61,6 +61,7 @@
         activity: $('hs-activity'), activityLabel: $('hs-activity-label'),
         activityCancel: $('hs-cancel-generation'), activityError: $('hs-activity-error'),
         workspaceMain: $('hs-workspace-main'), cards: $('hs-cards'), workspaceDivider: $('hs-workspace-divider'), thread: $('hs-thread'),
+        queuedMessages: $('hs-queued-messages'),
         sidebar: $('hs-sidebar'), roundList: $('hs-round-list'),
         readonlyBar: $('hs-readonly-bar'), readonlyTitle: $('hs-readonly-title'), readonlyText: $('hs-readonly-text'),
         readonlyCaveat: $('hs-readonly-caveat'), returnCurrent: $('hs-return-current'),
@@ -136,6 +137,7 @@
         busy: false,
         busyIndex: null,           // index of a card being mutated
         busyKind: null,            // mutation type for contextual busy UI
+        busyResultEventId: null,   // exact source version for an active LLM edit
         expanded: {},              // index -> details expanded?
         manualEditIndex: null,      // index whose full hypothesis is being edited inline
         manualEditDraft: '',
@@ -148,7 +150,8 @@
         currentRoundLabel: null,
         viewRoundIndex: null,
         viewRoundLabel: null,
-        pendingThreadRequests: {}, // index -> { kind, resultEventId } while that chat context is in flight
+        pendingThreadRequests: {}, // hypothesis/version lane -> request state
+        queuedThreadMessages: {},  // index -> FIFO normal-chat follow-ups, each scoped to an exact version
         composerMode: 'chat',      // 'chat' answers questions; 'edit' calls /api/edit
         cancelRequested: false,
         regenerationRequests: {}, // index -> { requestId, canceled } for independent card regenerations
@@ -156,6 +159,8 @@
 
     let eventSeq = 0;
     let regenerateSeq = 0;
+    let generationUiEpoch = 0;
+    let activeGenerationAttemptId = null;
     let activeThreadRequestSeq = 0;
     let manualEditRequestSeq = 0;
     let startRoundLastFocused = null;
@@ -173,7 +178,7 @@
         fitAllOnNextLayout: false,
         temporaryExpandedRatio: null,
     };
-    const activeThreadRequests = {}; // index -> request/controller state for independent hypothesis chats
+    const activeThreadRequests = {}; // hypothesis/version lane -> request/controller state
     const activeManualEditRequests = {}; // index -> request/controller state for independent manual saves
     const activeRemovalRequests = {}; // index -> stable card snapshot while removal is pending
     const removedHypothesisStateIds = new Set(); // ignore late results for deleted cards
@@ -326,6 +331,62 @@
         return Object.keys(state.regenerationRequests || {}).length > 0;
     }
 
+    function settleRegenerationRequest(index, expectedRequest) {
+        const idx = Number(index);
+        if (!idx) return false;
+        const active = regenerationRequest(idx);
+        // A late response may belong to an owner that was cancelled or
+        // superseded. It must never release (or recreate) a newer request.
+        if (expectedRequest && active !== expectedRequest) return false;
+        delete state.regenerationRequests[idx];
+        clearPendingRegeneration(idx);
+        if (state.busyIndex === idx && state.busyKind === 'regenerate') {
+            state.busyIndex = null;
+            state.busyKind = null;
+            state.busyResultEventId = null;
+        }
+        refreshSendEnabled();
+        persistStudioSnapshot();
+        return true;
+    }
+
+    function settleFullGenerationMutationState() {
+        // A newly durable candidate set supersedes any orphaned per-card
+        // regeneration ownership from the prior set. Card indexes are reused,
+        // so retaining those owners would incorrectly lock the new cards.
+        Object.keys(state.regenerationRequests || {}).forEach((key) => {
+            settleRegenerationRequest(Number(key), state.regenerationRequests[key]);
+        });
+        clearPendingRegeneration();
+    }
+
+    function visibleExpandedHypotheses() {
+        return HSL.visibleExpandedState(state.expanded, state.regenerationRequests);
+    }
+
+    function primeHypothesisExpansionPanel(index, nextExpanded) {
+        const idx = Number(index);
+        const openingFirstFullHypothesis = HSL.isOpeningFirstVisibleExpansion(
+            state.expanded,
+            state.regenerationRequests,
+            idx,
+            nextExpanded
+        );
+        if (!openingFirstFullHypothesis) return;
+        const workspaceHeight = els.workspaceMain.getBoundingClientRect().height;
+        if (workspaceHeight <= 0) return;
+        const currentRatio = hypothesisSplit.height > 0
+            ? hypothesisSplit.height / workspaceHeight
+            : (Number.isFinite(hypothesisSplit.ratio)
+                ? hypothesisSplit.ratio : DEFAULT_HYPOTHESIS_PANEL_RATIO);
+        // Both full viewing and manual editing open the same expanded card
+        // surface, so their first expansion uses the same halfway floor.
+        hypothesisSplit.temporaryExpandedRatio = HSL.hypothesisExpansionPanelRatio(
+            currentRatio,
+            EXPANDED_VIEW_DEFAULT_RATIO
+        );
+    }
+
     function manualEditRequest(index) {
         const idx = Number(index);
         return idx && activeManualEditRequests[idx] ? activeManualEditRequests[idx] : null;
@@ -353,7 +414,9 @@
         const content = String(message || '').trim();
         if (!idx || !content) return;
         try {
-            const requests = readPendingThreads().filter((entry) => entry.index !== idx);
+            const requests = readPendingThreads().filter((entry) =>
+                !sameThreadLane(entry.index, entry.resultEventId, idx, resultEventId)
+            );
             requests.push({
                 kind: kind === 'revise' ? 'revise' : 'discuss',
                 index: idx,
@@ -398,20 +461,29 @@
         }
     }
 
-    function readPendingThread(index) {
+    function readPendingThread(index, resultEventId) {
         const idx = index == null ? null : Number(index);
         const requests = readPendingThreads();
-        return idx == null ? (requests[0] || null) : (requests.find((entry) => entry.index === idx) || null);
+        if (idx == null) return requests[0] || null;
+        const targetResultEventId = arguments.length >= 2
+            ? (resultEventId || null) : currentThreadResultEventId(idx);
+        return requests.find((entry) =>
+            sameThreadLane(entry.index, entry.resultEventId, idx, targetResultEventId)
+        ) || null;
     }
 
-    function clearPendingThread(index) {
+    function clearPendingThread(index, resultEventId) {
         try {
             if (index == null) {
                 window.localStorage.removeItem(pendingThreadKey());
                 return;
             }
             const idx = Number(index);
-            const remaining = readPendingThreads().filter((entry) => entry.index !== idx);
+            const targetResultEventId = arguments.length >= 2
+                ? (resultEventId || null) : currentThreadResultEventId(idx);
+            const remaining = readPendingThreads().filter((entry) =>
+                !sameThreadLane(entry.index, entry.resultEventId, idx, targetResultEventId)
+            );
             if (remaining.length) {
                 window.localStorage.setItem(pendingThreadKey(), JSON.stringify({ requests: remaining }));
             } else {
@@ -420,34 +492,198 @@
         } catch (err) { /* storage unavailable */ }
     }
 
-    function pendingThreadRequest(index) {
+    function threadLaneKey(index, resultEventId) {
         const idx = Number(index);
-        return idx && state.pendingThreadRequests[idx] ? state.pendingThreadRequests[idx] : null;
+        return idx ? String(idx) + ':' + String(resultEventId || '') : '';
     }
 
-    function hasPendingThread(index) {
-        return !!pendingThreadRequest(index);
+    function sameThreadLane(leftIndex, leftResultEventId, rightIndex, rightResultEventId) {
+        return Number(leftIndex) === Number(rightIndex) &&
+            sameThreadResultEventId(leftResultEventId, rightResultEventId);
+    }
+
+    function pendingThreadRequest(index, resultEventId) {
+        const idx = Number(index);
+        if (!idx) return null;
+        const targetResultEventId = arguments.length >= 2
+            ? (resultEventId || null) : currentThreadResultEventId(idx);
+        const pending = state.pendingThreadRequests[threadLaneKey(idx, targetResultEventId)];
+        if (pending) return pending;
+        // Accept the pre-version-lane in-memory shape during a hot reload.
+        const legacy = state.pendingThreadRequests[idx];
+        return legacy && sameThreadResultEventId(legacy.resultEventId, targetResultEventId)
+            ? legacy : null;
+    }
+
+    function activeThreadRequest(index, resultEventId) {
+        const idx = Number(index);
+        if (!idx) return null;
+        const targetResultEventId = arguments.length >= 2
+            ? (resultEventId || null) : currentThreadResultEventId(idx);
+        return activeThreadRequests[threadLaneKey(idx, targetResultEventId)] || null;
+    }
+
+    function hasPendingThread(index, resultEventId) {
+        return arguments.length >= 2
+            ? !!pendingThreadRequest(index, resultEventId)
+            : !!pendingThreadRequest(index);
     }
 
     function isViewedThreadPending(index) {
         const idx = Number(index);
-        const pending = pendingThreadRequest(idx);
-        if (!idx || !pending) return false;
-        const active = activeMutationHypothesis({ index: idx });
-        const view = regenerationViewFor(active);
-        return !pending.resultEventId || pending.resultEventId === view.viewedResultEventId;
+        return !!idx && hasPendingThread(idx, currentThreadResultEventId(idx));
     }
 
     function hasAnyPendingThread() {
         return Object.keys(state.pendingThreadRequests || {}).length > 0;
     }
 
+    function threadRequestKind(index, resultEventId) {
+        const idx = Number(index);
+        if (!idx) return null;
+        const targetResultEventId = arguments.length >= 2
+            ? (resultEventId || null) : currentThreadResultEventId(idx);
+        const pending = pendingThreadRequest(idx, targetResultEventId);
+        const active = activeThreadRequest(idx, targetResultEventId);
+        return (pending && pending.kind) || (active && active.kind) || null;
+    }
+
+    function isLlmEditActive(index, resultEventId) {
+        const idx = Number(index);
+        if (!idx) return false;
+        const targetResultEventId = arguments.length >= 2
+            ? (resultEventId || null) : currentThreadResultEventId(idx);
+        return threadRequestKind(idx, targetResultEventId) === 'revise' ||
+            (state.busyIndex === idx && state.busyKind === 'revise' &&
+                sameThreadResultEventId(state.busyResultEventId, targetResultEventId));
+    }
+
+    function hasAnyLlmEditActive(index) {
+        const idx = Number(index);
+        if (!idx) return false;
+        if (state.busyIndex === idx && state.busyKind === 'revise') return true;
+        return Object.values(state.pendingThreadRequests || {}).some((pending) =>
+            pending && Number(pending.index) === idx && pending.kind === 'revise'
+        ) || Object.values(activeThreadRequests).some((active) =>
+            active && Number(active.index) === idx && active.kind === 'revise'
+        );
+    }
+
+    function currentThreadResultEventId(index) {
+        const idx = Number(index);
+        const active = idx ? activeMutationHypothesis({ index: idx }) : null;
+        if (!active) return null;
+        const view = regenerationViewFor(active);
+        return view.viewedResultEventId || null;
+    }
+
+    function normalizeQueuedThreadMessages(queues, legacyResultEventIdForIndex) {
+        if (!queues || typeof queues !== 'object') return {};
+        const normalized = {};
+        Object.keys(queues).forEach((key) => {
+            const idx = Number(key);
+            if (!idx || !Array.isArray(queues[key])) return;
+            const legacyResultEventId = typeof legacyResultEventIdForIndex === 'function'
+                ? legacyResultEventIdForIndex(idx) : null;
+            const items = queues[key].map((entry) => {
+                if (typeof entry === 'string') {
+                    const text = entry.trim();
+                    return text ? {
+                        text: text,
+                        createdAt: Date.now(),
+                        resultEventId: legacyResultEventId || null,
+                    } : null;
+                }
+                if (!entry || typeof entry !== 'object') return null;
+                const text = String(entry.text || '').trim();
+                if (!text) return null;
+                return {
+                    text: text,
+                    createdAt: Number.isFinite(entry.createdAt) ? entry.createdAt : Date.now(),
+                    resultEventId: entry.resultEventId
+                        ? String(entry.resultEventId) : (legacyResultEventId || null),
+                };
+            }).filter(Boolean).slice(0, 20);
+            if (items.length) normalized[idx] = items;
+        });
+        return normalized;
+    }
+
+    function sameThreadResultEventId(left, right) {
+        return String(left || '') === String(right || '');
+    }
+
+    function getQueuedThreadMessages(index, resultEventId) {
+        const idx = Number(index);
+        if (!idx || !Array.isArray(state.queuedThreadMessages[idx])) return [];
+        const targetResultEventId = arguments.length >= 2
+            ? (resultEventId || null) : currentThreadResultEventId(idx);
+        return state.queuedThreadMessages[idx].filter((entry) =>
+            sameThreadResultEventId(entry.resultEventId, targetResultEventId)
+        );
+    }
+
+    function queueThreadMessage(index, text, resultEventId) {
+        const idx = Number(index);
+        const content = String(text || '').trim();
+        if (!idx || !content) return false;
+        const next = Array.isArray(state.queuedThreadMessages[idx])
+            ? state.queuedThreadMessages[idx].slice() : [];
+        if (next.length >= 20) return false;
+        const targetResultEventId = arguments.length >= 3
+            ? (resultEventId || null) : currentThreadResultEventId(idx);
+        next.push({
+            text: content,
+            createdAt: Date.now(),
+            resultEventId: targetResultEventId,
+        });
+        state.queuedThreadMessages[idx] = next;
+        return true;
+    }
+
+    function shiftQueuedThreadMessage(index) {
+        const idx = Number(index);
+        if (!idx) return null;
+        const queue = Array.isArray(state.queuedThreadMessages[idx])
+            ? state.queuedThreadMessages[idx].slice() : [];
+        const next = queue.shift() || null;
+        if (queue.length) state.queuedThreadMessages[idx] = queue;
+        else delete state.queuedThreadMessages[idx];
+        return next;
+    }
+
+    function peekQueuedThreadMessage(index) {
+        const idx = Number(index);
+        const queue = idx && Array.isArray(state.queuedThreadMessages[idx])
+            ? state.queuedThreadMessages[idx] : [];
+        return queue[0] || null;
+    }
+
+    function removeQueuedThreadMessage(index, resultEventId, queueIndex) {
+        const idx = Number(index);
+        const pos = Number(queueIndex);
+        if (!idx || !Number.isInteger(pos)) return;
+        const queue = Array.isArray(state.queuedThreadMessages[idx])
+            ? state.queuedThreadMessages[idx].slice() : [];
+        const visibleQueue = getQueuedThreadMessages(idx, resultEventId);
+        if (pos < 0 || pos >= visibleQueue.length) return;
+        const queuePosition = queue.indexOf(visibleQueue[pos]);
+        if (queuePosition < 0) return;
+        queue.splice(queuePosition, 1);
+        if (queue.length) state.queuedThreadMessages[idx] = queue;
+        else delete state.queuedThreadMessages[idx];
+    }
+
     function hasActiveHypothesisRequest(index) {
         const idx = Number(index);
         if (!idx) return false;
         return isRegeneratingHypothesis(idx) ||
-            hasPendingThread(idx) ||
-            !!activeThreadRequests[idx] ||
+            Object.values(state.pendingThreadRequests || {}).some((pending) =>
+                pending && Number(pending.index) === idx
+            ) ||
+            Object.values(activeThreadRequests).some((active) =>
+                active && Number(active.index) === idx
+            ) ||
             isManualEditSaving(idx) ||
             (state.busyIndex === idx && state.busyKind !== null);
     }
@@ -587,6 +823,7 @@
                 generationId: state.generationId,
                 generating: !!state.generating,
                 focusIndex: state.focusIndex == null ? null : Number(state.focusIndex),
+                queuedThreadMessages: cloneJsonSafe(state.queuedThreadMessages || {}, {}),
                 busyIndex: state.busyIndex == null ? null : Number(state.busyIndex),
                 busyKind: state.busyKind || null,
                 expanded: normalizedExpanded(state.expanded),
@@ -629,6 +866,10 @@
         state.composerMode = 'chat';
         state.expanded = normalizedExpanded(snap.expanded);
         state.viewedRegenerationPositions = normalizedRegenerationPositions(snap.viewedRegenerationPositions);
+        state.queuedThreadMessages = normalizeQueuedThreadMessages(
+            snap.queuedThreadMessages,
+            currentThreadResultEventId
+        );
         state.manualEditIndex = null;
         state.manualEditDraft = '';
         state.readOnly = !!snap.readOnly;
@@ -655,6 +896,7 @@
             // restore it; a page snapshot may outlive the request that made it.
             state.busyIndex = null;
             state.busyKind = null;
+            state.busyResultEventId = null;
         }
 
         applyPendingThreadFromStorage();
@@ -710,7 +952,7 @@
     function stripMarkdownSectionLabel(value) {
         return String(value == null ? '' : value)
             .trim()
-            .replace(/^\s*\*{0,2}(?:Title|Primary factor|Hypothesis|Justification|Plan|Interpretation)\*{0,2}\s*:\s*/i, '')
+            .replace(/^\s*(?:(?:\*{1,3}|_{1,3})\s*(?:Title|Primary factor|Hypothesis|Justification|Plan|Interpretation)\s*:?\s*(?:\*{1,3}|_{1,3})\s*:?|(?:Title|Primary factor|Hypothesis|Justification|Plan|Interpretation)\s*:)\s*/i, '')
             .trim();
     }
     function stripSectionLabel(value) { return compactText(stripMarkdownSectionLabel(value)); }
@@ -749,7 +991,7 @@
         // Semantic (not mechanical) derivation: drop the sentence tail and
         // clausal riders so the leading target/mechanism phrase survives.
         let source = compactText(title) || compactText(hypothesisText);
-        source = source.replace(/^\s*\*{0,2}(?:Title|Hypothesis)\*{0,2}\s*:\s*/i, '');
+        source = stripMarkdownSectionLabel(source);
         const sentence = source.match(/^(.*?[.!?])(?:\s|$)/);
         if (sentence) source = sentence[1];
         source = source.split(/\s+(?:because|while|whereas|whose|which|that|via|using|preventing|distinguished)\b/i)[0];
@@ -977,13 +1219,16 @@
         let restoredAny = false;
         pendings.forEach((pending) => {
             const completion = pendingThreadCompletionState(pending);
+            const laneKey = threadLaneKey(pending.index, pending.resultEventId);
             if (completion === 'complete') {
-                clearPendingThread(pending.index);
-                delete state.pendingThreadRequests[pending.index];
-                delete activeThreadRequests[pending.index];
-                if (state.busyKind === 'revise' && state.busyIndex === pending.index) {
+                clearPendingThread(pending.index, pending.resultEventId);
+                delete state.pendingThreadRequests[laneKey];
+                delete activeThreadRequests[laneKey];
+                if (state.busyKind === 'revise' && state.busyIndex === pending.index &&
+                        sameThreadResultEventId(state.busyResultEventId, pending.resultEventId)) {
                     state.busyIndex = null;
                     state.busyKind = null;
+                    state.busyResultEventId = null;
                 }
                 return;
             }
@@ -993,27 +1238,24 @@
                     hypothesisIndex: pending.index, resultEventId: pending.resultEventId,
                 });
             }
-            if (state.focusIndex == null) state.focusIndex = pending.index;
-            if (pending.resultEventId) {
-                const history = HSE.regenerationHistory(state.events, pending.index);
-                const pendingPosition = history.results.findIndex(function (result) {
-                    return result.eventId === pending.resultEventId;
-                });
-                if (pendingPosition >= 0) state.viewedRegenerationPositions[pending.index] = pendingPosition;
-            }
-            state.pendingThreadRequests[pending.index] = {
+            state.pendingThreadRequests[laneKey] = {
                 kind: pending.kind,
+                index: pending.index,
                 resultEventId: pending.resultEventId,
             };
-            activeThreadRequests[pending.index] = {
+            activeThreadRequests[laneKey] = {
                 requestId: 0,
                 clientRequestId: pending.requestId || null,
                 controller: null,
                 stopped: false,
+                kind: pending.kind,
+                index: pending.index,
+                resultEventId: pending.resultEventId,
             };
             if (pending.kind === 'revise') {
                 state.busyIndex = pending.index;
                 state.busyKind = 'revise';
+                state.busyResultEventId = pending.resultEventId;
             }
             restoredAny = true;
         });
@@ -1031,10 +1273,12 @@
                     state.pendingThreadRequests = {};
                     state.busyIndex = null;
                     if (state.busyKind === 'revise') state.busyKind = null;
+                    state.busyResultEventId = null;
                 }
                 showShell();
                 render();
                 renderSidebar();
+                promoteReadyQueuedThreadMessages();
             }
             if (readPendingThreads().length) pollPendingThreadCompletion();
         }, 2500);
@@ -1090,9 +1334,66 @@
         };
     }
 
+    function regenerationViewForResult(h, resultEventId) {
+        const view = regenerationViewFor(h);
+        if (!resultEventId) return view;
+        const target = String(resultEventId);
+        const viewedPosition = view.results.findIndex((result) =>
+            result && String(result.eventId || '') === target
+        );
+        if (viewedPosition < 0) return null;
+        const viewed = view.results[viewedPosition];
+        return {
+            results: view.results,
+            activePosition: view.activePosition,
+            viewedPosition: viewedPosition,
+            viewedResult: viewed,
+            viewedResultEventId: viewed.eventId,
+            threadRecoverable: !!viewed.threadRecoverable,
+            viewedSnapshot: viewed.hypothesis || h,
+            isViewingCurrent: viewedPosition === view.activePosition,
+        };
+    }
+
+    function viewedVersionResultIds() {
+        const viewed = {};
+        deriveCards().forEach((hypothesis) => {
+            const view = regenerationViewFor(hypothesis);
+            if (view.viewedResultEventId) {
+                viewed[Number(hypothesis.index)] = String(view.viewedResultEventId);
+            }
+        });
+        return viewed;
+    }
+
+    function restoreViewedVersionResultIds(viewed) {
+        state.viewedRegenerationPositions = {};
+        Object.keys(viewed || {}).forEach((key) => {
+            const idx = Number(key);
+            const resultEventId = viewed[key];
+            const history = HSE.regenerationHistory(state.events, idx);
+            const position = history.results.findIndex((result) =>
+                result && String(result.eventId || '') === String(resultEventId || '')
+            );
+            if (position >= 0) state.viewedRegenerationPositions[idx] = position;
+        });
+    }
+
+    function setViewedVersionResultId(index, resultEventId) {
+        const idx = Number(index);
+        if (!idx || !resultEventId) return false;
+        const history = HSE.regenerationHistory(state.events, idx);
+        const position = history.results.findIndex((result) =>
+            result && String(result.eventId || '') === String(resultEventId)
+        );
+        if (position < 0) return false;
+        state.viewedRegenerationPositions[idx] = position;
+        return true;
+    }
+
     function navigateRegenerationVersion(index, position) {
         const idx = Number(index);
-        if (!idx || isManualEditSaving(idx) || isRegeneratingHypothesis(idx)) return;
+        if (!idx || isManualEditSaving(idx)) return;
         if (state.manualEditIndex === idx) {
             setComposerError('Save or cancel your manual changes before viewing another regeneration.');
             return;
@@ -1284,14 +1585,15 @@
         }
 
         const surface = el('div', 'hs-hypothesis-surface');
-        const anyExpanded = cards.some((h) => !!state.expanded[Number(h.index)]);
+        const visibleExpanded = visibleExpandedHypotheses();
+        const anyExpanded = cards.some((h) => !!visibleExpanded[Number(h.index)]);
         if (els.workspaceMain) els.workspaceMain.classList.toggle('has-expanded-hypothesis', anyExpanded);
         surface.classList.add(anyExpanded ? 'has-expanded-card' : 'is-static-row');
         const grid = el('div', 'hs-card-grid');
         if (cards.length <= 1) grid.classList.add('is-single');
-        const overflowColumn = HSL ? HSL.singleOverflowColumn(cards, state.expanded) : null;
+        const overflowColumn = HSL ? HSL.singleOverflowColumn(cards, visibleExpanded) : null;
         const packedOverflowPreferences = HSL
-            ? HSL.packedOverflowPreferences(cards, state.expanded) : null;
+            ? HSL.packedOverflowPreferences(cards, visibleExpanded) : null;
         cards.forEach((h) => grid.appendChild(renderCard(h, selectedIndex)));
         if (overflowColumn != null) {
             grid.classList.add('has-single-overflow', 'overflow-column-' + overflowColumn);
@@ -1424,9 +1726,9 @@
         const isSelected = selectedIndex === idx;
         const isPendingSelected = !state.readOnly && isSelected;
         const isFocused = state.focusIndex === idx;
+        const isRegenerating = isRegeneratingHypothesis(idx);
         const expanded = !!state.expanded[idx];
         const isManualEditing = !state.readOnly && state.manualEditIndex === idx;
-        const isRegenerating = isRegeneratingHypothesis(idx);
 
         const card = el('article', 'hs-card');
         card.dataset.index = idx;
@@ -1477,27 +1779,7 @@
         expandBtn.addEventListener('click', (e) => {
             e.stopPropagation();
             const nextExpanded = !expanded;
-            const expandedCountBefore = Object.keys(state.expanded)
-                .filter((key) => state.expanded[key]).length;
-            const expandedCountAfter = expandedCountBefore + (nextExpanded ? 1 : -1);
-            const openingFirstFullHypothesis =
-                expandedCountBefore === 0 && expandedCountAfter === 1;
-            if (openingFirstFullHypothesis) {
-                const workspaceHeight = els.workspaceMain.getBoundingClientRect().height;
-                if (workspaceHeight > 0) {
-                    const currentRatio = hypothesisSplit.height > 0
-                        ? hypothesisSplit.height / workspaceHeight
-                        : (Number.isFinite(hypothesisSplit.ratio)
-                            ? hypothesisSplit.ratio : DEFAULT_HYPOTHESIS_PANEL_RATIO);
-                    // The zero -> one expansion transition gets a halfway
-                    // floor. Math.max means a divider already farther down is
-                    // never moved upward to match the default.
-                    hypothesisSplit.temporaryExpandedRatio = HSL.hypothesisExpansionPanelRatio(
-                        currentRatio,
-                        EXPANDED_VIEW_DEFAULT_RATIO
-                    );
-                }
-            }
+            primeHypothesisExpansionPanel(idx, nextExpanded);
             const priorSurface = els.cards.querySelector('.hs-hypothesis-surface.has-expanded-card');
             const priorScrollTop = priorSurface ? priorSurface.scrollTop : null;
             if (!nextExpanded && state.manualEditIndex === idx) {
@@ -1505,7 +1787,7 @@
                 state.manualEditDraft = '';
             }
             state.expanded[idx] = nextExpanded;
-            if (!Object.keys(state.expanded).some((key) => state.expanded[key])) {
+            if (!Object.keys(visibleExpandedHypotheses()).length) {
                 hypothesisSplit.temporaryExpandedRatio = null;
             }
             rememberStudioView();
@@ -1560,7 +1842,7 @@
     function regenerationVersionControls(activeHypothesis, view) {
         const idx = Number(activeHypothesis.index);
         const nav = el('div', 'hs-regeneration-nav');
-        const blocked = state.manualEditIndex === idx || isManualEditSaving(idx) || isRegeneratingHypothesis(idx);
+        const blocked = state.manualEditIndex === idx || isManualEditSaving(idx);
 
         const previous = el('button', 'hs-regeneration-arrow', '‹');
         previous.type = 'button';
@@ -1587,13 +1869,13 @@
 
     function manualEditBlock(h) {
         const idx = Number(h.index);
-        const llmRequestPending = hasPendingThread(idx) || !!activeThreadRequests[idx];
+        const llmEditLocked = hasAnyLlmEditActive(idx);
         const savePending = isManualEditSaving(idx);
         const box = el('div', 'hs-manual-edit');
         const ta = el('textarea', 'hs-manual-edit-input');
         ta.dataset.index = String(idx);
         ta.value = state.manualEditDraft;
-        ta.disabled = llmRequestPending || savePending;
+        ta.disabled = llmEditLocked || savePending;
         ta.setAttribute('aria-label', 'Edit full hypothesis ' + idx);
         ta.addEventListener('input', () => { state.manualEditDraft = ta.value; growTextAreaNode(ta); });
         ta.addEventListener('keydown', (e) => {
@@ -1614,9 +1896,9 @@
         });
         const save = el('button', 'v2-btn v2-btn-primary', savePending ? 'Saving...' : 'Save Changes');
         save.type = 'button';
-        save.disabled = llmRequestPending || savePending;
-        if (llmRequestPending) {
-            save.title = 'Wait for the active DiscoveryAgent response to finish.';
+        save.disabled = llmEditLocked || savePending;
+        if (llmEditLocked) {
+            save.title = 'Wait for the active hypothesis edit to finish.';
         }
         save.addEventListener('click', (e) => {
             e.stopPropagation();
@@ -1643,16 +1925,24 @@
         // available while an earlier version is being viewed. Both mutation
         // paths resolve `h` back to the active/latest card before sending the
         // request: regeneration appends a new latest version, while removal
-        // removes the entire card from the candidate set.
-        menu.appendChild(menuItem('Regenerate', () => runRegenerate(h, '')));
+        // removes the entire card from the candidate set. Regeneration, like
+        // manual editing, must wait for an active LLM edit to finish.
+        const llmEditLocked = hasAnyLlmEditActive(Number(h.index));
+        const mutationLocked = llmEditLocked || isRegeneratingHypothesis(Number(h.index));
+        const regenerateItem = menuItem('Regenerate', () => runRegenerate(h, ''));
+        regenerateItem.disabled = mutationLocked;
+        regenerateItem.setAttribute('aria-disabled', mutationLocked ? 'true' : 'false');
+        if (mutationLocked) {
+            regenerateItem.title = 'Wait for the active hypothesis edit to finish.';
+        }
+        menu.appendChild(regenerateItem);
         const manualEditItem = menuItem('Edit manually', () => openManualEdit(
             displayedHypothesis, versionView.viewedPosition
         ));
-        const manualEditLocked = hasPendingThread(Number(h.index)) || !!activeThreadRequests[Number(h.index)];
-        manualEditItem.disabled = manualEditLocked;
-        manualEditItem.setAttribute('aria-disabled', manualEditLocked ? 'true' : 'false');
-        if (manualEditLocked) {
-            manualEditItem.title = 'Wait for the active DiscoveryAgent response to finish.';
+        manualEditItem.disabled = mutationLocked;
+        manualEditItem.setAttribute('aria-disabled', mutationLocked ? 'true' : 'false');
+        if (mutationLocked) {
+            manualEditItem.title = 'Wait for the active hypothesis edit to finish.';
         }
         menu.appendChild(manualEditItem);
         menu.appendChild(removeMenuItem(h));
@@ -1669,7 +1959,12 @@
         const item = el('button', 'v2-menu-item', esc(labelText));
         item.type = 'button';
         item.setAttribute('role', 'menuitem');
-        item.addEventListener('click', (e) => { e.stopPropagation(); closeAllMenus(); if (onActivate) onActivate(); });
+        item.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (item.disabled) return;
+            closeAllMenus();
+            if (onActivate) onActivate();
+        });
         return item;
     }
     function removeMenuItem(h) {
@@ -1757,6 +2052,7 @@
         els.thread.innerHTML = '';
         els.thread.hidden = false;
         if (state.focusIndex == null) {
+            renderQueuedMessages();
             if (state.readOnly) {
                 els.thread.hidden = true;
                 return;
@@ -1775,6 +2071,7 @@
             els.thread.appendChild(turnEl('assistant', '<span class="hs-typing" aria-label="DiscoveryAgent is thinking"><span></span><span></span><span></span></span>', true));
         }
         scrollThreadToBottom();
+        renderQueuedMessages();
         persistStudioSnapshot();
     }
 
@@ -1785,6 +2082,35 @@
         if (pending) body.classList.add('is-pending');
         turn.appendChild(body);
         return turn;
+    }
+
+    function renderQueuedMessages() {
+        if (!els.queuedMessages) return;
+        els.queuedMessages.innerHTML = '';
+        const resultEventId = state.focusIndex == null
+            ? null : currentThreadResultEventId(state.focusIndex);
+        const queue = state.focusIndex == null
+            ? [] : getQueuedThreadMessages(state.focusIndex, resultEventId);
+        els.queuedMessages.hidden = state.readOnly || !queue.length;
+        queue.forEach((entry, index) => {
+            const item = el('div', 'hs-queued-item');
+            item.appendChild(el('span', 'hs-queued-icon', '↳'));
+            item.appendChild(el('span', 'hs-queued-text', esc(entry.text || '')));
+            item.appendChild(el('span', 'hs-queued-status', 'Chat queued'));
+            const deleteButton = el('button', 'hs-queued-delete', '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><path d="M6.2 2.4h3.6l.5 1.1h2.5v1.2H3.2V3.5h2.5l.5-1.1Zm1 .9-.1.2h1.8l-.1-.2H7.2ZM4.2 5.6h7.6l-.4 7.2c0 .7-.6 1.2-1.3 1.2H5.9c-.7 0-1.2-.5-1.3-1.2L4.2 5.6Zm1.3 1.2.3 5.9c0 .1.1.2.2.2h4.2c.1 0 .2-.1.2-.2l.3-5.9H5.5Zm1.4 1h1.1v4H6.9v-4Zm2.1 0h1.1v4H9v-4Z" fill="currentColor"/></svg>');
+            deleteButton.type = 'button';
+            deleteButton.setAttribute('aria-label', 'Remove queued message');
+            deleteButton.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                removeQueuedThreadMessage(state.focusIndex, resultEventId, index);
+                renderQueuedMessages();
+                persistStudioSnapshot();
+                if (!els.input.disabled) els.input.focus();
+            });
+            item.appendChild(deleteButton);
+            els.queuedMessages.appendChild(item);
+        });
     }
 
     function prefersReducedMotion() {
@@ -2177,7 +2503,7 @@
             return;
         }
         if (init.data.redirect_to_round_monitor) {
-            window.location.href = init.data.round_workspace_url || CFG.roundWorkspaceUrl || '/round_monitor';
+            window.location.href = init.data.round_workspace_url || CFG.roundWorkspaceUrl || CFG.projectHomeUrl || CFG.projectsUrl || '/projects';
             return;
         }
 
@@ -2222,6 +2548,7 @@
             }
         }
         setCount(state.count);
+        promoteReadyQueuedThreadMessages();
     }
 
     async function initializeRunningRoundHistory() {
@@ -2280,6 +2607,7 @@
             state.generating = false;
             state.busyIndex = null;
             state.busyKind = null;
+            state.busyResultEventId = null;
             setBusy(false);
             applyStoredLiveView();
             applyPendingThreadFromStorage();
@@ -2294,6 +2622,7 @@
         state.generating = false;
         state.busyIndex = null;
         state.busyKind = null;
+        state.busyResultEventId = null;
         setBusy(false);
         showShell();
         applyLayout();
@@ -2453,7 +2782,8 @@
         }
     }
 
-    async function restoreCurrentCardsFromHistory() {
+    async function restoreCurrentCardsFromHistory(options) {
+        options = options || {};
         try {
             const list = await apiJsonWithTimeout('/api/hypothesis_history', 'GET', undefined, 2500);
             if (!list.resp.ok || !list.data || list.data.success === false) return false;
@@ -2461,17 +2791,51 @@
             if (state.currentRoundIndex == null) return false;
             const detail = await apiJsonWithTimeout('/api/hypothesis_history/' + state.currentRoundIndex, 'GET', undefined, 3500);
             if (!detail.resp.ok || !detail.data || detail.data.success === false) return false;
+            // Capture visible history choices immediately before replacing the
+            // event log. Requests own immutable source identities; they never
+            // own what the scientist is currently inspecting on any card.
+            const preservedViewedResultIds = viewedVersionResultIds();
+            let followNewCurrent = false;
+            const followIndex = Number(options.followNewCurrentIndex);
+            if (followIndex) {
+                const followCard = deriveCards().find((card) => Number(card.index) === followIndex);
+                followNewCurrent = !!(followCard && regenerationViewFor(followCard).isViewingCurrent);
+            }
             state.viewRoundIndex = detail.data.storage_round_index != null ? detail.data.storage_round_index : detail.data.round_index;
             state.viewRoundLabel = detail.data.label || state.currentRoundLabel;
             state.partialHistory = !!detail.data.partial_history;
             state.events = HSE.normalizeHistoryEvents(detail.data, nextEventId);
-            state.viewedRegenerationPositions = {};
+            restoreViewedVersionResultIds(preservedViewedResultIds);
+            if (followNewCurrent) delete state.viewedRegenerationPositions[followIndex];
             state.readOnly = !!detail.data.read_only;
             if (state.readOnly) state.focusIndex = null;
             return hasHypotheses();
         } catch (err) {
             return false;
         }
+    }
+
+    async function refreshAfterRegenerationCompletion(index) {
+        const idx = Number(index);
+        const priorSurface = els.cards.querySelector('.hs-hypothesis-surface');
+        const priorSurfaceScrollTop = priorSurface ? priorSurface.scrollTop : null;
+
+        const restored = await restoreCurrentCardsFromHistory({ followNewCurrentIndex: idx });
+        if (!restored) {
+            setComposerError('Could not refresh the regenerated hypothesis. Please try again.');
+            renderCards({ restoreScrollTop: priorSurfaceScrollTop });
+            return false;
+        }
+
+        setComposerError(null);
+        renderCards({ restoreScrollTop: priorSurfaceScrollTop });
+        if (Number(state.focusIndex) === idx) {
+            renderThread();
+            applyComposer();
+        }
+        renderSidebar();
+        persistStudioSnapshot();
+        return true;
     }
 
     async function restoreRequestedRoundFromLocation() {
@@ -2514,7 +2878,9 @@
         }
         const pendingRegeneration = readPendingRegeneration();
         if (pendingRegeneration && !isCanceledRegeneration(pendingRegeneration)) return resumeRegenerationInProgress(pendingRegeneration);
-        if (status && status.cancel_requested) {
+        if (status && (status.status === 'cancelled' || status.cancel_requested) && !status.in_progress) {
+            generationUiEpoch += 1;
+            activeGenerationAttemptId = null;
             state.generating = false;
             state.cancelRequested = false;
             setBusy(false);
@@ -2522,6 +2888,8 @@
             return false;
         }
         if (!status || (!status.in_progress && !status.unknown)) return false;
+        const generationEpoch = ++generationUiEpoch;
+        activeGenerationAttemptId = status.attempt_id || null;
         state.generating = true;
         setBusy(true);
         showShell();
@@ -2531,7 +2899,7 @@
             els.activityError.textContent = 'Checking generation status...';
             els.activityError.hidden = false;
         }
-        pollGenerationCompletion();
+        pollGenerationCompletion(generationEpoch);
         return true;
     }
 
@@ -2568,16 +2936,31 @@
                 pollRegenerationCompletion(requestId, index);
                 return;
             }
-            delete state.regenerationRequests[index];
-            clearPendingRegeneration(index);
-            initialize({ skipGenerationStatus: true, skipLocalSnapshot: true });
+            if (!settleRegenerationRequest(index, active)) return;
+            await refreshAfterRegenerationCompletion(index);
+            const terminalStatus = String(
+                (regen && regen.status) || status.status || ''
+            ).toLowerCase();
+            if (terminalStatus === 'failed') {
+                setComposerError(
+                    (regen && regen.error) || status.error ||
+                    'Could not regenerate that hypothesis.'
+                );
+                renderCards();
+            }
         }, 2500);
     }
 
-    function pollGenerationCompletion() {
+    function pollGenerationCompletion(generationEpoch) {
         window.setTimeout(async () => {
+            if (generationEpoch !== generationUiEpoch) return;
             const status = await generationStatus();
-            if (status && status.cancel_requested) {
+            if (generationEpoch !== generationUiEpoch) return;
+            if (status && status.in_progress && status.attempt_id) {
+                activeGenerationAttemptId = status.attempt_id;
+            }
+            if (status && (status.status === 'cancelled' || status.cancel_requested) && !status.in_progress) {
+                activeGenerationAttemptId = null;
                 stopActivity();
                 state.generating = false;
                 state.cancelRequested = false;
@@ -2590,9 +2973,10 @@
                     els.activityError.textContent = '';
                     els.activityError.hidden = true;
                 }
-                pollGenerationCompletion();
+                pollGenerationCompletion(generationEpoch);
                 return;
             }
+            activeGenerationAttemptId = null;
             stopActivity();
             state.generating = false;
             setBusy(false);
@@ -2616,12 +3000,19 @@
     }
     async function cancelGeneration() {
         if (!state.generating || state.cancelRequested) return;
+        const generationEpoch = generationUiEpoch;
+        const attemptId = activeGenerationAttemptId;
         state.cancelRequested = true;
         if (els.activityCancel) { els.activityCancel.disabled = true; els.activityCancel.textContent = 'Cancelling...'; }
         if (els.activityError) { els.activityError.textContent = ''; els.activityError.hidden = true; }
         try {
-            const { resp, data } = await apiJson('/api/cancel_generation', 'POST', {});
-            if (resp.ok && data && data.success !== false) {
+            const { resp, data } = await apiJson('/api/cancel_generation', 'POST', {
+                attempt_id: attemptId || undefined,
+            });
+            if (generationEpoch !== generationUiEpoch) return;
+            if (resp.ok && data && data.success !== false && data.cancelled !== false) {
+                generationUiEpoch += 1;
+                activeGenerationAttemptId = null;
                 state.generating = false;
                 state.cancelRequested = false;
                 stopActivity();
@@ -2631,9 +3022,15 @@
                 return;
             }
             state.cancelRequested = false;
+            if (data && data.attempt_id) {
+                const currentEpoch = ++generationUiEpoch;
+                activeGenerationAttemptId = data.attempt_id;
+                pollGenerationCompletion(currentEpoch);
+            }
             if (els.activityCancel) { els.activityCancel.disabled = false; els.activityCancel.textContent = 'Cancel'; }
             if (els.activityError) {
-                els.activityError.textContent = (data && data.error) || 'Could not cancel generation. Please try again.';
+                els.activityError.textContent = (data && data.error) ||
+                    'This generation attempt is no longer current and was not cancelled.';
                 els.activityError.hidden = false;
             }
         } catch (err) {
@@ -2646,6 +3043,17 @@
         }
     }
 
+    function applyCompletedLiveGeneration(generatedEvents, generationId) {
+        settleFullGenerationMutationState();
+        state.events = generatedEvents;
+        state.viewedRegenerationPositions = {};
+        state.generationId = generationId;
+        state.focusIndex = null;
+        state.expanded = {};
+        state.manualEditIndex = null;
+        state.manualEditDraft = '';
+    }
+
     async function generate() {
         diagnostics.generateCalls += 1;
         if (CFG.initialExploration) { hsDebug('generate skipped: initial_exploration true'); return; }
@@ -2655,9 +3063,13 @@
             return;
         }
         const guidance = (els.welcomeGuidance.value || '').trim();
+        const attemptId = makeClientRequestId();
+        const generationEpoch = ++generationUiEpoch;
+        activeGenerationAttemptId = attemptId;
         const payload = {
             num_hypotheses: state.count,
             guidance: guidance || undefined,
+            attempt_id: attemptId,
         };
         diagnostics.lastPayload = payload;
         hsDebug('generate called', payload);
@@ -2672,6 +3084,7 @@
             diagnostics.lastFetchStartedAt = new Date().toISOString();
             hsDebug('fetch /api/generate', payload);
             const { resp, data } = await apiJson('/api/generate', 'POST', payload);
+            if (generationEpoch !== generationUiEpoch || activeGenerationAttemptId !== attemptId) return;
             stopActivity();
             state.generating = false;
             if (resp.ok && data && data.success && Array.isArray(data.hypotheses)) {
@@ -2682,17 +3095,12 @@
                 const generationId = data.generation_id || null;
                 requestGeneratedHypothesisFit();
                 if (isViewingLiveRound()) {
-                    state.events = generatedEvents;
-                    state.viewedRegenerationPositions = {};
-                    state.generationId = generationId;
-                    state.focusIndex = null;
-                    state.expanded = {};
-                    state.manualEditIndex = null;
-                    state.manualEditDraft = '';
+                    applyCompletedLiveGeneration(generatedEvents, generationId);
                     render();
                     await loadHistory();
                     markViewedRoundSeen();
                 } else {
+                    settleFullGenerationMutationState();
                     if (liveStash) {
                         liveStash.events = generatedEvents;
                         liveStash.viewedRegenerationPositions = {};
@@ -2713,14 +3121,18 @@
                 }
             }
         } catch (err) {
+            if (generationEpoch !== generationUiEpoch || activeGenerationAttemptId !== attemptId) return;
             hsDebugError('generate failed before completion', err);
             stopActivity();
             state.generating = false;
             applyLayout();
             if (isViewingLiveRound()) setWelcomeError('Could not generate hypotheses. Check the server logs and try again.');
         } finally {
-            setBusy(false);
-            persistStudioSnapshot();
+            if (generationEpoch === generationUiEpoch && activeGenerationAttemptId === attemptId) {
+                activeGenerationAttemptId = null;
+                setBusy(false);
+                persistStudioSnapshot();
+            }
         }
     }
 
@@ -2728,7 +3140,7 @@
 
     async function onSubmit(e) {
         if (e) e.preventDefault();
-        if (isFocusedThreadPending() && !els.input.value.trim()) {
+        if (isFocusedThreadPending()) {
             cancelActiveThreadResponse();
             return;
         }
@@ -2736,7 +3148,8 @@
     }
 
     function isFocusedThreadPending() {
-        return state.focusIndex != null && isViewedThreadPending(state.focusIndex);
+        return state.focusIndex != null &&
+            hasPendingThread(state.focusIndex, currentThreadResultEventId(state.focusIndex));
     }
 
     function cancelActiveThreadResponse() {
@@ -2746,33 +3159,78 @@
     async function submitThreadMessage() {
         if (state.readOnly || state.focusIndex == null) return;
         const idx = state.focusIndex;
-        // V1 deliberately has no causal message queue. Keep any composer text
-        // untouched while this card's current thread request is in flight; the
-        // scientist may submit it only after the response/version transition
-        // has fully become current.
-        if (hasPendingThread(idx) || activeThreadRequests[idx]) {
-            refreshSendEnabled();
-            return;
-        }
         if (state.composerMode === 'edit' && isPendingSelectedCard(idx)) {
             setComposerError(selectedCardLockMessage(idx));
             return;
         }
         const message = els.input.value.trim();
         if (!message) return;
+        const targetResultEventId = currentThreadResultEventId(idx);
+        const pendingHere = hasPendingThread(idx, targetResultEventId) ||
+            !!activeThreadRequest(idx, targetResultEventId);
+
+        // LLM edits are version-owned for provenance but single-flight for the
+        // hypothesis as a whole. Browsing another version must remain allowed;
+        // submitting a second mutation must preserve its draft and explain the
+        // existing edit lock instead of falling through to a silent rejection.
+        if (state.composerMode === 'edit' && hasAnyLlmEditActive(idx)) {
+            setComposerError(
+                'Another edit is already in progress for this hypothesis. ' +
+                'Wait for it to finish or cancel it before starting another.'
+            );
+            refreshSendEnabled();
+            return;
+        }
+
+        // Edit with LLM mutates the hypothesis and remains single-flight. Do
+        // not consume the draft while this card has any active thread request.
+        if (state.composerMode === 'edit' && pendingHere) {
+            setComposerError('Wait for the active DiscoveryAgent response to finish before editing.');
+            refreshSendEnabled();
+            return;
+        }
+
+        // A normal Chat request may queue only behind another normal Chat.
+        // An LLM edit owns mutation-sensitive state until it reaches a terminal
+        // state, so a chat draft remains untouched while that lock is active.
+        if (state.composerMode === 'chat' && pendingHere) {
+            if (threadRequestKind(idx, targetResultEventId) !== 'discuss') {
+                setComposerError('Wait for the active hypothesis edit to finish before chatting.');
+                refreshSendEnabled();
+                return;
+            }
+            if (!queueThreadMessage(idx, message, targetResultEventId)) {
+                setComposerError('The chat queue is full. Wait for a response before adding another message.');
+                return;
+            }
+            setComposerError(null);
+            els.input.value = '';
+            autoGrow();
+            renderQueuedMessages();
+            refreshSendEnabled();
+            persistStudioSnapshot();
+            els.input.focus();
+            return;
+        }
+
         const focusedMutationInProgress = state.generating ||
             isRegeneratingHypothesis(idx) ||
-            (state.busyIndex === idx && state.busyKind !== null);
+            isLlmEditActive(idx, targetResultEventId);
         if (focusedMutationInProgress) return;
+        if (state.composerMode === 'edit') {
+            await sendRevise(message, idx);
+            return;
+        }
         setComposerError(null);
         els.input.value = '';
         autoGrow();
-        if (state.composerMode === 'edit') await sendRevise(message, idx);
-        else await sendDiscuss(message, idx);
+        await sendDiscuss(message, idx);
     }
 
     function beginThreadRequest(idx, kind, message, resultEventId) {
-        if (hasPendingThread(idx) || activeThreadRequests[idx]) return null;
+        const laneKey = threadLaneKey(idx, resultEventId);
+        if (hasPendingThread(idx, resultEventId) || activeThreadRequest(idx, resultEventId) ||
+                (kind === 'revise' && hasAnyLlmEditActive(idx))) return null;
         const requestId = ++activeThreadRequestSeq;
         const clientRequestId = makeClientRequestId();
         const controller = window.AbortController ? new AbortController() : null;
@@ -2781,10 +3239,15 @@
             clientRequestId: clientRequestId,
             controller: controller,
             stopped: false,
-        };
-        activeThreadRequests[idx] = active;
-        state.pendingThreadRequests[idx] = {
             kind: kind,
+            index: idx,
+            resultEventId: resultEventId || null,
+            laneKey: laneKey,
+        };
+        activeThreadRequests[laneKey] = active;
+        state.pendingThreadRequests[laneKey] = {
+            kind: kind,
+            index: idx,
             resultEventId: resultEventId || null,
         };
         rememberPendingThread(kind, idx, message, clientRequestId, resultEventId);
@@ -2794,29 +3257,35 @@
             clientRequestId: clientRequestId,
             signal: controller ? controller.signal : undefined,
             active: active,
+            laneKey: laneKey,
+            resultEventId: resultEventId || null,
         };
     }
 
-    function finishThreadRequest(idx, requestId) {
-        const active = activeThreadRequests[idx];
+    function finishThreadRequest(idx, resultEventId, requestId) {
+        const laneKey = threadLaneKey(idx, resultEventId);
+        const active = activeThreadRequests[laneKey];
         if (!active || requestId !== active.requestId) return false;
-        delete state.pendingThreadRequests[idx];
-        delete activeThreadRequests[idx];
-        clearPendingThread(idx);
+        delete state.pendingThreadRequests[laneKey];
+        delete activeThreadRequests[laneKey];
+        clearPendingThread(idx, resultEventId);
         refreshSendEnabled();
         return true;
     }
 
     function stopActiveThreadRequest() {
         const idx = Number(state.focusIndex);
-        if (!idx || !hasPendingThread(idx)) return;
-        const activeRequest = activeThreadRequests[idx];
+        const resultEventId = currentThreadResultEventId(idx);
+        const laneKey = threadLaneKey(idx, resultEventId);
+        if (!idx || !hasPendingThread(idx, resultEventId)) return;
+        const stoppedKind = threadRequestKind(idx, resultEventId);
+        const activeRequest = activeThreadRequest(idx, resultEventId);
         if (activeRequest) {
             activeRequest.stopped = true;
             if (activeRequest.controller) activeRequest.controller.abort();
         }
         const requestId = activeRequest && activeRequest.clientRequestId;
-        const pending = readPendingThread(idx);
+        const pending = readPendingThread(idx, resultEventId);
         const active = activeMutationHypothesis({ index: idx });
         const view = regenerationViewFor(active);
         state.events.push({
@@ -2827,22 +3296,59 @@
             apiJson('/api/cancel_hypothesis_thread', 'POST', { request_id: requestId, index: idx })
                 .catch(() => { /* best-effort server cancellation */ });
         }
-        delete state.pendingThreadRequests[idx];
-        delete activeThreadRequests[idx];
-        if (state.busyIndex === idx) state.busyIndex = null;
-        if (state.busyKind === 'revise' && state.busyIndex == null) state.busyKind = null;
-        clearPendingThread(idx);
+        delete state.pendingThreadRequests[laneKey];
+        delete activeThreadRequests[laneKey];
+        if (state.busyIndex === idx && state.busyKind === 'revise' &&
+                sameThreadResultEventId(state.busyResultEventId, resultEventId)) {
+            state.busyIndex = null;
+            state.busyKind = null;
+            state.busyResultEventId = null;
+        }
+        if (stoppedKind === 'revise') state.composerMode = 'chat';
+        clearPendingThread(idx, resultEventId);
         renderCards();
         renderThread();
         applyComposer();
         persistStudioSnapshot();
+        if (stoppedKind === 'discuss') promoteNextQueuedThreadMessage(idx);
     }
 
-    async function sendDiscuss(message, forcedIndex) {
+    function promoteNextQueuedThreadMessage(index) {
+        const idx = Number(index);
+        const next = peekQueuedThreadMessage(idx);
+        if (!idx || !next || state.readOnly ||
+                hasPendingThread(idx, next.resultEventId) || activeThreadRequest(idx, next.resultEventId) ||
+                isLlmEditActive(idx, next.resultEventId) || isRegeneratingHypothesis(idx) || state.generating) {
+            renderQueuedMessages();
+            persistStudioSnapshot();
+            return false;
+        }
+        shiftQueuedThreadMessage(idx);
+        renderQueuedMessages();
+        // sendDiscuss synchronously records the promoted item as the new
+        // durable pending request before its first await. Avoid persisting the
+        // shifted queue in between those two states, where a refresh could
+        // otherwise lose the message.
+        sendDiscuss(next.text, idx, next.resultEventId);
+        return true;
+    }
+
+    function promoteReadyQueuedThreadMessages() {
+        Object.keys(state.queuedThreadMessages || {}).forEach((key) => {
+            promoteNextQueuedThreadMessage(Number(key));
+        });
+    }
+
+    async function sendDiscuss(message, forcedIndex, forcedResultEventId) {
         const idx = Number(forcedIndex || state.focusIndex);
         if (!idx) return;
         const active = activeMutationHypothesis({ index: idx });
-        const versionView = regenerationViewFor(active);
+        const versionView = regenerationViewForResult(active, forcedResultEventId);
+        if (!versionView) {
+            setComposerError('That hypothesis version is no longer available.');
+            promoteNextQueuedThreadMessage(idx);
+            return;
+        }
         const started = beginThreadRequest(idx, 'discuss', message, versionView.viewedResultEventId);
         if (!started) return;
         state.events.push({
@@ -2861,7 +3367,7 @@
                 payload.regeneration_result_id = versionView.viewedResultEventId;
             }
             const { resp, data } = await apiJson('/api/chat', 'POST', payload, started.signal);
-            if (started.active.stopped || activeThreadRequests[idx] !== started.active) return;
+            if (started.active.stopped || activeThreadRequests[started.laneKey] !== started.active) return;
             if (resp.ok && data && data.success && data.reply) {
                 state.events.push({
                     kind: 'message', role: 'assistant', content: data.reply, hypothesisIndex: idx,
@@ -2877,10 +3383,11 @@
             // Keep submission locked until the completed response is part of
             // the current transcript. A later send must never race this state
             // update and resolve against the prior conversation.
-            finishThreadRequest(idx, started.requestId);
+            finishThreadRequest(idx, started.resultEventId, started.requestId);
             renderCards();
             renderThread();
             applyComposer();
+            promoteNextQueuedThreadMessage(idx);
         } catch (err) {
             if (pageUnloading) return;
             if (started.active.stopped || (err && err.name === 'AbortError')) return;
@@ -2889,17 +3396,38 @@
                 content: 'Network error reaching DiscoveryAgent. Please try again.',
                 hypothesisIndex: idx, resultEventId: versionView.viewedResultEventId,
             });
-            finishThreadRequest(idx, started.requestId);
+            finishThreadRequest(idx, started.resultEventId, started.requestId);
             renderCards();
             renderThread();
             applyComposer();
+            promoteNextQueuedThreadMessage(idx);
         }
+    }
+
+    function finishLlmEditRequest(idx, started) {
+        const finished = finishThreadRequest(idx, started.resultEventId, started.requestId);
+        if (state.busyIndex === idx && state.busyKind === 'revise' &&
+                sameThreadResultEventId(state.busyResultEventId, started.resultEventId)) {
+            state.busyIndex = null;
+            state.busyKind = null;
+            state.busyResultEventId = null;
+        }
+        state.composerMode = 'chat';
+        return finished;
     }
 
     async function sendRevise(request, forcedIndex) {
         const idx = Number(forcedIndex || state.focusIndex);
         if (isPendingSelectedCard(idx)) {
             setComposerError(selectedCardLockMessage(idx));
+            return;
+        }
+        if (hasAnyLlmEditActive(idx)) {
+            setComposerError(
+                'Another edit is already in progress for this hypothesis. ' +
+                'Wait for it to finish or cancel it before starting another.'
+            );
+            refreshSendEnabled();
             return;
         }
         const h = activeMutationHypothesis({ index: idx });
@@ -2912,9 +3440,17 @@
             hypothesisMarkdown(versionView.viewedSnapshot)
         );
         const started = beginThreadRequest(idx, 'revise', request, versionView.viewedResultEventId);
-        if (!started) return;
+        if (!started) {
+            setComposerError('Wait for the active DiscoveryAgent response to finish before editing.');
+            refreshSendEnabled();
+            return;
+        }
+        setComposerError(null);
+        els.input.value = '';
+        autoGrow();
         state.busyIndex = idx;
         state.busyKind = 'revise';
+        state.busyResultEventId = versionView.viewedResultEventId;
         // The revise request appears in the thread as a normal scientist turn
         // (the backend also persists it just ahead of the revision).
         const optimisticRequestEvent = {
@@ -2936,18 +3472,17 @@
                 payload.regeneration_result_id = versionView.viewedResultEventId;
             }
             const { resp, data } = await apiJson('/api/edit', 'POST', payload, started.signal);
-            if (started.active.stopped || activeThreadRequests[idx] !== started.active) return;
+            if (started.active.stopped || activeThreadRequests[started.laneKey] !== started.active) return;
             if (removedHypothesisStateIds.has(h.state_id)) {
-                finishThreadRequest(idx, started.requestId);
-                if (state.busyIndex === idx && state.busyKind === 'revise') {
-                    state.busyIndex = null;
-                    state.busyKind = null;
-                }
+                finishLlmEditRequest(idx, started);
                 render();
                 return;
             }
             if (resp.ok && data && data.success && data.hypothesis) {
                 const responseIndex = Number(data.hypothesis.index) || idx;
+                const sourceStillViewed = sameThreadResultEventId(
+                    currentThreadResultEventId(responseIndex), started.resultEventId
+                );
                 // Completing an LLM edit must not close or discard a manual
                 // editor that the scientist opened on another hypothesis while
                 // this request was in flight.
@@ -2956,13 +3491,14 @@
                     state.manualEditDraft = '';
                 }
                 const durableSourceResultId = data.source_result_event_id || versionView.viewedResultEventId;
+                const createdResultEventId = data.result_event_id || nextEventId();
                 optimisticRequestEvent.resultEventId = durableSourceResultId;
                 state.events.push({
-                    kind: 'revision', id: data.result_event_id || nextEventId(), index: responseIndex,
+                    kind: 'revision', id: createdResultEventId, index: responseIndex,
                     source: 'regenerated',
                     before: versionView.viewedSnapshot || h,
                     sourceResultEventId: durableSourceResultId,
-                    resultEventId: data.result_event_id || undefined,
+                    resultEventId: createdResultEventId,
                     hypothesis: data.hypothesis,
                 });
                 state.events.push({
@@ -2972,39 +3508,28 @@
                         'Created Version ' + (data.created_version_number || (versionView.results.length + 1)) + '.'
                     ),
                 });
-                // Every LLM edit creates Version N+1 and makes it current,
-                // including an edit requested while reading an earlier result.
-                // Manual edits keep their separate in-place path below. Read
-                // the just-persisted history back immediately so the live
-                // version navigator uses the same durable event identities as
-                // a page refresh. If that local read fails, the appended event
-                // above remains a complete offline-safe fallback.
-                delete state.viewedRegenerationPositions[responseIndex];
-                if (isViewingLiveRound()) {
-                    const reconciled = await restoreCurrentCardsFromHistory();
-                    if (reconciled && cardIndexExists(responseIndex)) {
-                        state.focusIndex = responseIndex;
-                        delete state.viewedRegenerationPositions[responseIndex];
-                    }
+                // The durable result belongs to the immutable captured source,
+                // not to whatever card/version the scientist is inspecting at
+                // completion. If the source version is still selected, advance
+                // that card to the exact created version; otherwise preserve
+                // the user's newer read-only navigation choice.
+                if (sourceStillViewed) {
+                    setViewedVersionResultId(responseIndex, createdResultEventId);
                 }
-                // Re-enable Send only after Version N+1 and its durable thread
-                // identity have become the current card state.
-                finishThreadRequest(idx, started.requestId);
-                if (state.busyIndex === idx && state.busyKind === 'revise') {
-                    state.busyIndex = null;
-                    state.busyKind = null;
-                }
+                // The request is terminal as soon as its durable result is in
+                // local state. The response already supplies the durable event
+                // identity, so this append is the affected card's complete
+                // local history refresh. Do not replace the global event log:
+                // that could overwrite navigation or a new chat started while
+                // a redundant history request was in flight.
+                finishLlmEditRequest(idx, started);
                 render();
             } else {
                 // Drop the optimistic request turn on failure.
                 const optimisticPosition = state.events.indexOf(optimisticRequestEvent);
                 if (optimisticPosition >= 0) state.events.splice(optimisticPosition, 1);
                 setComposerError((data && data.error) || 'Could not revise that hypothesis.');
-                finishThreadRequest(idx, started.requestId);
-                if (state.busyIndex === idx && state.busyKind === 'revise') {
-                    state.busyIndex = null;
-                    state.busyKind = null;
-                }
+                finishLlmEditRequest(idx, started);
                 renderCards();
                 renderThread();
                 applyComposer();
@@ -3015,11 +3540,7 @@
             const optimisticPosition = state.events.indexOf(optimisticRequestEvent);
             if (optimisticPosition >= 0) state.events.splice(optimisticPosition, 1);
             setComposerError('Network error while revising.');
-            finishThreadRequest(idx, started.requestId);
-            if (state.busyIndex === idx && state.busyKind === 'revise') {
-                state.busyIndex = null;
-                state.busyKind = null;
-            }
+            finishLlmEditRequest(idx, started);
             renderCards();
             renderThread();
             applyComposer();
@@ -3045,11 +3566,18 @@
         const hasActiveOperation = !idx || state.generating ||
             (state.busyIndex === idx && state.busyKind !== null) ||
             isRegeneratingHypothesis(idx) ||
-            hasPendingThread(idx);
+            hasAnyLlmEditActive(idx);
         if (hasActiveOperation) return;
         clearCanceledRegeneration(idx);
         const requestId = ++regenerateSeq;
-        const activeRequest = { requestId: requestId, canceled: false, restored: false };
+        const sourceView = regenerationViewFor(h);
+        const activeSource = sourceView.results[sourceView.activePosition];
+        const activeRequest = {
+            requestId: requestId,
+            canceled: false,
+            restored: false,
+            sourceResultEventId: activeSource && activeSource.eventId ? activeSource.eventId : null,
+        };
         state.regenerationRequests[idx] = activeRequest;
         rememberPendingRegeneration(idx);
         renderCards();
@@ -3063,20 +3591,28 @@
             if (request) payload.feedback = request;
             const { resp, data } = await apiJson('/api/regenerate_guidance', 'POST', payload);
             if (regenerationRequest(idx) !== activeRequest || activeRequest.canceled) return;
-            delete state.regenerationRequests[idx];
-            clearPendingRegeneration(idx);
+            settleRegenerationRequest(idx, activeRequest);
             if (removedHypothesisStateIds.has(h.state_id)) {
                 render();
                 return;
             }
             if (resp.ok && data && data.success && data.hypothesis) {
                 const responseIndex = Number(data.hypothesis.index) || idx;
+                const sourceStillViewed = sameThreadResultEventId(
+                    currentThreadResultEventId(responseIndex), activeRequest.sourceResultEventId
+                );
+                const createdResultEventId = data.result_event_id || nextEventId();
                 state.generationId = data.generation_id != null ? data.generation_id : state.generationId;
                 state.events.push({
-                    kind: 'revision', id: data.result_event_id || nextEventId(), index: responseIndex,
-                    source: 'regenerated', before: h, hypothesis: data.hypothesis,
+                    kind: 'revision', id: createdResultEventId, index: responseIndex,
+                    source: 'regenerated', before: h,
+                    sourceResultEventId: activeRequest.sourceResultEventId,
+                    resultEventId: createdResultEventId,
+                    hypothesis: data.hypothesis,
                 });
-                delete state.viewedRegenerationPositions[responseIndex];
+                if (sourceStillViewed) {
+                    setViewedVersionResultId(responseIndex, createdResultEventId);
+                }
                 if (Number(state.focusIndex) === responseIndex) {
                     render();
                 } else {
@@ -3091,14 +3627,12 @@
             }
         } catch (err) {
             if (regenerationRequest(idx) !== activeRequest || activeRequest.canceled) return;
-            delete state.regenerationRequests[idx];
-            clearPendingRegeneration(idx);
+            settleRegenerationRequest(idx, activeRequest);
             setComposerError('Network error while regenerating.');
             renderCards();
         } finally {
             if (!pageUnloading && regenerationRequest(idx) === activeRequest) {
-                delete state.regenerationRequests[idx];
-                clearPendingRegeneration(idx);
+                settleRegenerationRequest(idx, activeRequest);
                 renderCards();
             }
         }
@@ -3111,15 +3645,14 @@
         rememberCanceledRegeneration(idx);
         apiJson('/api/cancel_regeneration', 'POST', { index: idx })
             .catch(() => { /* best-effort server cancellation */ });
-        clearPendingRegeneration(idx);
-        delete state.regenerationRequests[idx];
+        settleRegenerationRequest(idx, activeRequest);
         renderCards();
         persistStudioSnapshot();
     }
     function openManualEdit(h, regenerationPosition) {
         const idx = Number(h.index);
-        if (hasPendingThread(idx) || activeThreadRequests[idx]) {
-            setComposerError('Wait for the active DiscoveryAgent response to finish before editing manually.');
+        if (hasAnyLlmEditActive(idx)) {
+            setComposerError('Wait for the active hypothesis edit to finish before editing manually.');
             return;
         }
         if (isPendingSelectedCard(idx)) {
@@ -3129,6 +3662,7 @@
         if (Number.isInteger(Number(regenerationPosition))) {
             state.viewedRegenerationPositions[idx] = Number(regenerationPosition);
         }
+        primeHypothesisExpansionPanel(idx, true);
         state.focusIndex = idx;
         state.expanded = { [idx]: true };
         state.manualEditIndex = idx;
@@ -3151,8 +3685,11 @@
     async function runManualEdit(h, text) {
         h = activeMutationHypothesis(h);
         const idx = Number(h.index);
-        if (hasActiveHypothesisRequest(idx)) {
-            setComposerError('Wait for the active hypothesis response to finish before saving an edit.');
+        const mutationLocked = isRegeneratingHypothesis(idx) || hasAnyLlmEditActive(idx) ||
+            isManualEditSaving(idx) ||
+            (state.busyIndex === idx && state.busyKind !== null);
+        if (mutationLocked) {
+            setComposerError('Wait for the active hypothesis edit to finish before saving an edit.');
             return;
         }
         if (isPendingSelectedCard(idx)) {
@@ -3466,17 +4003,21 @@
     }
     function refreshSendEnabled() {
         const focused = state.focusIndex != null;
-        const pendingHere = focused && hasPendingThread(state.focusIndex);
+        const focusedResultEventId = focused
+            ? currentThreadResultEventId(state.focusIndex) : null;
+        const pendingHere = focused &&
+            hasPendingThread(state.focusIndex, focusedResultEventId);
         const hasMessage = !!els.input.value.trim();
         const focusedMutationInProgress = state.generating ||
             (focused && isRegeneratingHypothesis(state.focusIndex)) ||
-            (focused && state.busyIndex === state.focusIndex && state.busyKind !== null);
+            (focused && isLlmEditActive(state.focusIndex, focusedResultEventId));
         const selectedEditLocked = focused && state.composerMode === 'edit' &&
             isPendingSelectedCard(state.focusIndex);
-        if (pendingHere && !hasMessage) {
+        const editRequestBlocked = focused && state.composerMode === 'edit' && pendingHere;
+        if (pendingHere) {
             els.send.disabled = false;
             els.send.classList.add('is-stop');
-            els.send.setAttribute('aria-label', 'Cancel response');
+            els.send.setAttribute('aria-label', 'Stop response');
             els.send.innerHTML = '<svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" focusable="false"><rect x="5.25" y="5.25" width="9.5" height="9.5" rx="1.8" fill="currentColor"/></svg>';
             return;
         }
@@ -3484,7 +4025,7 @@
         els.send.setAttribute('aria-label', 'Send message');
         els.send.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 19V5M12 5l-6 6M12 5l6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
         els.send.disabled = state.readOnly || !focused || !hasMessage ||
-            pendingHere || selectedEditLocked || focusedMutationInProgress;
+            editRequestBlocked || selectedEditLocked || focusedMutationInProgress;
     }
 
     // ---- wiring --------------------------------------------------------------
@@ -3525,7 +4066,10 @@
         els.input.addEventListener('change', syncComposerInput);
         els.input.addEventListener('keyup', refreshSendEnabled);
         els.input.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitThreadMessage(); }
+            if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+                e.preventDefault();
+                submitThreadMessage();
+            }
         });
         els.countTrigger.addEventListener('click', (e) => {
             e.stopPropagation();

@@ -58,6 +58,9 @@ def test_packaged_resource_load_is_independent_of_repository_cwd(tmp_path):
     assert guide is not None
     assert "# Audit UI Guide" in guide
     assert "read-only review workspace" in guide
+    assert "checkpoints browser" not in guide.lower()
+    assert "Ask the Audit Agent to inspect supporting context" in guide
+    assert "Ask the Audit Agent to summarize the README" in guide
 
 
 def test_project_audit_route_renders_packaged_guide(monkeypatch, tmp_path):
@@ -77,12 +80,17 @@ def test_project_audit_route_renders_packaged_guide(monkeypatch, tmp_path):
     assert b"read-only review workspace" in response.data
 
 
-def test_legacy_audit_route_renders_packaged_guide():
+def test_project_resolvable_legacy_audit_redirects_to_v2_packaged_guide():
     client = _authenticated_client()
+    project = _create_project(client)
     with client.session_transaction() as session:
         session["app_mode"] = app_module.APP_MODE_AUDIT
 
-    response = client.get("/audit")
+    redirect_response = client.get("/audit")
+    assert redirect_response.status_code == 302
+    assert redirect_response.headers["Location"] == f"/projects/{project['url_slug']}/audit"
+
+    response = client.get(redirect_response.headers["Location"])
 
     assert response.status_code == 200
     assert b'id="audit-guide-btn"' in response.data
@@ -91,7 +99,7 @@ def test_legacy_audit_route_renders_packaged_guide():
     assert b"read-only review workspace" in response.data
 
 
-def test_both_audit_routes_use_the_central_packaged_guide_helper():
+def test_v2_and_residual_legacy_audit_use_the_central_packaged_guide_helper():
     source = (ROOT / "da_selection_ui" / "app.py").read_text(encoding="utf-8")
 
     assert source.count("audit_guide_html = _load_audit_guide_html()") == 2

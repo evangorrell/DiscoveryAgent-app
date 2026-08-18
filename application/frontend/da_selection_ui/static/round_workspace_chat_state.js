@@ -30,12 +30,13 @@
       text: message.text,
       round,
     };
-    if (message.role === 'user' && message.queued === true) normalized.queued = true;
+    if (message.queued === true) normalized.queued = true;
     if (message.role === 'assistant' && message.pending === true) normalized.pending = true;
     if (typeof message.requestId === 'string' && message.requestId) normalized.requestId = message.requestId;
     if (typeof message.jobId === 'string' && message.jobId) normalized.jobId = message.jobId;
     if (typeof message.jobStatus === 'string' && message.jobStatus) normalized.jobStatus = message.jobStatus;
     if (message.failed === true) normalized.failed = true;
+    if (message.cancelled === true) normalized.cancelled = true;
     if (message.retryable === true) normalized.retryable = true;
     if (typeof message.error === 'string' && message.error) normalized.error = message.error;
     return normalized;
@@ -75,10 +76,11 @@
       const ordered = remoteMessages.filter((message) => !localIds.has(message.id));
       localMessages.forEach((message) => {
         const prior = remoteById.get(message.id);
-        const priorTerminal = prior && prior.role === 'assistant'
-          && ['succeeded', 'failed'].includes(prior.jobStatus) && !prior.pending;
-        const localTerminal = message.role === 'assistant'
-          && ['succeeded', 'failed'].includes(message.jobStatus) && !message.pending;
+        const priorTerminal = prior
+          && ['user', 'assistant'].includes(prior.role)
+          && ['succeeded', 'failed', 'cancelled'].includes(prior.jobStatus) && !prior.pending;
+        const localTerminal = ['user', 'assistant'].includes(message.role)
+          && ['succeeded', 'failed', 'cancelled'].includes(message.jobStatus) && !message.pending;
         if (priorTerminal && !localTerminal) {
           ordered.push(prior);
           return;
@@ -110,12 +112,50 @@
     return Boolean(inFlight && typeof inFlight.has === 'function' && !inFlight.has(round));
   }
 
+  function composerControlState(active, cancelling) {
+    if (active) {
+      return {
+        action: 'stop',
+        ariaLabel: 'Stop response',
+        icon: 'stop',
+        disabled: Boolean(cancelling),
+      };
+    }
+    return {
+      action: 'send',
+      ariaLabel: 'Send message',
+      icon: 'send',
+      disabled: false,
+    };
+  }
+
+  function composerKeyboardAction(event, value) {
+    if (!event || event.key !== 'Enter' || event.shiftKey) return null;
+    if (event.isComposing || event.keyCode === 229) return null;
+    return String(value || '').trim() ? 'send' : 'noop';
+  }
+
+  function performComposerAction(action, draft, callbacks) {
+    const handlers = callbacks || {};
+    if (action === 'stop') {
+      if (typeof handlers.stop === 'function') handlers.stop();
+      return 'stop';
+    }
+    const message = String(draft || '').trim();
+    if (!message) return 'noop';
+    if (typeof handlers.send === 'function') handlers.send(message);
+    return 'send';
+  }
+
   const api = {
     createMessageId,
     recoverMessages,
     mergeStates,
     persistWithConflict,
     canSubmit,
+    composerControlState,
+    composerKeyboardAction,
+    performComposerAction,
   };
   root.RoundWorkspaceChatState = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

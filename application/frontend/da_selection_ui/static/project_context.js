@@ -4,25 +4,6 @@
     const context = window.discoveryProjectContext || {};
     const projectSlug = typeof context.projectSlug === 'string' ? context.projectSlug.trim() : '';
     const storageKey = 'discoveryAgentTabContext';
-    const continuityKey = 'discoveryAgentContinuousProject';
-    const auditFreshEntryKey = projectSlug ? `discoveryAgentAuditFreshEntry:${projectSlug}` : '';
-
-    try {
-        const previousProject = window.sessionStorage.getItem(continuityKey) || '';
-        if (!projectSlug) {
-            window.sessionStorage.removeItem(continuityKey);
-        } else {
-            if (previousProject !== projectSlug) {
-                window.sessionStorage.setItem(auditFreshEntryKey, 'true');
-            }
-            window.sessionStorage.setItem(continuityKey, projectSlug);
-            context.auditFreshEntry = window.sessionStorage.getItem(auditFreshEntryKey) === 'true';
-            context.auditFreshEntryKey = auditFreshEntryKey;
-        }
-    } catch (_error) {
-        context.auditFreshEntry = true;
-        context.auditFreshEntryKey = '';
-    }
 
     function newTabToken() {
         if (window.crypto && typeof window.crypto.randomUUID === 'function') {

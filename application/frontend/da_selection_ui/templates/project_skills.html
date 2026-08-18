@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+
+{% block title %}Skills &middot; DiscoveryAgent{% endblock %}
+
+{% block content %}
+<section class="v2-skills-page" aria-labelledby="skills-heading">
+    <header class="v2-skills-header">
+        <h1 class="v2-title" id="skills-heading">Skills</h1>
+        <div class="v2-skills-intro-row">
+            <p>Add specialized skills for the execution agent to use in this project.</p>
+            <button class="v2-btn v2-btn-primary" id="skills-import-open" type="button" disabled>Import Skill</button>
+        </div>
+    </header>
+
+    <div class="v2-skills-running-note" id="skills-running-note" role="status" hidden>
+        Skills cannot be changed while a research round is running.
+    </div>
+
+    <div class="v2-skills-status" id="skills-loading">
+        <div class="v2-spinner" aria-hidden="true"></div>
+        <p class="v2-muted">Loading skills&hellip;</p>
+    </div>
+    <div class="v2-skills-status" id="skills-error" hidden>
+        <p class="v2-error-title">We couldn&rsquo;t load this project&rsquo;s skills.</p>
+        <p class="v2-muted" id="skills-error-detail"></p>
+        <button class="v2-btn v2-btn-secondary" id="skills-retry" type="button">Try again</button>
+    </div>
+    <div class="v2-skills-empty" id="skills-empty" hidden>
+        <h2>No custom skills yet</h2>
+        <p>Imported skills give the execution agent specialized instructions and capabilities for this project.</p>
+    </div>
+    <div class="v2-skills-list" id="skills-list" aria-live="polite" hidden></div>
+</section>
+
+<div class="v2-modal-overlay" id="skill-import-overlay" hidden>
+    <div class="v2-modal v2-skill-import-modal" role="dialog" aria-modal="true"
+         aria-labelledby="skill-import-title" aria-describedby="skill-import-copy">
+        <div class="v2-modal-head">
+            <h2 class="v2-modal-title" id="skill-import-title">Import Skill</h2>
+            <button class="v2-modal-close" id="skill-import-close" type="button" aria-label="Close">&times;</button>
+        </div>
+        <div class="v2-modal-body">
+            <p class="v2-modal-copy" id="skill-import-copy">Upload a skill package to make it available to the execution agent for this project.</p>
+            <div class="v2-skill-file-field">
+                <p class="v2-field-label" id="skill-package-label">SKILL PACKAGE</p>
+                <div class="v2-dropzone v2-skill-dropzone" id="skill-import-dropzone" tabindex="0" role="button"
+                     aria-labelledby="skill-package-label skill-dropzone-primary skill-dropzone-secondary">
+                    <svg class="v2-dropzone-icon" viewBox="0 0 24 24" width="30" height="30" aria-hidden="true">
+                        <path d="M12 15V4m0 0L8 8m4-4 4 4M5 13v5.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V13"
+                              fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                    <p class="v2-dropzone-text" id="skill-dropzone-primary">Drop a skill package here</p>
+                    <p class="v2-dropzone-action" id="skill-dropzone-secondary">or click to browse</p>
+                    <p class="v2-dropzone-note">Skill packages must be .zip files containing SKILL.md.</p>
+                    <input id="skill-import-file" type="file" accept=".zip,application/zip" hidden>
+                </div>
+            </div>
+            <div class="v2-skill-preview" id="skill-import-preview" hidden>
+                <p class="v2-skill-preview-label">RECOGNIZED SKILL</p>
+                <h3 id="skill-preview-name"></h3>
+                <p id="skill-preview-description"></p>
+                <p class="v2-skill-preview-file" id="skill-preview-filename"></p>
+            </div>
+            <p class="v2-modal-form-error v2-skill-import-error" id="skill-import-error" role="alert" hidden></p>
+        </div>
+        <div class="v2-modal-footer">
+            <button class="v2-btn v2-btn-secondary" id="skill-import-cancel" type="button">Cancel</button>
+            <button class="v2-btn v2-btn-primary" id="skill-import-confirm" type="button" disabled>Import Skill</button>
+        </div>
+    </div>
+</div>
+
+<script>
+window.projectSkillsConfig = {
+    projectId: {{ project_id | tojson }}
+};
+</script>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='project_skills.js', v='20260816-skills-polish-1') }}"></script>
+{% endblock %}

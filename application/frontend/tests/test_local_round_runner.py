@@ -464,6 +464,42 @@ def test_fresh_round_zero_uses_exploratory_query_budget(monkeypatch, project, ba
     assert config["num_queries"] == runner.EXPLORATORY_ROUND_QUERY_BUDGET
 
 
+def _install_test_skill(project):
+    skill = Path(project["code_dir"]) / ".claude" / "skills" / "test-skill"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\nname: test-skill\ndescription: Test instructions.\n---\n",
+        encoding="utf-8",
+    )
+    return skill.parent
+
+
+def test_round_zero_config_uses_current_project_skill_root(monkeypatch, project, backend):
+    expected = _install_test_skill(project)
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess())
+    monkeypatch.setattr(runner.threading, "Thread", NoopThread)
+
+    runner.start_round(project, env=launch_env(backend))
+
+    config = json.loads(Path(project["checkpoint_dir"]).joinpath("config.json").read_text())["config"]
+    assert config["execution_skills_path"] == str(expected)
+
+
+def test_round_zero_without_skills_removes_stale_skill_path(monkeypatch, project, backend):
+    config_file = Path(project["checkpoint_dir"]) / "config.json"
+    config_file.write_text(
+        json.dumps({"config": {"execution_skills_path": "/stale/project/skills"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess())
+    monkeypatch.setattr(runner.threading, "Thread", NoopThread)
+
+    runner.start_round(project, env=launch_env(backend))
+
+    config = json.loads(config_file.read_text())["config"]
+    assert "execution_skills_path" not in config
+
+
 @pytest.mark.parametrize(
     ("source_round", "source_budget"),
     [(0, 5), (1, 12)],
@@ -514,6 +550,36 @@ def test_continuation_uses_native_round_and_local_target_config(monkeypatch, pro
     assert config["task_description_file"] is None
     assert config["selected_hypothesis_file"] == str(selection)
     assert "/lustre/" not in target_config.read_text()
+
+
+def test_continuation_recomputes_current_project_skill_root(monkeypatch, project, backend):
+    expected = _install_test_skill(project)
+    source, _selection = make_continuation(project)
+    payload = json.loads((source / "config.json").read_text())
+    payload["config"]["execution_skills_path"] = "/stale/project/skills"
+    (source / "config.json").write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess())
+    monkeypatch.setattr(runner.threading, "Thread", NoopThread)
+
+    runner.start_round(project, env=launch_env(backend))
+
+    target = source.parent / "round_4" / "config.json"
+    config = json.loads(target.read_text())["config"]
+    assert config["execution_skills_path"] == str(expected)
+
+
+def test_continuation_without_skills_drops_stale_inherited_path(monkeypatch, project, backend):
+    source, _selection = make_continuation(project)
+    payload = json.loads((source / "config.json").read_text())
+    payload["config"]["execution_skills_path"] = "/stale/project/skills"
+    (source / "config.json").write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess())
+    monkeypatch.setattr(runner.threading, "Thread", NoopThread)
+
+    runner.start_round(project, env=launch_env(backend))
+
+    target = source.parent / "round_4" / "config.json"
+    assert "execution_skills_path" not in json.loads(target.read_text())["config"]
 
 
 def test_reselection_is_the_exact_hypothesis_read_at_launch(monkeypatch, project, backend):
@@ -630,6 +696,24 @@ def test_duplicate_stop_is_safe(monkeypatch, project):
     first = runner.stop_round(project)
     second = runner.stop_round(project)
     assert first["status"] == second["status"] == "interrupted"
+
+
+def test_read_only_status_inspector_matches_workspace_status(project):
+    query = Path(project["checkpoint_dir"]) / "query_001"
+    query.mkdir()
+    (query / "checkpoint.json").write_text("{}", encoding="utf-8")
+    state_file = write_run_state(project, status="interrupted")
+    before = state_file.read_text(encoding="utf-8")
+
+    inspected = runner.inspect_round_status(project["checkpoint_dir"])
+    workspace = runner.round_status(project)
+
+    assert inspected["round"] == workspace["round"] == 0
+    assert inspected["status"] == workspace["status"] == "interrupted"
+    assert inspected["resumable"] is workspace["resumable"] is True
+    assert inspected["recorded_state"] is True
+    assert "recorded_state" not in workspace
+    assert state_file.read_text(encoding="utf-8") == before
 
 
 def test_already_dead_recorded_process_becomes_interrupted(monkeypatch, project):
@@ -798,6 +882,59 @@ def test_resume_reuses_same_round_config_and_contains_no_secret(monkeypatch, pro
     assert (target / "config.json").read_text() == original_config
     assert json.loads(original_config)["config"]["selected_hypothesis_file"] == str(selection)
     assert not (source.parent / "round_5").exists()
+
+
+def test_resume_applies_skill_imported_after_interruption(monkeypatch, project, backend):
+    source, _selection = make_continuation(project, target_incomplete=True)
+    target_config = source.parent / "round_4" / "config.json"
+    expected = _install_test_skill(project)
+    write_run_state(project, status="interrupted", round_number=4)
+    monkeypatch.setattr(runner.threading, "Thread", NoopThread)
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess())
+
+    runner.resume_round(project, env=launch_env(backend))
+
+    config = json.loads(target_config.read_text(encoding="utf-8"))["config"]
+    assert config["execution_skills_path"] == str(expected)
+    assert config["num_queries"] == 12
+    assert config["working_directory"] == "/lustre/old/code"
+
+
+def test_resume_drops_skill_path_removed_after_interruption(monkeypatch, project, backend):
+    source, _selection = make_continuation(project, target_incomplete=True)
+    target_config = source.parent / "round_4" / "config.json"
+    skill_root = _install_test_skill(project)
+    payload = json.loads(target_config.read_text(encoding="utf-8"))
+    payload["config"]["execution_skills_path"] = str(skill_root)
+    target_config.write_text(json.dumps(payload), encoding="utf-8")
+    shutil.rmtree(skill_root / "test-skill")
+    write_run_state(project, status="interrupted", round_number=4)
+    monkeypatch.setattr(runner.threading, "Thread", NoopThread)
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess())
+
+    runner.resume_round(project, env=launch_env(backend))
+
+    config = json.loads(target_config.read_text(encoding="utf-8"))["config"]
+    assert "execution_skills_path" not in config
+    assert config["num_queries"] == 12
+    assert config["working_directory"] == "/lustre/old/code"
+
+
+def test_resume_with_unchanged_skills_keeps_config_byte_identical(monkeypatch, project, backend):
+    source, _selection = make_continuation(project, target_incomplete=True)
+    target_config = source.parent / "round_4" / "config.json"
+    skill_root = _install_test_skill(project)
+    payload = json.loads(target_config.read_text(encoding="utf-8"))
+    payload["config"]["execution_skills_path"] = str(skill_root)
+    target_config.write_text(json.dumps(payload, indent=3), encoding="utf-8")
+    original = target_config.read_text(encoding="utf-8")
+    write_run_state(project, status="interrupted", round_number=4)
+    monkeypatch.setattr(runner.threading, "Thread", NoopThread)
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess())
+
+    runner.resume_round(project, env=launch_env(backend))
+
+    assert target_config.read_text(encoding="utf-8") == original
 
 
 @pytest.mark.parametrize("query_budget", [5, 12])
