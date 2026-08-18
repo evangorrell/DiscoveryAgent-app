@@ -1,6 +1,6 @@
 # DiscoveryAgent
 
-DiscoveryAgent is a local application for semi-autonomous scientific research. Scientists define the research direction while a coordinated team of AI agents investigates questions, analyzes evidence, and develops research hypotheses.
+DiscoveryAgent is a local application for semi-autonomous scientific research that helps scientists move from a research objective and their data to AI-augmented investigation, hypothesis development, and iterative research rounds.
 
 ## Requirements
 
@@ -10,158 +10,164 @@ To use DiscoveryAgent, you need:
 
 - an Anthropic API key
 - a Paperclip account
-- an internet connection
 
-DiscoveryAgent installs and manages its own Python runtime and application dependencies. You do not need to separately install Python, uv, Node.js, npm, or Claude Code.
+DiscoveryAgent installs and manages everything else it needs.
 
-## Install
+## Get started
 
-DiscoveryAgent is currently distributed through a private GitHub repository.
+### 1. Install and launch DiscoveryAgent
 
-1. Open the latest DiscoveryAgent Release in GitHub while signed into an account with access to the repository.
-2. Download both release files:
-   - `install.sh`
-   - the macOS Apple Silicon DiscoveryAgent `.tar.gz` artifact
-3. Put both files in the same folder.
-4. Open Terminal in that folder.
-5. Run:
+Open **Terminal** on your Mac and run:
 
 ```bash
-sh install.sh && "$HOME/.local/bin/discoveryagent"
+curl -fsSL https://github.com/evangorrell/DiscoveryAgent-app/releases/latest/download/install.sh | bash && "$HOME/.local/bin/discoveryagent"
 ```
 
-The installer verifies the local release artifact before installing DiscoveryAgent and everything required to run it locally on your Mac.
+This downloads the latest DiscoveryAgent installer, verifies and installs the application and its required software, and then launches DiscoveryAgent.
 
-## First launch
+The first installation may take a few minutes.
 
-The install command launches DiscoveryAgent automatically after installation.
-
-### Anthropic API key
+### 2. Complete first-time authentication
 
 DiscoveryAgent requires an Anthropic API key to run its research agents.
 
-If `ANTHROPIC_API_KEY` is already available in your environment, DiscoveryAgent uses it automatically.
+If `ANTHROPIC_API_KEY` is already configured on your Mac, DiscoveryAgent uses it automatically. Otherwise, DiscoveryAgent will securely ask you to enter your API key in Terminal.
 
-Otherwise, DiscoveryAgent securely prompts you to enter your API key in Terminal.
+A key entered through this prompt is available only for the current DiscoveryAgent process and is not saved by DiscoveryAgent. You may therefore be asked for it again on a future launch.
 
-A key entered through this prompt is available only to the current DiscoveryAgent process and is not persisted to disk by DiscoveryAgent. You will therefore be prompted again on a future fresh launch unless `ANTHROPIC_API_KEY` is already configured in your environment.
+DiscoveryAgent also uses **Paperclip** for scientific literature search and deep research. If Paperclip has not previously been authenticated on your Mac, DiscoveryAgent will guide you through the login process.
 
-### Paperclip
+Paperclip stores its own authentication, so you normally only need to sign in once.
 
-DiscoveryAgent uses Paperclip for deep research and literature retrieval.
-
-If Paperclip has not previously been authenticated on your Mac, DiscoveryAgent guides you through the Paperclip login process on first launch.
-
-Paperclip manages and persists its own authentication credentials. Once authenticated, subsequent DiscoveryAgent launches normally reuse the existing Paperclip login.
-
-### Opening DiscoveryAgent
-
-After authentication is complete, DiscoveryAgent starts locally and automatically opens the application in your browser.
+After authentication is complete, DiscoveryAgent starts locally and opens automatically in your web browser.
 
 Keep the Terminal window open while using DiscoveryAgent.
 
-To stop the local DiscoveryAgent frontend, return to Terminal and press:
+### 3. Create a project
 
-```text
-Ctrl+C
-```
+From the Projects page, create a new project and provide:
 
-## Launch DiscoveryAgent
+- a project name
+- the research objective you want DiscoveryAgent to investigate
+- any useful scientific context
 
-After installation, start DiscoveryAgent at any time with:
+Project context can include experimental details, important terminology, assumptions, known limitations, or other information needed to understand the research problem and your data.
 
-```bash
-discoveryagent
-```
+### 4. Add your data
 
-This is equivalent to:
+After creating the project, continue to **Add Data** and click **Open Data Folder**.
+
+DiscoveryAgent will open the project's data folder in Finder.
+
+Copy the dataset and any supporting files you want DiscoveryAgent to use into this folder, then return to DiscoveryAgent.
+
+Your projects and research files remain stored locally on your Mac.
+
+### 5. Start Round 0
+
+When your project is ready, start **Round 0**.
+
+Round 0 is an exploratory investigation. DiscoveryAgent uses your research objective, context, and data to investigate the problem, analyze evidence, search relevant literature, and build an initial understanding of the research space.
+
+You can follow the investigation as it runs in **Round Workspace**.
+
+Once the round is complete, review the findings and continue into **Hypothesis Studio** to develop the next research direction.
+
+## Research workflow
+
+DiscoveryAgent organizes research into an iterative cycle:
+
+**Investigate → Review → Develop hypotheses → Select a hypothesis → Investigate again**
+
+### Project Home
+
+Project Home shows the current state of the research, the latest findings, how the project has developed, and the next step in the research process.
+
+### Round Workspace
+
+Round Workspace lets you follow active and completed research rounds and inspect their activity, reports, figures, code, data products, and other outputs.
+
+You can also ask questions about the work completed in a specific round.
+
+### Hypothesis Studio
+
+Hypothesis Studio helps you generate, discuss, revise, compare, and select hypotheses based on the research completed so far.
+
+Once you select a hypothesis, you can start the next research round focused on that direction.
+
+### Skills
+
+Skills let you add project-specific instructions that DiscoveryAgent can use while conducting research.
+
+### Audit Agent
+
+Audit Agent lets you ask questions about the project's research, code, reports, checkpoints, and supporting evidence.
+
+## Launch DiscoveryAgent later
+
+After installation, launch DiscoveryAgent at any time by opening Terminal and running:
 
 ```bash
 discoveryagent launch
 ```
 
-If an Anthropic API key is not already available in your environment, DiscoveryAgent prompts for it before launching.
+If your Anthropic API key is not already configured, DiscoveryAgent will ask for it before launching.
 
-## Commands
+DiscoveryAgent will then start locally and open in your browser.
 
-| Command | Description |
-| --- | --- |
-| `discoveryagent` | Launch DiscoveryAgent |
-| `discoveryagent launch` | Launch DiscoveryAgent |
-| `discoveryagent version` | Show the installed DiscoveryAgent version |
-| `discoveryagent update` | Update DiscoveryAgent to the latest available release |
-| `discoveryagent uninstall` | Uninstall DiscoveryAgent |
+## Stop DiscoveryAgent
 
-DiscoveryAgent refuses an update or uninstall while an active research round is running.
+To stop an active research round, use the **Stop** control inside DiscoveryAgent.
 
-## Project data
+A stopped round may be resumable if DiscoveryAgent has a saved checkpoint. If it cannot be resumed, DiscoveryAgent will offer the option to resubmit the round.
 
-DiscoveryAgent stores research projects separately from the installed application.
-
-On macOS, project data is stored at:
-
-```text
-~/Library/Application Support/DiscoveryAgent
-```
-
-Updating or uninstalling DiscoveryAgent does not delete this project data.
-
-## Update
-
-To update DiscoveryAgent:
-
-```bash
-discoveryagent update
-```
-
-DiscoveryAgent installs the new release while preserving existing research projects.
-
-## Uninstall
-
-To uninstall DiscoveryAgent:
-
-```bash
-discoveryagent uninstall
-```
-
-Uninstalling removes the DiscoveryAgent application, its managed runtime, and the `discoveryagent` command.
-
-Research projects are preserved.
-
-Paperclip authentication credentials are also preserved because they are managed separately by Paperclip.
-
-## Troubleshooting
-
-### `discoveryagent: command not found`
-
-The installer configures your shell so that `discoveryagent` is available in future Terminal sessions.
-
-If necessary, open a new Terminal window and run:
-
-```bash
-discoveryagent
-```
-
-### DiscoveryAgent asks for my Anthropic API key again
-
-This is expected if the key was entered through DiscoveryAgent's secure prompt.
-
-DiscoveryAgent does not persist a prompted Anthropic API key. Enter it again when prompted, or independently configure `ANTHROPIC_API_KEY` in your environment.
-
-### Paperclip asks me to authenticate
-
-Complete the Paperclip authentication flow shown in Terminal. Once authentication succeeds, Paperclip normally reuses its saved credentials on subsequent launches.
-
-### Stop DiscoveryAgent
-
-Return to the Terminal window in which DiscoveryAgent is running and press:
+When you are finished using DiscoveryAgent, return to the Terminal window where it is running and press:
 
 ```text
 Ctrl+C
 ```
 
-## Development
+Your projects and completed research are preserved.
 
-This repository packages DiscoveryAgent for installation and distribution.
+## Commands
 
-The DiscoveryAgent application is composed from versioned frontend and research-engine releases and is installed locally on the user's machine.
+| Command | Description |
+| --- | --- |
+| `discoveryagent launch` | Launch DiscoveryAgent |
+| `discoveryagent version` | Show the installed DiscoveryAgent version |
+| `discoveryagent uninstall` | Uninstall DiscoveryAgent |
+
+## Project data
+
+DiscoveryAgent stores research projects separately from the installed application.
+
+On macOS, DiscoveryAgent data is stored under:
+
+```text
+~/Library/Application Support/DiscoveryAgent
+```
+
+This includes your project inputs and the research generated within each project.
+
+Uninstalling DiscoveryAgent does **not** delete this project data.
+
+For important datasets, keep an independent copy of the original files.
+
+## Security and privacy
+
+DiscoveryAgent runs its interface, project storage, and local analysis environment on your Mac.
+
+DiscoveryAgent is not an offline application. Its research workflows use external services including Anthropic and Paperclip. Depending on the investigation, research context, queries, reports, and relevant data or excerpts may be sent to these services.
+
+DiscoveryAgent's research agents can also generate and execute code locally within the managed project environment.
+
+Before using confidential, regulated, identifiable, proprietary, or embargoed data, follow the applicable data-handling requirements for your organization and the external services being used.
+
+## Technical documentation
+
+This repository packages DiscoveryAgent for local installation and distribution.
+
+For development and technical documentation, see:
+
+- [DiscoveryAgent Frontend](https://github.com/owencqueen/DA_selection_ui)
+- [DiscoveryAgent Backend](https://github.com/owencqueen/discoveryagent)
