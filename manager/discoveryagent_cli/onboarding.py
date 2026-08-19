@@ -34,6 +34,97 @@ def secure_api_key_input(prompt: str) -> str:
     return getpass.getpass(prompt)
 
 
+def plain_text_input(prompt: str) -> str:
+    return input(prompt)
+
+
+DATA_ROOT_ATTEMPTS = 3
+
+
+def describe_data_root_choice(candidate: Path) -> str | None:
+    """Reject a data root that cannot hold projects, before anything is written.
+
+    Returns a human-readable reason, or None when the location is usable. An
+    existing directory is deliberately allowed: DiscoveryAgent only ever adds
+    its own subdirectories, and never removes or rewrites what is already there.
+    """
+    if not candidate.is_absolute():
+        return "Enter an absolute path, for example ~/DiscoveryAgent."
+    if os.path.lexists(candidate) and not candidate.is_dir():
+        return f"{candidate} already exists and is not a folder."
+    existing_parent = candidate
+    while not existing_parent.exists() and existing_parent != existing_parent.parent:
+        existing_parent = existing_parent.parent
+    if not os.access(existing_parent, os.W_OK):
+        return f"{existing_parent} is not writable."
+    return None
+
+
+def resolve_data_root(
+    configured: Path,
+    *,
+    install_root: Path,
+    interactive: Callable[[], bool],
+    text_input: Callable[[str], str],
+    stdout: TextIO,
+) -> Path:
+    """Confirm where projects are kept, once, before the first one exists.
+
+    The installer records a default rather than interrogating a `curl | sh`
+    pipeline. An existing data root means the scientist already has projects
+    there, so it is never second-guessed; only a first launch asks.
+    """
+    if configured.exists():
+        return configured
+    if not interactive():
+        return configured
+
+    print("Where should DiscoveryAgent keep your projects and data?\n", file=stdout)
+    print(
+        "This folder holds every project you create, including the data folders\n"
+        "you copy files into. Pick somewhere you can reach easily.\n",
+        file=stdout,
+        flush=True,
+    )
+    for _attempt in range(DATA_ROOT_ATTEMPTS):
+        try:
+            entered = text_input(f"Path [{configured}]: ")
+        except (EOFError, OSError):
+            return configured
+        raw = str(entered or "").strip()
+        if not raw:
+            return configured
+        candidate = Path(raw).expanduser()
+        reason = describe_data_root_choice(candidate)
+        if reason is None:
+            candidate = candidate.absolute()
+            if candidate == install_root or candidate.is_relative_to(install_root):
+                reason = (
+                    "That is inside DiscoveryAgent's own program folder, which is "
+                    "replaced on every update."
+                )
+            elif install_root.is_relative_to(candidate):
+                reason = "That folder contains DiscoveryAgent's own program files."
+        if reason is None:
+            try:
+                already_populated = candidate.is_dir() and any(candidate.iterdir())
+            except OSError:
+                already_populated = False
+            if already_populated:
+                print(
+                    f"\nUsing the existing folder {candidate}. DiscoveryAgent only "
+                    "adds new files there; nothing already in it is moved, changed, "
+                    "or deleted.",
+                    file=stdout,
+                )
+            print(f"\n✓ Projects will be kept in {candidate}\n", file=stdout)
+            return candidate
+        print(f"\n{reason}\n", file=stdout, flush=True)
+
+    print(f"Keeping the default: {configured}\n", file=stdout)
+    return configured
+
+
 def _configured_path(raw: str, environment: Mapping[str, str]) -> Path:
     if raw == "~" or raw.startswith(f"~{os.sep}"):
         home = environment.get("HOME", "").strip()

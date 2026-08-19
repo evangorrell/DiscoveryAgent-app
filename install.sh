@@ -16,6 +16,13 @@ fail() {
     exit 1
 }
 
+# Homebrew-style step narration. Every phase that can take more than a moment
+# announces itself before it starts, so the installer is never silent while it
+# downloads or builds.
+step() {
+    printf '==> %s\n' "$*"
+}
+
 for utility in curl tar shasum mktemp uname chmod rm mkdir; do
     command -v "$utility" >/dev/null 2>&1 || fail "required macOS utility is missing: $utility"
 done
@@ -84,24 +91,30 @@ validate_archive_paths() {
     done
 }
 
-printf '%s\n\n' "Installing DiscoveryAgent..."
+printf '%s\n\n' "Installing DiscoveryAgent ${RELEASE_TAG} for macOS ${architecture}."
 
 if [ -f "$local_artifact" ]; then
+    step "Using the local release archive ${ARTIFACT_NAME}"
     artifact=$local_artifact
 else
+    step "Downloading the DiscoveryAgent release (${ARTIFACT_NAME})"
     artifact="$temporary_root/$ARTIFACT_NAME"
     curl -fsSL "$artifact_url" -o "$artifact" || fail "could not download the DiscoveryAgent release"
 fi
+step "Verifying the release archive"
 verify_sha256 "$artifact_sha256" "$artifact"
 validate_archive_paths "$artifact" "discoveryagent-install"
+step "Extracting the release archive"
 payload_root="$temporary_root/payload"
 mkdir "$payload_root"
 tar -xzf "$artifact" -C "$payload_root" || fail "could not extract the DiscoveryAgent release"
 payload_root="$payload_root/discoveryagent-install"
 [ -f "$payload_root/tools/install_local_release.py" ] || fail "release is missing its installer engine"
 
+step "Downloading uv 0.11.17"
 uv_archive="$temporary_root/uv-aarch64-apple-darwin.tar.gz"
 curl -fsSL "$uv_url" -o "$uv_archive" || fail "could not download the DiscoveryAgent runtime"
+step "Verifying uv 0.11.17"
 verify_sha256 "$uv_sha256" "$uv_archive"
 validate_archive_paths "$uv_archive" "uv-aarch64-apple-darwin"
 uv_root="$temporary_root/uv"
@@ -115,6 +128,7 @@ case "$uv_version" in
     *) fail "the runtime archive contains an unexpected uv version" ;;
 esac
 
+step "Downloading Python 3.11.11 (this can take a minute)"
 python_root="$temporary_root/python"
 TMPDIR="$temporary_root" UV_PYTHON_INSTALL_DIR="$python_root" UV_CACHE_DIR="$temporary_root/uv-cache" \
     UV_NO_MODIFY_PATH=1 UV_NO_PROGRESS=1 \
@@ -124,17 +138,14 @@ TMPDIR="$temporary_root" UV_PYTHON_INSTALL_DIR="$python_root" UV_CACHE_DIR="$tem
 python="$python_root/cpython-3.11.11-macos-aarch64-none/bin/python3.11"
 [ -x "$python" ] || fail "the pinned DiscoveryAgent Python runtime is missing"
 
+# The installer engine narrates its own steps on stdout from here.
 unset PYTHONPATH PYTHONHOME VIRTUAL_ENV UV_PROJECT_ENVIRONMENT CLAUDE_CODE_CLI_PATH NODE_PATH || true
 TMPDIR="$temporary_root" PYTHONNOUSERSITE=1 "$python" "$payload_root/tools/install_local_release.py" \
     --bootstrap-uv "$uv" \
     --bootstrap-python-root "$python_root" \
     --bootstrap-python "$python" \
-    --quiet || fail "the DiscoveryAgent application could not be installed"
+    || fail "the DiscoveryAgent application could not be installed"
 
-printf '%s\n' \
-    "✓ Runtime installed" \
-    "✓ Frontend installed" \
-    "✓ Backend installed" \
-    "✓ DiscoveryAgent command installed"
 printf '\n%s\n' "DiscoveryAgent installed successfully."
 printf '%s\n' 'Open a new terminal, or run: export PATH="$HOME/.local/bin:$PATH"'
+printf '%s\n' 'Then run: discoveryagent'

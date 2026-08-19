@@ -50,16 +50,16 @@ From the Projects page, create a new project and provide:
 - a project name
 - the research objective you want DiscoveryAgent to investigate
 - any useful scientific context
+- optionally, an existing folder that already contains your data
 
 Project context can include experimental details, important terminology, assumptions, known limitations, or other information needed to understand the research problem and your data.
 
 ### 4. Add your data
 
-After creating the project, continue to **Add Data** and click **Open Data Folder**.
-
-DiscoveryAgent will open the project's data folder in Finder.
-
-Copy the dataset and any supporting files you want DiscoveryAgent to use into this folder, then return to DiscoveryAgent.
+When creating a project, choose an existing data folder or leave the field blank
+and let DiscoveryAgent create one. A chosen folder is read in place: its files
+are not copied, moved, renamed, or deleted. For a managed folder, Project Home
+shows the exact path and can open it in Finder so you can add supporting files.
 
 Your projects and research files remain stored locally on your Mac.
 
@@ -141,17 +141,32 @@ Your projects and completed research are preserved.
 
 DiscoveryAgent stores research projects separately from the installed application.
 
-On macOS, DiscoveryAgent data is stored under:
+The first launch asks where to store projects and suggests:
 
 ```text
-~/Library/Application Support/DiscoveryAgent
+~/DiscoveryAgent
 ```
+
+You may choose another location. DiscoveryAgent persists that choice and stops
+asking once the folder exists. Existing files in the selected root are left
+alone; DiscoveryAgent adds only its own project directories.
 
 This includes your project inputs and the research generated within each project.
 
 Uninstalling DiscoveryAgent does **not** delete this project data.
 
 For important datasets, keep an independent copy of the original files.
+
+## Choosing models
+
+Every **Start round** action opens a settings dialog for that round. You can
+choose the Claude reasoning model used to generate hypotheses and direct the
+round, the execution model used to write and run analysis code, the query
+budget, and whether deep research and web search are available.
+
+DiscoveryAgent loads the model catalog from Anthropic when possible. If the
+live catalog is unavailable, it uses a built-in fallback and identifies that
+fallback in the dialog.
 
 ## Security and privacy
 
@@ -171,3 +186,4 @@ For development and technical documentation, see:
 
 - [DiscoveryAgent Frontend](https://github.com/owencqueen/DA_selection_ui)
 - [DiscoveryAgent Backend](https://github.com/owencqueen/discoveryagent)
+- [Development server launch](docs/development_server_launch.md)

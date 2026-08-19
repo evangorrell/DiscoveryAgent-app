@@ -40,7 +40,11 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument(
         "--bootstrap-python", type=_absolute_path, help=argparse.SUPPRESS
     )
-    result.add_argument("--quiet", action="store_true", help=argparse.SUPPRESS)
+    result.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Print only the final summary instead of narrating each step",
+    )
     return result
 
 
@@ -57,6 +61,9 @@ def main(arguments: list[str] | None = None) -> int:
     bootstrap_runtime = (
         BootstrapRuntimeSource(*bootstrap_values) if all(bootstrap_values) else None
     )
+    def narrate(message: str) -> None:
+        print(f"==> {message}", flush=True)
+
     try:
         installed = install_production_release(
             ProductionInstallConfig(
@@ -65,7 +72,8 @@ def main(arguments: list[str] | None = None) -> int:
                 cli_path=options.cli_path,
                 data_root=options.data_root,
                 bootstrap_runtime=bootstrap_runtime,
-            )
+            ),
+            reporter=(lambda _message: None) if options.quiet else narrate,
         )
     except ManagerError as exc:
         print(f"DiscoveryAgent installation failed: {exc}", file=sys.stderr)
