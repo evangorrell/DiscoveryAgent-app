@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 from dataclasses import dataclass
 
+from ..utils.query_artifacts import artifact_filename
+
 
 @dataclass
 class CheckpointInfo:
@@ -177,7 +179,9 @@ class CheckpointDiscovery:
             pass
 
         # Check for markdown file
-        markdown_path = query_dir / f"query_{query_num:03d}.md"
+        markdown_path = query_dir / artifact_filename(query_num, "report")
+        if not markdown_path.exists():
+            markdown_path = query_dir / f"query_{query_num:03d}.md"
         has_markdown = markdown_path.exists()
 
         return CheckpointInfo(

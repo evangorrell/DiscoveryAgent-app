@@ -10,10 +10,13 @@ import os
 import sys
 import asyncio
 import base64
+import json
 import subprocess
 import shutil
 import inspect
 import re
+import stat
+import tempfile
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Union
 from dataclasses import dataclass
@@ -75,6 +78,56 @@ DEFAULT_OPENTARGETS_MCP_PATH = "/home/groups/jamesz/oqueen/virtualbiotech_mcp_pa
 DEFAULT_OPENTARGETS_DATA_PATH = "/oak/stanford/groups/jamesz/hgzhang/targets/open_target_25_09"
 OPENTARGETS_MCP_SERVERS = ["genetics", "disease", "association", "target", "expression", "drug"]
 
+
+class ExecutionAgentResultError(RuntimeError):
+    """Content-free terminal category for an unusable ExecutionAgent result."""
+
+    category = "execution_agent_result_invalid"
+
+    def __init__(self):
+        super().__init__(self.category)
+
+
+class ExecutionAgentRefusalError(ExecutionAgentResultError):
+    category = "execution_agent_model_refusal"
+
+
+class ExecutionAgentEmptyResponseError(ExecutionAgentResultError):
+    category = "execution_agent_empty_response"
+
+
+class ExecutionAgentMissingFinalResponseError(ExecutionAgentResultError):
+    category = "execution_agent_final_response_missing"
+
+
+class ExecutionAgentMalformedReportError(ExecutionAgentResultError):
+    category = "execution_agent_report_missing_or_malformed"
+
+
+class ExecutionAgentSDKResponseError(ExecutionAgentResultError):
+    category = "execution_agent_sdk_exception"
+
+
+class ExecutionSkillsConfigurationError(RuntimeError):
+    """A declared frozen skill snapshot cannot be loaded safely."""
+
+
+class ExecutionSkillsRequiredLoadError(RuntimeError):
+    """Configured execution skills were not authoritatively loaded."""
+
+    category = "execution_skills_missing_required_load"
+
+    def __init__(self, runtime_names: List[str], context_name: str = "primary"):
+        self.runtime_names = list(runtime_names)
+        self.context_name = context_name
+        super().__init__(
+            f"{self.category}: {', '.join(self.runtime_names)} (context={context_name})"
+        )
+
+
+EXECUTION_SKILLS_PLUGIN_NAME = "discoveryagent-round-skills"
+_EXECUTION_SKILL_ID_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+
 # Map OpenTargets server names to their server.py paths within the MCP package
 OPENTARGETS_SERVER_PATHS = {
     "genetics": "src/mcp_servers/genetics_mcp/server.py",
@@ -95,7 +148,9 @@ class ExecutionAgentCCConfig(AgentToolConfig):
     log_dir: str = "."
     # Additional parameters for ExecutionAgentCC
     readme_truncate_length: Optional[int] = None
-    max_turns: int = 10
+    # None means the agent runs until it decides the task is done. The step cap
+    # existed because earlier models were poor at recognising completion.
+    max_turns: Optional[int] = None
     working_directory: Optional[str] = None
     manual_file_tracking: bool = False
     max_turns_query_execution: Optional[int] = None
@@ -130,6 +185,9 @@ class ExecutionAgentCC(BaseAgent):
         """
         sys.__stdout__.write(message + '\n')
         sys.__stdout__.flush()
+        tracker = getattr(self, "execution_tracker", None)
+        if tracker is not None:
+            tracker.log_observable(message)
 
     def _resolve_claude_code_model(self) -> Optional[str]:
         """
@@ -142,6 +200,39 @@ class ExecutionAgentCC(BaseAgent):
         if isinstance(model_name, str) and model_name.strip():
             return model_name.strip()
         return None
+
+    @staticmethod
+    def _report_failure(messages: List[Any]) -> ExecutionAgentResultError:
+        """Classify a completed SDK stream without logging response contents."""
+        if not messages:
+            return ExecutionAgentEmptyResponseError()
+        terminal = [message for message in messages if type(message).__name__ == "ResultMessage"]
+        if not terminal:
+            return ExecutionAgentMissingFinalResponseError()
+        result = terminal[-1]
+        metadata = " ".join(
+            str(getattr(result, field, "") or "").lower()
+            for field in ("stop_reason", "subtype")
+        )
+        if "refusal" in metadata or "refused" in metadata:
+            return ExecutionAgentRefusalError()
+        return ExecutionAgentMalformedReportError()
+
+    def _step_budget_section(self) -> str:
+        """Tell the agent its step budget, but only when it actually has one.
+
+        With no cap there is nothing true to say, and telling a current model to
+        ration steps makes it stop early rather than finish the analysis — the
+        behaviour the cap was originally there to work around.
+        """
+        if not self.max_turns_query_execution:
+            return ""
+        return (
+            "⏱️ BUDGET:\n"
+            f"You are only allowed to take a total of {self.max_turns_query_execution} steps to "
+            "complete this task. Please be efficient and mindful of this budget. Plan your "
+            "approach carefully to maximize the value of each step.\n"
+        )
 
     def _resolve_sub_agent_model_alias(self) -> str:
         """
@@ -184,6 +275,63 @@ class ExecutionAgentCC(BaseAgent):
                 parsed[key] = value
         return parsed
 
+    @staticmethod
+    def _raw_execution_skills_paths(configured: Any) -> List[str]:
+        if isinstance(configured, str):
+            return [part.strip() for part in configured.split(",") if part.strip()]
+        if isinstance(configured, (list, tuple, set)):
+            return [str(part).strip() for part in configured if str(part).strip()]
+        return [str(configured).strip()] if str(configured).strip() else []
+
+    def _validate_round_snapshot_scope(self, source_path: Path) -> None:
+        """Keep frontend round snapshots inside their owning project and round."""
+        if source_path.name != ".execution_skills":
+            return
+        working_directory = Path(self.working_directory).resolve(strict=True)
+        round_directory = source_path.parent
+        expected_project_root = working_directory.parent
+        if not (
+            working_directory.name == "code"
+            and re.fullmatch(r"round_\d+", round_directory.name)
+            and round_directory.parent.name == "checkpoints"
+            and round_directory.parent.parent.name == "checkpoint"
+            and round_directory.parent.parent.parent == expected_project_root
+        ):
+            raise ExecutionSkillsConfigurationError(
+                "The declared execution skill snapshot is outside the active project's round."
+            )
+
+    @staticmethod
+    def _validate_skill_tree(source_path: Path) -> None:
+        """Reject links, special files, and unreadable entries before copying."""
+        if not os.access(source_path, os.R_OK | os.X_OK):
+            raise ExecutionSkillsConfigurationError(
+                "The declared execution skill snapshot cannot be read safely."
+            )
+        for root, directory_names, file_names in os.walk(source_path, followlinks=False):
+            root_path = Path(root)
+            for name in [*directory_names, *file_names]:
+                entry = root_path / name
+                try:
+                    entry_stat = entry.stat(follow_symlinks=False)
+                except OSError as exc:
+                    raise ExecutionSkillsConfigurationError(
+                        "The declared execution skill snapshot cannot be read safely."
+                    ) from exc
+                if stat.S_ISLNK(entry_stat.st_mode):
+                    raise ExecutionSkillsConfigurationError(
+                        "The declared execution skill snapshot may not contain symbolic links."
+                    )
+                if not (stat.S_ISDIR(entry_stat.st_mode) or stat.S_ISREG(entry_stat.st_mode)):
+                    raise ExecutionSkillsConfigurationError(
+                        "The declared execution skill snapshot contains an unsupported file type."
+                    )
+                required_mode = os.R_OK | os.X_OK if stat.S_ISDIR(entry_stat.st_mode) else os.R_OK
+                if not os.access(entry, required_mode):
+                    raise ExecutionSkillsConfigurationError(
+                        "The declared execution skill snapshot contains an unreadable entry."
+                    )
+
     def _normalize_execution_skills_paths(self) -> List[Path]:
         """
         Normalize execution_skills_path into a list of existing directory paths.
@@ -197,21 +345,32 @@ class ExecutionAgentCC(BaseAgent):
         if not configured:
             return []
 
-        raw_paths: List[str] = []
-        if isinstance(configured, str):
-            raw_paths = [p.strip() for p in configured.split(",") if p.strip()]
-        elif isinstance(configured, (list, tuple, set)):
-            raw_paths = [str(p).strip() for p in configured if str(p).strip()]
-        else:
-            raw_paths = [str(configured).strip()]
+        raw_paths = self._raw_execution_skills_paths(configured)
+        if not raw_paths:
+            raise ExecutionSkillsConfigurationError(
+                "The declared execution skill snapshot path is empty."
+            )
 
         normalized_paths: List[Path] = []
         seen: set[str] = set()
         for raw_path in raw_paths:
             candidate = Path(raw_path).expanduser()
-            if not candidate.exists() or not candidate.is_dir():
-                continue
-            resolved = candidate.resolve()
+            if os.path.lexists(candidate) and candidate.is_symlink():
+                raise ExecutionSkillsConfigurationError(
+                    "The declared execution skill snapshot may not be a symbolic link."
+                )
+            try:
+                resolved = candidate.resolve(strict=True)
+            except OSError as exc:
+                raise ExecutionSkillsConfigurationError(
+                    "The declared execution skill snapshot does not exist or cannot be read."
+                ) from exc
+            if not resolved.is_dir():
+                raise ExecutionSkillsConfigurationError(
+                    "The declared execution skill snapshot is not a directory."
+                )
+            self._validate_round_snapshot_scope(resolved)
+            self._validate_skill_tree(resolved)
             resolved_str = str(resolved)
             if resolved_str in seen:
                 continue
@@ -229,20 +388,33 @@ class ExecutionAgentCC(BaseAgent):
 
         skill_dirs: List[Path] = []
         seen_skill_dirs: set[str] = set()
+        seen_skill_ids: set[str] = set()
         for source_path in source_paths:
             candidate_skill_dirs: List[Path] = []
             if (source_path / "SKILL.md").is_file():
                 candidate_skill_dirs = [source_path]
             else:
                 for child in sorted(source_path.iterdir()):
-                    if child.is_dir() and (child / "SKILL.md").is_file():
-                        candidate_skill_dirs.append(child)
+                    if not child.is_dir() or child.is_symlink() or not (child / "SKILL.md").is_file():
+                        raise ExecutionSkillsConfigurationError(
+                            "The declared execution skill snapshot contains a malformed skill entry."
+                        )
+                    candidate_skill_dirs.append(child)
 
             for skill_dir in candidate_skill_dirs:
                 resolved_skill_dir = skill_dir.resolve()
                 resolved_skill_dir_str = str(resolved_skill_dir)
                 if resolved_skill_dir_str in seen_skill_dirs:
                     continue
+                if not _EXECUTION_SKILL_ID_RE.fullmatch(skill_dir.name):
+                    raise ExecutionSkillsConfigurationError(
+                        "Execution skill directory names must be lowercase kebab-case identifiers."
+                    )
+                if skill_dir.name in seen_skill_ids:
+                    raise ExecutionSkillsConfigurationError(
+                        f"Execution skill identifier collision: {skill_dir.name}."
+                    )
+                seen_skill_ids.add(skill_dir.name)
                 seen_skill_dirs.add(resolved_skill_dir_str)
                 skill_dirs.append(resolved_skill_dir)
 
@@ -250,76 +422,470 @@ class ExecutionAgentCC(BaseAgent):
         for skill_dir in skill_dirs:
             skill_md = skill_dir / "SKILL.md"
             frontmatter = self._parse_skill_frontmatter(skill_md)
+            name = (frontmatter.get("name") or "").strip()
+            description = (frontmatter.get("description") or "").strip()
+            if not name or not description:
+                raise ExecutionSkillsConfigurationError(
+                    f"Execution skill {skill_dir.name!r} needs readable name and description metadata."
+                )
             discovered.append({
-                "name": frontmatter.get("name", skill_dir.name),
-                "description": frontmatter.get("description"),
+                "id": skill_dir.name,
+                "name": name,
+                "description": description,
                 "path": str(skill_dir),
+                "runtime_name": f"{EXECUTION_SKILLS_PLUGIN_NAME}:{skill_dir.name}",
             })
+        if not discovered:
+            raise ExecutionSkillsConfigurationError(
+                "The declared execution skill snapshot contains no valid skills."
+            )
         return discovered
 
-    def _configure_execution_skills(self) -> Optional[List[Path]]:
-        """
-        Validate and configure optional Claude Code skills path.
+    def _cleanup_execution_skills_runtime(self) -> None:
+        runtime_directory = getattr(self, "_execution_skills_runtime_directory", None)
+        if runtime_directory is not None:
+            runtime_directory.cleanup()
+            self._execution_skills_runtime_directory = None
 
-        Each path can either be:
-        - a skill directory containing SKILL.md, or
-        - a parent directory containing one or more skill subdirectories.
-        """
+    def _configure_execution_skills(self) -> Optional[Dict[str, Any]]:
+        """Build a local plugin view backed only by the declared frozen snapshot."""
+        if not getattr(self.config, "execution_skills_path", None):
+            self._cleanup_execution_skills_runtime()
+            self._configured_execution_skills = []
+            self._execution_skills_source_paths = []
+            return None
         normalized_paths = self._normalize_execution_skills_paths()
-        if not normalized_paths:
-            return None
         discovered_skills = self._discover_execution_skills()
-        discovered_skill_names = [skill.get("name", "") for skill in discovered_skills if skill.get("name")]
+        discovered_skill_names = [skill["name"] for skill in discovered_skills]
 
-        if not discovered_skill_names:
-            self.logger.log_error(
-                "No skills found at execution_skills_path="
-                f"{[str(p) for p in normalized_paths]} "
-                "(expected SKILL.md in each directory or child directories)"
+        required_sdk_fields = {"skills", "plugins", "setting_sources", "add_dirs"}
+        option_fields = set(inspect.signature(ClaudeAgentOptions).parameters)
+        missing_fields = sorted(required_sdk_fields - option_fields)
+        if missing_fields:
+            raise ExecutionSkillsConfigurationError(
+                "The installed Claude Agent SDK cannot safely load frozen execution skills; "
+                f"missing options: {', '.join(missing_fields)}."
             )
-            return None
 
-        # Best-effort env wiring for Claude Code skill discovery across SDK versions.
-        joined_paths = os.pathsep.join(str(p) for p in normalized_paths)
-        os.environ["CLAUDE_CODE_SKILLS_PATH"] = joined_paths
-        os.environ["CLAUDE_CODE_SKILLS_DIR"] = joined_paths
-        os.environ["CLAUDE_SKILLS_PATH"] = joined_paths
+        self._cleanup_execution_skills_runtime()
+        runtime_directory = tempfile.TemporaryDirectory(prefix="discoveryagent-round-skills-")
+        runtime_root = Path(runtime_directory.name) / EXECUTION_SKILLS_PLUGIN_NAME
+        try:
+            (runtime_root / ".claude-plugin").mkdir(parents=True)
+            (runtime_root / ".claude-plugin" / "plugin.json").write_text(
+                json.dumps({
+                    "name": EXECUTION_SKILLS_PLUGIN_NAME,
+                    "version": "1.0.0",
+                    "description": "Immutable DiscoveryAgent execution skills for one frozen round.",
+                    "author": {"name": "DiscoveryAgent"},
+                }, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            skills_root = runtime_root / "skills"
+            skills_root.mkdir()
+            for skill in discovered_skills:
+                shutil.copytree(
+                    skill["path"],
+                    skills_root / skill["id"],
+                    symlinks=False,
+                    copy_function=shutil.copy2,
+                )
+        except Exception as exc:
+            runtime_directory.cleanup()
+            raise ExecutionSkillsConfigurationError(
+                "The frozen execution skill snapshot could not be prepared for the agent runtime."
+            ) from exc
 
+        self._execution_skills_runtime_directory = runtime_directory
+        self._configured_execution_skills = discovered_skills
+        self._execution_skills_source_paths = [str(path) for path in normalized_paths]
+        self._execution_skills_discovery_confirmed = False
         self.logger.log_action(
             "execution_skills_configured",
-            f"Configured execution skills paths: {[str(p) for p in normalized_paths]} | "
+            f"Frozen paths: {[str(path) for path in normalized_paths]} | "
             f"skills={discovered_skill_names}",
         )
         self._direct_print(
-            "🧩 Execution skills: loaded from "
-            f"{[str(p) for p in normalized_paths]} ({len(discovered_skill_names)} skill(s))"
+            f"🧩 Execution skills configured: {', '.join(discovered_skill_names)}"
         )
-        return normalized_paths
+        return {
+            "source_paths": normalized_paths,
+            "plugin_root": runtime_root,
+            "skills": discovered_skills,
+            "runtime_names": [skill["runtime_name"] for skill in discovered_skills],
+        }
 
-    def config_to_prompt(self) -> str:
-        """
-        Build helper-agent prompt text shown to the Director/Hypothesis agents.
-        """
-        base_prompt = super().config_to_prompt()
-        discovered_skills = self._discover_execution_skills()
+    @staticmethod
+    def _execution_skills_policy(discovered_skills: List[Dict[str, str]]) -> str:
         if not discovered_skills:
-            return base_prompt
-
-        skills_lines = []
-        for skill in discovered_skills:
-            skill_name = skill.get("name", "unknown")
-            skill_description = skill.get("description")
-            if skill_description:
-                skills_lines.append(f"- {skill_name}: {skill_description}")
-            else:
-                skills_lines.append(f"- {skill_name}")
-
-        skills_context = (
-            "\n\nThis agent has access to some skills that may allow it to access some external tools, "
-            "here are these skills:\n"
-            + "\n".join(skills_lines)
+            return ""
+        skill_lines = [
+            f"- {skill['name']} (invoke as {skill['runtime_name']}): {skill['description']}"
+            for skill in discovered_skills
+        ]
+        return (
+            "\n\nCONFIGURED EXECUTION SKILLS (immutable round snapshot):\n"
+            + "\n".join(skill_lines)
+            + "\n\nProject selection is an explicit instruction to load every listed skill. "
+            "The backend will require the Skill tool with each exact qualified invocation name before "
+            "computation or delegation; discovery alone is not execution. After loading, follow each "
+            "skill completely, including its own relevance rules, scripts, references, templates, "
+            "receipts, verification tokens, validation, and required artifacts. Resolve resources and "
+            "executable paths from the loaded immutable runtime directory, never a live skill copy. "
+            "Propagate the same requirements into delegated analytical work. If a configured skill "
+            "cannot be loaded, stop. Never claim a skill ran merely because it was listed or discovered."
         )
-        return base_prompt + skills_context
+
+    @staticmethod
+    def _apply_execution_skills_options(
+        options: Dict[str, Any], runtime: Optional[Dict[str, Any]],
+    ) -> None:
+        if runtime is None:
+            return
+        plugin_root = str(runtime["plugin_root"])
+        options.update({
+            "plugins": [{"type": "local", "path": plugin_root}],
+            "skills": list(runtime["runtime_names"]),
+            "setting_sources": ["project"],
+            "add_dirs": [plugin_root],
+        })
+
+    def _observe_execution_skills_discovery(self, message: Any) -> None:
+        expected = [
+            skill["runtime_name"] for skill in getattr(self, "_configured_execution_skills", [])
+        ]
+        if not expected or type(message).__name__ != "SystemMessage":
+            return
+        data = getattr(message, "data", None)
+        if not isinstance(data, dict) or data.get("subtype") != "init":
+            return
+        available = [str(name) for name in (data.get("skills") or [])]
+        missing = [name for name in expected if name not in available]
+        if missing:
+            warning = (
+                "Configured execution skills were not discovered by the runtime: "
+                + ", ".join(missing)
+            )
+            self.logger.log_error(warning)
+            raise ExecutionSkillsConfigurationError(warning)
+        if not getattr(self, "_execution_skills_discovery_confirmed", False):
+            self._execution_skills_discovery_confirmed = True
+            self.logger.log_action(
+                "execution_skills_runtime_discovered",
+                f"Runtime confirmed configured skills: {expected}",
+            )
+            if self.execution_tracker is not None:
+                self.execution_tracker.log_skill_discovery(expected)
+
+    def _reset_execution_skill_enforcement(self, runtime_names: List[str]) -> None:
+        """Reset authoritative load state for a newly constructed SDK session."""
+        self._required_execution_skill_names = tuple(runtime_names)
+        self._execution_skill_loaded_by_context: Dict[str, set] = {"primary": set()}
+        self._execution_skill_pending: Dict[tuple, str] = {}
+        self._execution_skill_context_labels: Dict[str, str] = {"primary": "primary"}
+        self._execution_skill_analytical_contexts = set()
+        self._execution_skill_subagent_stop_attempts: Dict[str, int] = {}
+
+    @staticmethod
+    def _execution_skill_context(hook_input: Any) -> tuple:
+        if not isinstance(hook_input, dict):
+            return "primary", "primary", None
+        agent_id = hook_input.get("agent_id")
+        agent_type = hook_input.get("agent_type")
+        if agent_id:
+            context_key = f"subagent:{agent_id}"
+            return context_key, f"{agent_type or 'subagent'}:{agent_id}", agent_type
+        return "primary", "primary", None
+
+    def _required_execution_skills(self) -> List[str]:
+        return list(getattr(self, "_required_execution_skill_names", ()))
+
+    def _missing_execution_skills(self, context_key: str) -> List[str]:
+        loaded = self._execution_skill_loaded_by_context.setdefault(context_key, set())
+        return [name for name in self._required_execution_skills() if name not in loaded]
+
+    def _log_execution_skill_event(
+        self,
+        event: str,
+        runtime_name: str,
+        context_name: str,
+        reason: Optional[str] = None,
+    ) -> None:
+        details = f"skill={runtime_name} context={context_name}"
+        if reason:
+            details += f" reason={reason}"
+        self.logger.log_action(event, details)
+        if self.execution_tracker is not None:
+            self.execution_tracker.log_execution_skill_event(
+                event, runtime_name, context_name, reason
+            )
+
+    def _log_missing_execution_skills(
+        self, runtime_names: List[str], context_name: str, attempt: int
+    ) -> None:
+        details = (
+            f"skills={runtime_names} context={context_name} attempt={attempt}"
+        )
+        self.logger.log_action("execution_skills_missing_required_load", details)
+        if self.execution_tracker is not None:
+            self.execution_tracker.log_missing_required_skill_load(
+                runtime_names, context_name, attempt
+            )
+
+    @staticmethod
+    def _deny_tool_for_missing_execution_skills(reason: str) -> Dict[str, Any]:
+        return {
+            "continue_": True,
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": reason,
+            },
+        }
+
+    def _execution_skill_load_instruction(self, context_name: str) -> str:
+        names = self._required_execution_skills()
+        return (
+            "Before any computation, file access, web access, or delegation in this "
+            f"operative context ({context_name}), invoke the Skill tool once for every "
+            "exact qualified name below and wait for each successful result:\n"
+            + "\n".join(f"- {name}" for name in names)
+            + "\nDiscovery or availability is not a load. Do not use unqualified or live-project names."
+        )
+
+    async def _execution_skills_pre_tool_hook(self, hook_input, tool_use_id, context):
+        required = self._required_execution_skills()
+        if not required:
+            return {"continue_": True}
+
+        tool_name = hook_input.get("tool_name") if isinstance(hook_input, dict) else None
+        tool_input = hook_input.get("tool_input") if isinstance(hook_input, dict) else None
+        context_key, context_name, agent_type = self._execution_skill_context(hook_input)
+        self._execution_skill_context_labels[context_key] = context_name
+        loaded = self._execution_skill_loaded_by_context.setdefault(context_key, set())
+
+        if tool_name == "Skill":
+            requested = None
+            if isinstance(tool_input, dict):
+                requested = tool_input.get("skill")
+            requested_name = str(requested or "unknown")
+            self._log_execution_skill_event(
+                "execution_skill_requested", requested_name, context_name
+            )
+
+            if agent_type and agent_type not in {"execution_agent", "skills_agent"}:
+                reason = "Project execution skills are not exposed to this delegated agent."
+            elif requested_name not in required:
+                reason = (
+                    "The Skill request does not match a configured frozen qualified name. "
+                    f"Required names: {', '.join(required)}"
+                )
+            elif requested_name in loaded:
+                reason = "This exact skill is already loaded in the operative context."
+            else:
+                self._execution_skill_pending[(context_key, str(tool_use_id))] = requested_name
+                return {"continue_": True}
+
+            self._log_execution_skill_event(
+                "execution_skill_failed", requested_name, context_name, reason
+            )
+            return self._deny_tool_for_missing_execution_skills(reason)
+
+        missing = self._missing_execution_skills(context_key)
+        if missing:
+            reason = (
+                "Blocked substantive tool use until every configured execution skill is "
+                "authoritatively loaded with the Skill tool. Missing exact names: "
+                + ", ".join(missing)
+            )
+            self._log_missing_execution_skills(missing, context_name, 0)
+            return self._deny_tool_for_missing_execution_skills(reason)
+
+        if tool_name in {"Agent", "Task"} and isinstance(tool_input, dict):
+            subagent_type = tool_input.get("subagent_type")
+            if subagent_type in {"execution_agent", "skills_agent"}:
+                updated_input = dict(tool_input)
+                prompt = str(updated_input.get("prompt") or "")
+                updated_input["prompt"] = (
+                    self._execution_skill_load_instruction(str(subagent_type))
+                    + "\n\nAfter those loads succeed, perform the delegated task:\n"
+                    + prompt
+                )
+                # Wait for the enforced worker context; do not let background
+                # delegation outlive the root completion assertion.
+                updated_input["run_in_background"] = False
+                return {
+                    "continue_": True,
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "allow",
+                        "updatedInput": updated_input,
+                    },
+                }
+            if (
+                self.sub_agent_architecture
+                and subagent_type
+                and subagent_type not in {"documentation_agent", "claude_md_agent"}
+            ):
+                return self._deny_tool_for_missing_execution_skills(
+                    "Delegated analytical work must use execution_agent or skills_agent "
+                    "so configured project-skill enforcement remains active."
+                )
+
+        return {"continue_": True}
+
+    async def _execution_skills_post_tool_hook(self, hook_input, tool_use_id, context):
+        if not self._required_execution_skills():
+            return {"continue_": True}
+        tool_name = hook_input.get("tool_name") if isinstance(hook_input, dict) else None
+        if tool_name != "Skill":
+            return {"continue_": True}
+
+        context_key, context_name, _ = self._execution_skill_context(hook_input)
+        pending_key = (context_key, str(tool_use_id))
+        requested = self._execution_skill_pending.pop(pending_key, None)
+        if requested is None:
+            return {"continue_": True}
+
+        response = hook_input.get("tool_response") if isinstance(hook_input, dict) else None
+        succeeded = (
+            isinstance(response, dict)
+            and response.get("success") is True
+            and response.get("commandName") == requested
+        )
+        if succeeded:
+            self._execution_skill_loaded_by_context.setdefault(context_key, set()).add(requested)
+            self._log_execution_skill_event(
+                "execution_skill_loaded", requested, context_name
+            )
+        else:
+            reason = "Skill result did not authoritatively confirm the exact qualified command."
+            self._log_execution_skill_event(
+                "execution_skill_failed", requested, context_name, reason
+            )
+        return {"continue_": True}
+
+    async def _execution_skills_post_tool_failure_hook(
+        self, hook_input, tool_use_id, context
+    ):
+        if not self._required_execution_skills():
+            return {"continue_": True}
+        context_key, context_name, _ = self._execution_skill_context(hook_input)
+        requested = self._execution_skill_pending.pop(
+            (context_key, str(tool_use_id)), None
+        )
+        if requested is not None:
+            reason = "Skill tool execution failed."
+            if isinstance(hook_input, dict) and hook_input.get("error"):
+                reason = str(hook_input["error"])
+            self._log_execution_skill_event(
+                "execution_skill_failed", requested, context_name, reason
+            )
+        return {"continue_": True}
+
+    async def _execution_skills_subagent_start_hook(
+        self, hook_input, tool_use_id, context
+    ):
+        if not self._required_execution_skills():
+            return {"continue_": True}
+        context_key, context_name, agent_type = self._execution_skill_context(hook_input)
+        if agent_type not in {"execution_agent", "skills_agent"}:
+            return {"continue_": True}
+        self._execution_skill_loaded_by_context.setdefault(context_key, set())
+        self._execution_skill_context_labels[context_key] = context_name
+        self._execution_skill_analytical_contexts.add(context_key)
+        return {
+            "continue_": True,
+            "hookSpecificOutput": {
+                "hookEventName": "SubagentStart",
+                "additionalContext": self._execution_skill_load_instruction(context_name),
+            },
+        }
+
+    async def _execution_skills_subagent_stop_hook(
+        self, hook_input, tool_use_id, context
+    ):
+        if not self._required_execution_skills():
+            return {"continue_": True}
+        context_key, context_name, agent_type = self._execution_skill_context(hook_input)
+        if agent_type not in {"execution_agent", "skills_agent"}:
+            return {"continue_": True}
+        missing = self._missing_execution_skills(context_key)
+        if not missing:
+            return {"continue_": True}
+
+        attempt = self._execution_skill_subagent_stop_attempts.get(context_key, 0) + 1
+        self._execution_skill_subagent_stop_attempts[context_key] = attempt
+        self._log_missing_execution_skills(missing, context_name, attempt)
+        reason = (
+            "The delegated analytical context cannot finish until it loads: "
+            + ", ".join(missing)
+        )
+        if attempt == 1:
+            return {"decision": "block", "reason": reason}
+        return {"continue_": False, "stopReason": reason}
+
+    def _assert_required_execution_skills_loaded(
+        self, include_subagents: bool = True, attempt: int = 0
+    ) -> None:
+        if not self._required_execution_skills():
+            return
+        contexts = ["primary"]
+        if include_subagents:
+            contexts.extend(sorted(self._execution_skill_analytical_contexts))
+        for context_key in contexts:
+            missing = self._missing_execution_skills(context_key)
+            if missing:
+                context_name = self._execution_skill_context_labels.get(
+                    context_key, context_key
+                )
+                self._log_missing_execution_skills(missing, context_name, attempt)
+                raise ExecutionSkillsRequiredLoadError(missing, context_name)
+
+    async def _load_required_execution_skills(self, client) -> List[str]:
+        """Load selected skills in the same session before sending analytical work."""
+        required = self._required_execution_skills()
+        if not required or not self._missing_execution_skills("primary"):
+            return []
+
+        preflight_messages: List[str] = []
+        for attempt in range(1, 3):
+            missing = self._missing_execution_skills("primary")
+            if not missing:
+                return preflight_messages
+            prompt = (
+                "Mandatory execution-skill preflight. Use only the Skill tool now. "
+                "Invoke each exact qualified name below once and wait for its result:\n"
+                + "\n".join(f"- {name}" for name in missing)
+                + "\nDo not compute, delegate, inspect files, browse, or claim completion."
+            )
+            if attempt > 1:
+                prompt = (
+                    "The prior preflight did not authoritatively load every required skill. "
+                    + prompt
+                )
+            if self.execution_tracker is not None:
+                self.execution_tracker.set_phase("execution_skill_preflight")
+            await client.query(prompt)
+            async for message in client.receive_response():
+                preflight_messages.append(str(message))
+                if self.execution_tracker is not None:
+                    self.execution_tracker.log_stream_message(
+                        message, phase="execution_skill_preflight"
+                    )
+                self._observe_execution_skills_discovery(message)
+
+            missing = self._missing_execution_skills("primary")
+            if not missing:
+                return preflight_messages
+            self._log_missing_execution_skills(missing, "primary", attempt)
+
+        raise ExecutionSkillsRequiredLoadError(
+            self._missing_execution_skills("primary"), "primary"
+        )
+    def config_to_prompt(self) -> str:
+        """Build the normal helper prompt without exposing execution-only skills."""
+        return super().config_to_prompt()
     
     def __init__(self, config: ExecutionAgentCCConfig, logger=None):
         super().__init__(config, logger)
@@ -330,7 +896,7 @@ class ExecutionAgentCC(BaseAgent):
         analysis_name = config.analysis_name
         log_dir = config.log_dir
         readme_truncate_length = getattr(config, 'readme_truncate_length', None)
-        max_turns = getattr(config, 'max_turns', 10)
+        max_turns = getattr(config, 'max_turns', None)
         working_directory = getattr(config, 'working_directory', None)
         manual_file_tracking = getattr(config, 'manual_file_tracking', False)
         max_turns_query_execution = getattr(config, 'max_turns_query_execution', None)
@@ -343,7 +909,9 @@ class ExecutionAgentCC(BaseAgent):
         self.analysis_name = analysis_name
         self.log_dir = log_dir
         self.readme_truncate_length = readme_truncate_length
-        # Resolve per-step max turns with backward-compatible fallback
+        # Resolve per-step max turns with backward-compatible fallback. Both
+        # may be None, which means the agent runs until it finishes rather than
+        # being cut off at an arbitrary step count.
         self.max_turns_query_execution = max_turns_query_execution if max_turns_query_execution is not None else max_turns
         self.max_turns = self.max_turns_query_execution
         self.separate_report_step = separate_report_step
@@ -361,6 +929,10 @@ class ExecutionAgentCC(BaseAgent):
         self.sandbox_enforcement = getattr(config, 'sandbox_enforcement', True)
         self.allowed_read_paths = getattr(config, 'allowed_read_paths', None)
         self.execution_tracker: Optional[ExecutionSDKTracker] = None
+        self._execution_skills_runtime_directory = None
+        self._configured_execution_skills: List[Dict[str, str]] = []
+        self._execution_skills_source_paths: List[str] = []
+        self._execution_skills_discovery_confirmed = False
         
         # Set up working directory - use project root or specified directory
         if working_directory:
@@ -491,13 +1063,60 @@ class ExecutionAgentCC(BaseAgent):
 
         # Build OpenTargets MCP server configurations if enabled
         mcp_servers = self._build_opentargets_mcp_configs()
-        configured_skills_paths = self._configure_execution_skills()
-        discovered_skills = self._discover_execution_skills()
-        pre_tool_hooks = [HookMatcher(matcher="Bash", hooks=[process_protection_hook])]
-        post_tool_hooks = []
+        configured_skills_runtime = self._configure_execution_skills()
+        discovered_skills = (
+            configured_skills_runtime["skills"] if configured_skills_runtime else []
+        )
+        runtime_skill_names = (
+            list(configured_skills_runtime["runtime_names"])
+            if configured_skills_runtime else []
+        )
+        self._reset_execution_skill_enforcement(runtime_skill_names)
+        system_prompt += self._execution_skills_policy(discovered_skills)
+        if isinstance(self.allowed_read_paths, str):
+            runtime_read_paths = [
+                path.strip() for path in self.allowed_read_paths.split(",") if path.strip()
+            ]
+        else:
+            runtime_read_paths = list(self.allowed_read_paths or [])
+        if configured_skills_runtime is not None:
+            runtime_read_paths.append(str(configured_skills_runtime["plugin_root"]))
+
+        pre_tool_hooks = [
+            HookMatcher(matcher=None, hooks=[self._execution_skills_pre_tool_hook]),
+            HookMatcher(matcher="Bash", hooks=[process_protection_hook]),
+        ]
+        post_tool_hooks = [
+            HookMatcher(matcher=None, hooks=[self._execution_skills_post_tool_hook])
+        ]
+        post_tool_failure_hooks = [
+            HookMatcher(
+                matcher=None, hooks=[self._execution_skills_post_tool_failure_hook]
+            )
+        ]
+        subagent_start_hooks = [
+            HookMatcher(
+                matcher=None, hooks=[self._execution_skills_subagent_start_hook]
+            )
+        ]
+        subagent_stop_hooks = [
+            HookMatcher(
+                matcher=None, hooks=[self._execution_skills_subagent_stop_hook]
+            )
+        ]
         if self.execution_tracker is not None:
-            pre_tool_hooks.append(HookMatcher(matcher=None, hooks=[self.execution_tracker.pre_tool_use_hook]))
-            post_tool_hooks.append(HookMatcher(matcher=None, hooks=[self.execution_tracker.post_tool_use_hook]))
+            pre_tool_hooks.append(
+                HookMatcher(matcher=None, hooks=[self.execution_tracker.pre_tool_use_hook])
+            )
+            post_tool_hooks.append(
+                HookMatcher(matcher=None, hooks=[self.execution_tracker.post_tool_use_hook])
+            )
+            post_tool_failure_hooks.append(
+                HookMatcher(
+                    matcher=None,
+                    hooks=[self.execution_tracker.post_tool_use_failure_hook],
+                )
+            )
 
         # Sandbox enforcement hooks — restrict file operations to working directory
         if self.sandbox_enforcement and self.working_directory:
@@ -508,7 +1127,7 @@ class ExecutionAgentCC(BaseAgent):
             sandbox_escape_attempts: Dict[str, dict] = {}
             sandbox_hooks = create_sandbox_enforcement_hook(
                 sandbox_root=str(self.working_directory),
-                allowed_read_paths=self.allowed_read_paths,
+                allowed_read_paths=runtime_read_paths,
                 logger=self.logger,
                 escape_attempts=sandbox_escape_attempts,
             )
@@ -529,7 +1148,7 @@ class ExecutionAgentCC(BaseAgent):
             self.logger.log_action(
                 "sandbox_enforcement_init",
                 f"Sandbox enforcement enabled: root={self.working_directory}, "
-                f"allowed_read_paths={self.allowed_read_paths or '[]'}"
+                f"allowed_read_paths={runtime_read_paths or '[]'}"
             )
 
         # Base prompt for claude code:
@@ -548,23 +1167,6 @@ class ExecutionAgentCC(BaseAgent):
         if self.sub_agent_architecture:
             system_prompt += "\nUse your sub-agents whenever possible to help you complete the analysis."
 
-            if discovered_skills:
-                skill_lines = []
-                for skill in discovered_skills:
-                    skill_name = skill.get("name", "unknown")
-                    skill_description = skill.get("description")
-                    if skill_description:
-                        skill_lines.append(f"- {skill_name}: {skill_description}")
-                    else:
-                        skill_lines.append(f"- {skill_name}")
-
-                system_prompt += (
-                    "\n\nSKILL ACCESS POLICY:\n"
-                    "When you need external tool access via Claude skills, ALWAYS delegate that work to the "
-                    "'skills_agent' sub-agent. Do not try to perform skill-based external access yourself.\n"
-                    "The skills_agent has access to the following skills:\n"
-                    + "\n".join(skill_lines)
-                )
 
             # Inject codebase structure prompt into sub-agents so they follow the same rules
             # This is critical because sub-agents do the actual file operations
@@ -582,12 +1184,23 @@ class ExecutionAgentCC(BaseAgent):
                     self.logger.log_action("sub_agent_structure_injection",
                         f"Injected codebase structure prompt into '{agent_name}' sub-agent ({len(structure_injection)} chars)")
 
-                # Create new AgentDefinition with modified prompt
+                subagent_tools = list(agent_def.tools or [])
+                subagent_skills = None
+                if discovered_skills and agent_name == "execution_agent":
+                    if "Skill" not in subagent_tools:
+                        subagent_tools.insert(0, "Skill")
+                    subagent_skills = list(runtime_skill_names)
+                    modified_prompt += (
+                        "\n\n" + self._execution_skill_load_instruction(agent_name)
+                    )
+
+                # Only analytical workers receive the selected skill filter.
                 modified_sub_agent_configs[agent_name] = AgentDefinition(
                     description=agent_def.description,
                     prompt=modified_prompt,
-                    tools=agent_def.tools,
-                    model=sub_agent_model_alias
+                    tools=subagent_tools,
+                    model=sub_agent_model_alias,
+                    skills=subagent_skills,
                 )
 
             if discovered_skills:
@@ -596,16 +1209,19 @@ class ExecutionAgentCC(BaseAgent):
                     skill_name = skill.get("name", "unknown")
                     skill_description = skill.get("description")
                     if skill_description:
-                        skill_lines.append(f"- {skill_name}: {skill_description}")
+                        skill_lines.append(f"- {skill_name} (invoke as {skill['runtime_name']}): {skill_description}")
                     else:
-                        skill_lines.append(f"- {skill_name}")
+                        skill_lines.append(f"- {skill_name} (invoke as {skill['runtime_name']})")
 
                 skills_agent_prompt = (
-                    "You are a specialized skills sub-agent. Your job is to execute tasks that require Claude skills "
-                    "or external tool integrations.\n\n"
-                    "You must prefer the Skill tool whenever skill-based external access is relevant.\n"
-                    "Do not perform broad exploratory analysis beyond the delegated task. Focus on the requested "
-                    "skill-powered operation and return concise, actionable outputs.\n\n"
+                    "You are the execution agent's helper for the selected immutable round skills. "
+                    "Use the Skill tool with the exact qualified name for delegated skill work. "
+                    "Follow the loaded instructions completely, including scripts, references, templates, "
+                    "receipts, verification tokens, validation, and required artifacts. Resolve referenced "
+                    "skill resources and executable paths from the loaded skill's runtime directory, never "
+                    "a live skill copy. Keep required output artifacts in the project working directory "
+                    "unless the skill specifies another destination. Never claim success from availability "
+                    "alone.\n\n"
                     "Available skills:\n"
                     + "\n".join(skill_lines)
                 )
@@ -614,6 +1230,7 @@ class ExecutionAgentCC(BaseAgent):
                     prompt=skills_agent_prompt,
                     tools=["Skill", "Read", "Write", "Edit", "Bash", "Glob", "Grep"],
                     model=sub_agent_model_alias,
+                    skills=list(runtime_skill_names),
                 )
                 self.logger.log_action(
                     "skills_sub_agent_init",
@@ -625,6 +1242,8 @@ class ExecutionAgentCC(BaseAgent):
 
             # Build allowed_tools list including MCP tools if configured
             allowed_tools = ["Read", "Write", "Edit", "Bash", "Glob", "Grep"]
+            if discovered_skills:
+                allowed_tools.insert(0, "Skill")
             if mcp_servers:
                 # Add wildcard patterns for all OpenTargets MCP tools
                 for server_name in mcp_servers.keys():
@@ -632,7 +1251,6 @@ class ExecutionAgentCC(BaseAgent):
 
             claude_options_kwargs = {
                 "agents": modified_sub_agent_configs,
-                "max_turns": self.max_turns_query_execution,
                 "max_buffer_size": int(os.getenv("CLAUDE_CODE_MAX_BUFFER_SIZE", str(50 * 1024 * 1024))),
                 "system_prompt": system_prompt,
                 "cwd": self.working_directory,
@@ -641,28 +1259,21 @@ class ExecutionAgentCC(BaseAgent):
                 "hooks": {
                     "PreToolUse": pre_tool_hooks,
                     "PostToolUse": post_tool_hooks,
+                    "PostToolUseFailure": post_tool_failure_hooks,
+                    "SubagentStart": subagent_start_hooks,
+                    "SubagentStop": subagent_stop_hooks,
                 }
             }
             if resolved_model:
                 claude_options_kwargs["model"] = resolved_model
+            # Omitted entirely when unset: the SDK only passes --max-turns to
+            # the CLI when this is truthy, so leaving it out is what lets the
+            # agent run until it decides the task is done.
+            if self.max_turns_query_execution:
+                claude_options_kwargs["max_turns"] = self.max_turns_query_execution
             if mcp_servers:
                 claude_options_kwargs["mcp_servers"] = mcp_servers
-            if configured_skills_paths is not None:
-                # Only set skill-path options if supported by the installed SDK.
-                option_fields = set(inspect.signature(ClaudeAgentOptions).parameters.keys())
-                skill_path_fields = (
-                    "skills_path",
-                    "skill_path",
-                    "skills_dir",
-                    "skill_dir",
-                    "skills_directory",
-                    "skill_directory",
-                )
-                joined_skill_paths = os.pathsep.join(str(p) for p in configured_skills_paths)
-                for field_name in skill_path_fields:
-                    if field_name in option_fields:
-                        claude_options_kwargs[field_name] = joined_skill_paths
-                        break
+            self._apply_execution_skills_options(claude_options_kwargs, configured_skills_runtime)
 
             self.claude_code_options = _create_claude_agent_options(claude_options_kwargs)
         else:
@@ -673,15 +1284,14 @@ class ExecutionAgentCC(BaseAgent):
 
             # Build allowed_tools list including MCP tools if configured
             allowed_tools = ["Read", "Write", "Edit", "Bash"]
-            if configured_skills_paths is not None:
-                allowed_tools.append("Skill")
+            if discovered_skills:
+                allowed_tools.insert(0, "Skill")
             if mcp_servers:
                 # Add wildcard patterns for all OpenTargets MCP tools
                 for server_name in mcp_servers.keys():
                     allowed_tools.append(f"mcp__{server_name}__*")
 
             claude_options_kwargs = {
-                "max_turns": self.max_turns_query_execution,
                 "max_buffer_size": int(os.getenv("CLAUDE_CODE_MAX_BUFFER_SIZE", str(50 * 1024 * 1024))),
                 "system_prompt": system_prompt,
                 "cwd": self.working_directory,
@@ -690,28 +1300,21 @@ class ExecutionAgentCC(BaseAgent):
                 "hooks": {
                     "PreToolUse": pre_tool_hooks,
                     "PostToolUse": post_tool_hooks,
+                    "PostToolUseFailure": post_tool_failure_hooks,
+                    "SubagentStart": subagent_start_hooks,
+                    "SubagentStop": subagent_stop_hooks,
                 }
             }
             if resolved_model:
                 claude_options_kwargs["model"] = resolved_model
+            # Omitted entirely when unset: the SDK only passes --max-turns to
+            # the CLI when this is truthy, so leaving it out is what lets the
+            # agent run until it decides the task is done.
+            if self.max_turns_query_execution:
+                claude_options_kwargs["max_turns"] = self.max_turns_query_execution
             if mcp_servers:
                 claude_options_kwargs["mcp_servers"] = mcp_servers
-            if configured_skills_paths is not None:
-                # Only set skill-path options if supported by the installed SDK.
-                option_fields = set(inspect.signature(ClaudeAgentOptions).parameters.keys())
-                skill_path_fields = (
-                    "skills_path",
-                    "skill_path",
-                    "skills_dir",
-                    "skill_dir",
-                    "skills_directory",
-                    "skill_directory",
-                )
-                joined_skill_paths = os.pathsep.join(str(p) for p in configured_skills_paths)
-                for field_name in skill_path_fields:
-                    if field_name in option_fields:
-                        claude_options_kwargs[field_name] = joined_skill_paths
-                        break
+            self._apply_execution_skills_options(claude_options_kwargs, configured_skills_runtime)
 
             self.claude_code_options = _create_claude_agent_options(claude_options_kwargs)
         
@@ -797,10 +1400,11 @@ class ExecutionAgentCC(BaseAgent):
         Get the system prompt for Claude Code autonomous analysis.
         """
 
+        budget_section = self._step_budget_section()
         if self.sub_agent_architecture:
-            base_prompt = EXECUTION_AGENT_SYSTEM_PROMPT_SUB_AGENTS.format(budget_steps=self.max_turns_query_execution)
+            base_prompt = EXECUTION_AGENT_SYSTEM_PROMPT_SUB_AGENTS.format(budget_section=budget_section)
         else:
-            base_prompt = EXECUTION_AGENT_SYSTEM_PROMPT.format(budget_steps=self.max_turns_query_execution)
+            base_prompt = EXECUTION_AGENT_SYSTEM_PROMPT.format(budget_section=budget_section)
         
         # Add resource information if running on SLURM
         resource_info = get_slurm_resource_info()
@@ -992,16 +1596,15 @@ class ExecutionAgentCC(BaseAgent):
         Returns:
             dict: Results containing messages and concise_report
         """        
-        # Construct the analysis prompt
+        # Construct the analysis prompt. The step budget appears only when one
+        # is configured (see _step_budget_section).
         analysis_prompt = f"""
 Here's a description of the dataset you're working with:
 {dataset_description}
 
 {query_text}
 
-⏱️ BUDGET:
-You have {self.max_turns_query_execution} steps to complete this task. Please be efficient and mindful of this budget. Plan your approach carefully to maximize the value of each step.
-"""
+{self._step_budget_section()}"""
 
         if self.sub_agent_architecture:
             analysis_prompt += "\nUse your sub-agents whenever possible to help you complete the analysis."
@@ -1027,6 +1630,12 @@ You have {self.max_turns_query_execution} steps to complete this task. Please be
         # Execute Claude Code query with streaming using ClaudeSDKClient
         # Connect client once and maintain session throughout all operations
         async with self.claude_client as client:
+
+            # Required loads happen in this same operative session before analysis.
+            await self._load_required_execution_skills(client)
+            self._assert_required_execution_skills_loaded(
+                include_subagents=False, attempt=2
+            )
             # Main query execution
             if self.execution_tracker is not None:
                 self.execution_tracker.set_phase("analysis")
@@ -1035,11 +1644,17 @@ You have {self.max_turns_query_execution} steps to complete this task. Please be
                 messages.append(str(message))
                 if self.execution_tracker is not None:
                     self.execution_tracker.log_stream_message(message, phase="analysis")
+                self._observe_execution_skills_discovery(message)
                 
                 # Real-time logging - use direct print to avoid duplicate output
                 formatted_msg = self._format_message_for_display(str(message))
                 if formatted_msg:
                     self._direct_print(formatted_msg)
+
+            # A discovered-but-unloaded primary or analytical worker is terminal.
+            self._assert_required_execution_skills_loaded(
+                include_subagents=True, attempt=2
+            )
             
             # Update execution count (Claude Code handles multiple turns internally)
             self.execution_count = len(messages)
@@ -1067,15 +1682,14 @@ You have {self.max_turns_query_execution} steps to complete this task. Please be
                     self._direct_print(f"⚠️ Error in CLAUDE.md generation step: {str(e)}")
                     result["claude_md_error"] = str(e)
             
-            # Generate concise summary report within the same session (maintains context)
-            try:
-                self._direct_print(f"\n📄 Generating concise summary report...")
-                concise_report = await self._generate_concise_summary(client, query_text, output_files, image_tracker, query_num)
-                result["concise_report"] = concise_report
-                self._direct_print(f"✅ Concise report generated successfully")
-            except Exception as e:
-                self._direct_print(f"⚠️ Error generating concise report: {str(e)}")
-                result["concise_report"] = f"Error generating report: {str(e)}"
+            # Generate the concise report in the same session. A missing final
+            # response is a query failure, not report content to persist.
+            self._direct_print(f"\n📄 Generating concise summary report...")
+            concise_report = await self._generate_concise_summary(
+                client, query_text, output_files, image_tracker, query_num
+            )
+            result["concise_report"] = concise_report
+            self._direct_print(f"✅ Concise report generated successfully")
             
             return result
     
@@ -1110,6 +1724,11 @@ You have {self.max_turns_query_execution} steps to complete this task. Please be
                     checkpoint_query_dir=checkpoint_query_dir,
                     query_num=query_num,
                 )
+                if self._configured_execution_skills:
+                    self.execution_tracker.log_skill_configuration(
+                        list(self._execution_skills_source_paths),
+                        [skill["name"] for skill in self._configured_execution_skills],
+                    )
             except Exception as e:
                 self.logger.log_error(f"Failed to initialize execution tracker logs: {str(e)}")
             
@@ -1122,22 +1741,31 @@ You have {self.max_turns_query_execution} steps to complete this task. Please be
 
         # Run the comprehensive async function that includes report generation
         # This maintains session continuity throughout the entire process
-        async_result = asyncio.run(self._execute_with_report_generation(query, dataset_description, query_num, image_tracker, []))
-        
-        self._direct_print(f"✅ Claude Code SDK analysis completed for query {query_num}")
-        
-        # Perform file safety check
-        safety_report = self._check_file_safety()
-        if safety_report.get('existing_files_protected', True):
-            print(f"🛡️ File safety: All existing files protected")
-        else:
-            missing_count = len(safety_report.get('missing_files', []))
-            print(f"⚠️ File safety warning: {missing_count} files may have been modified/deleted")
-        
-        # Extract the concise report that was generated within the session
-        concise_report = async_result.get("concise_report", "Error: No report generated")
-        
-        return concise_report
+        try:
+            async_result = asyncio.run(self._execute_with_report_generation(query, dataset_description, query_num, image_tracker, []))
+            self._direct_print(f"✅ Claude Code SDK analysis completed for query {query_num}")
+
+            # Perform file safety check
+            safety_report = self._check_file_safety()
+            if safety_report.get('existing_files_protected', True):
+                safety_message = "🛡️ File safety: All existing files protected"
+            else:
+                missing_count = len(safety_report.get('missing_files', []))
+                safety_message = f"⚠️ File safety warning: {missing_count} files may have been modified/deleted"
+            print(safety_message)
+            if self.execution_tracker is not None:
+                self.execution_tracker.log_observable(safety_message)
+
+            concise_report = async_result.get("concise_report")
+            if not isinstance(concise_report, str) or not concise_report.strip():
+                raise ExecutionAgentEmptyResponseError()
+            return concise_report
+        except BaseException as exc:
+            self._direct_print(f"❌ Execution ended before completion: {type(exc).__name__}: {exc}")
+            raise
+        finally:
+            if self.execution_tracker is not None and self.execution_tracker.execution_log is not None:
+                self.execution_tracker.execution_log.flush()
             
     
     def _extract_generated_files(self, raw_result: str) -> List[str]:
@@ -1220,6 +1848,7 @@ You have {self.max_turns_query_execution} steps to complete this task. Please be
                 msgs.append(msg_str)
                 if self.execution_tracker is not None:
                     self.execution_tracker.log_stream_message(message, phase="claude_md_generation")
+                self._observe_execution_skills_discovery(message)
                 # Print the message - use direct print to avoid duplicate output
                 formatted_message = self._format_message_for_display(msg_str)
                 self._direct_print(formatted_message)
@@ -1413,20 +2042,29 @@ You have {self.max_turns_query_execution} steps to complete this task. Please be
         # Run first attempt
         if self.execution_tracker is not None:
             self.execution_tracker.set_phase("report_generation")
-        await client.query(file_request_prompt)
-        async for message in client.receive_response():
-            if self.execution_tracker is not None:
-                self.execution_tracker.log_stream_message(message, phase="report_generation")
-            # Print agent interactions as done elsewhere
-            formatted_msg = self._format_message_for_display(str(message))
-            if formatted_msg:
-                self._direct_print(formatted_msg)
+        first_messages = []
+        first_failure = None
+        try:
+            await client.query(file_request_prompt)
+            async for message in client.receive_response():
+                first_messages.append(message)
+                if self.execution_tracker is not None:
+                    self.execution_tracker.log_stream_message(message, phase="report_generation")
+                self._observe_execution_skills_discovery(message)
+                # Print agent interactions as done elsewhere
+                formatted_msg = self._format_message_for_display(str(message))
+                if formatted_msg:
+                    self._direct_print(formatted_msg)
+        except Exception:
+            first_failure = ExecutionAgentSDKResponseError()
         
         # Check if report was generated
         if expected_report_path.exists():
             try:
                 with open(expected_report_path, 'r', encoding='utf-8') as f:
                     report_contents = f.read()
+                if not report_contents.strip():
+                    raise ExecutionAgentEmptyResponseError()
                 self._direct_print(f"✅ Successfully read report from: {expected_report_path}")
                 try:
                     shutil.rmtree(report_dir)
@@ -1434,11 +2072,18 @@ You have {self.max_turns_query_execution} steps to complete this task. Please be
                 except Exception as e:
                     self._direct_print(f"⚠️ Error deleting query directory {report_dir}: {str(e)}")
                 return report_contents
+            except ExecutionAgentResultError:
+                raise
             except Exception as e:
                 self._direct_print(f"⚠️ Error reading report file: {str(e)}")
         else:
+            first_failure = first_failure or self._report_failure(first_messages)
+            if isinstance(first_failure, ExecutionAgentRefusalError):
+                raise first_failure
             # Retry once
-            self._direct_print(f"⚠️ Report not found at {expected_report_path}, retrying...")
+            self._direct_print(
+                f"⚠️ Report unavailable ({first_failure.category}), retrying once..."
+            )
             retry_prompt = f"Try to generate this report again as the file path {expected_report_path} cannot be found."
             
             # Log the retry prompt
@@ -1447,20 +2092,28 @@ You have {self.max_turns_query_execution} steps to complete this task. Please be
             self.logger.log_action("report_retry_prompt", 
                 f"Report retry prompt:\n{retry_prompt}")
             
-            await client.query(retry_prompt)
-            async for message in client.receive_response():
-                if self.execution_tracker is not None:
-                    self.execution_tracker.log_stream_message(message, phase="report_generation_retry")
-                # Print agent interactions as done elsewhere
-                formatted_msg = self._format_message_for_display(str(message))
-                if formatted_msg:
-                    self._direct_print(formatted_msg)
+            retry_messages = []
+            try:
+                await client.query(retry_prompt)
+                async for message in client.receive_response():
+                    retry_messages.append(message)
+                    if self.execution_tracker is not None:
+                        self.execution_tracker.log_stream_message(message, phase="report_generation_retry")
+                    self._observe_execution_skills_discovery(message)
+                    # Print agent interactions as done elsewhere
+                    formatted_msg = self._format_message_for_display(str(message))
+                    if formatted_msg:
+                        self._direct_print(formatted_msg)
+            except Exception as exc:
+                raise ExecutionAgentSDKResponseError() from exc
             
             # Check again after retry
             if expected_report_path.exists():
                 try:
                     with open(expected_report_path, 'r', encoding='utf-8') as f:
                         report_contents = f.read()
+                    if not report_contents.strip():
+                        raise ExecutionAgentEmptyResponseError()
                     self._direct_print(f"✅ Successfully read report from retry: {expected_report_path}")
                     try: # Delete the query directory after reading the report
                         shutil.rmtree(report_dir)
@@ -1468,14 +2121,16 @@ You have {self.max_turns_query_execution} steps to complete this task. Please be
                     except Exception as e:
                         self._direct_print(f"⚠️ Error deleting query directory {report_dir}: {str(e)}")
                     return report_contents
+                except ExecutionAgentResultError:
+                    raise
                 except Exception as e:
                     self._direct_print(f"⚠️ Error reading report file after retry: {str(e)}")
             else:
                 self._direct_print(f"❌ Report still not found after retry")
+                raise self._report_failure(retry_messages)
         
-        # Both attempts failed
-        self._direct_print("❌ No report generated after initial attempt and retry")
-        return "No report generated"
+        # A read error or empty artifact must never become a completed report.
+        raise ExecutionAgentMalformedReportError()
     
     def _make_api_call(self, messages, response_format=None, max_tokens=None):
         """
@@ -1663,7 +2318,7 @@ You have {self.max_turns_query_execution} steps to complete this task. Please be
             'existing_files_count': len(getattr(self, 'existing_files', set())),
             'config_info': {
                 'analysis_name': getattr(self, 'analysis_name', ''),
-                'max_turns_query_execution': getattr(self, 'max_turns_query_execution', 10),
+                'max_turns_query_execution': getattr(self, 'max_turns_query_execution', None),
                 'separate_report_step': getattr(self, 'separate_report_step', False),
                 'claude_md_generator': getattr(self, 'claude_md_generator', False),
                 'execute_context_persistence': getattr(self, 'execute_context_persistence', True),
@@ -1671,7 +2326,7 @@ You have {self.max_turns_query_execution} steps to complete this task. Please be
             },
             'claude_session_info': {
                 'session_active': self.claude_client is not None,
-                'max_turns': getattr(self, 'max_turns', 10)
+                'max_turns': getattr(self, 'max_turns', None)
             }
         }
     
@@ -1761,6 +2416,7 @@ You have {self.max_turns_query_execution} steps to complete this task. Please be
 
             if self.execution_tracker is not None:
                 self.execution_tracker.close()
+            self._cleanup_execution_skills_runtime()
             
             # Reset execution count
             self.execution_count = 0

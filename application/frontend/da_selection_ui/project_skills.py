@@ -7,6 +7,7 @@ import re
 import shutil
 import stat
 import tempfile
+import threading
 import unicodedata
 import uuid
 import zipfile
@@ -23,6 +24,8 @@ MAX_MEMBER_BYTES = 10 * 1024 * 1024
 MAX_SKILL_MD_BYTES = 1_000_000
 MAX_PATH_LENGTH = 240
 _SKILL_ID_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+ROUND_SKILLS_SNAPSHOT_DIRECTORY = ".execution_skills"
+_SKILL_MUTATION_LOCK = threading.RLock()
 
 
 class SkillImportError(ValueError):
@@ -46,6 +49,13 @@ class SkillMetadata:
             "name": self.name,
             "description": self.description,
         }
+
+
+@contextmanager
+def skill_mutation_guard():
+    """Serialize installed-skill mutations with immutable round capture."""
+    with _SKILL_MUTATION_LOCK:
+        yield
 
 
 def skills_root(project: dict) -> Path:
@@ -128,10 +138,15 @@ def _parse_frontmatter(skill_md: Path) -> tuple[str, str]:
 
 
 def _safe_skill_id(name: str) -> str:
+    if any(character in name for character in ("/", "\\", "\x00")) or name.strip() in {".", ".."}:
+        raise SkillImportError("invalid_metadata", "The skill name contains unsafe characters.")
     normalized = re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")
     if not normalized:
         raise SkillImportError("invalid_metadata", "The skill name cannot form a safe identifier.")
-    return normalized[:80].rstrip("-")
+    skill_id = normalized[:80].rstrip("-")
+    if not _SKILL_ID_RE.fullmatch(skill_id):
+        raise SkillImportError("invalid_metadata", "The skill name cannot form a safe identifier.")
+    return skill_id
 
 
 def metadata_from_directory(skill_dir: Path) -> SkillMetadata:
@@ -294,30 +309,103 @@ def _save_upload(upload: BinaryIO, destination: Path) -> None:
                 break
             total += len(chunk)
             if total > MAX_ARCHIVE_BYTES:
-                raise SkillImportError("archive_too_large", "The ZIP file is too large.")
+                raise SkillImportError("archive_too_large", "The selected skill file is too large.")
             output.write(chunk)
+
+
+def _skill_upload_kind(filename: str) -> str:
+    basename = (filename or "").replace("\\", "/").rsplit("/", 1)[-1]
+    if basename == "SKILL.md":
+        return "standalone"
+    suffix = Path(basename).suffix.lower()
+    if suffix == ".zip":
+        return "zip"
+    if suffix == ".skill":
+        return "skill"
+    raise SkillImportError(
+        "unsupported_skill_file",
+        "Choose a .skill, .zip, or SKILL.md file.",
+    )
+
+
+def _looks_like_zip(upload_path: Path) -> bool:
+    try:
+        with upload_path.open("rb") as source:
+            signature = source.read(4)
+    except OSError as exc:
+        raise SkillImportError("invalid_skill", "The selected skill file could not be read.") from exc
+    return signature in {b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08"}
+
+
+def _standalone_package(upload_path: Path, temp_root: Path) -> Path:
+    try:
+        size = upload_path.stat().st_size
+        payload = upload_path.read_bytes()
+    except OSError as exc:
+        raise SkillImportError("invalid_skill", "The selected skill file could not be read.") from exc
+    if size > MAX_SKILL_MD_BYTES:
+        raise SkillImportError(
+            "archive_too_large", "SKILL.md exceeds Claude's 1,000,000-byte limit."
+        )
+    try:
+        content = payload.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise SkillImportError("invalid_skill", "SKILL.md must be readable UTF-8 text.") from exc
+    if not content.strip():
+        raise SkillImportError("invalid_skill", "SKILL.md cannot be empty.")
+    if any(
+        unicodedata.category(character) == "Cc" and character not in "\t\n\r"
+        for character in content
+    ):
+        raise SkillImportError("invalid_skill", "SKILL.md must be plain UTF-8 text.")
+
+    package_root = temp_root / "standalone"
+    package_root.mkdir()
+    skill_md = package_root / "SKILL.md"
+    os.replace(upload_path, skill_md)
+    skill_md.chmod(0o644)
+    return package_root
+
+
+def _archive_package(upload_path: Path, temp_root: Path) -> Path:
+    extract_root = temp_root / "extracted"
+    extract_root.mkdir()
+    try:
+        with zipfile.ZipFile(upload_path, "r") as archive:
+            members, wrapper = _inspect_archive(archive)
+            _extract_archive(archive, members, extract_root)
+    except zipfile.BadZipFile as exc:
+        raise SkillImportError("invalid_zip", "The selected file is not a valid ZIP package.") from exc
+    except (NotImplementedError, RuntimeError) as exc:
+        raise SkillImportError("invalid_zip", "The ZIP package uses an unsupported format.") from exc
+    return extract_root / wrapper if wrapper else extract_root
 
 
 @contextmanager
 def _validated_skill_package(upload, filename: str):
-    if not filename or Path(filename).suffix.lower() != ".zip":
-        raise SkillImportError("zip_required", "Choose a .zip skill package.")
+    upload_kind = _skill_upload_kind(filename)
     with tempfile.TemporaryDirectory(prefix="discoveryagent-skill-") as temp_name:
         temp_root = Path(temp_name)
-        archive_path = temp_root / "upload.zip"
-        _save_upload(upload, archive_path)
-        extract_root = temp_root / "extracted"
-        extract_root.mkdir()
-        try:
-            with zipfile.ZipFile(archive_path, "r") as archive:
-                members, wrapper = _inspect_archive(archive)
-                _extract_archive(archive, members, extract_root)
-        except zipfile.BadZipFile as exc:
-            raise SkillImportError("invalid_zip", "The selected file is not a valid ZIP package.") from exc
-        except (NotImplementedError, RuntimeError) as exc:
-            raise SkillImportError("invalid_zip", "The ZIP package uses an unsupported format.") from exc
+        upload_path = temp_root / "upload"
+        _save_upload(upload, upload_path)
+        is_archive = zipfile.is_zipfile(upload_path)
 
-        package_root = extract_root / wrapper if wrapper else extract_root
+        if upload_kind == "zip":
+            if not is_archive:
+                raise SkillImportError("invalid_zip", "The selected file is not a valid ZIP package.")
+            package_root = _archive_package(upload_path, temp_root)
+        elif upload_kind == "skill" and is_archive:
+            package_root = _archive_package(upload_path, temp_root)
+        else:
+            if is_archive or _looks_like_zip(upload_path):
+                message = (
+                    "A standalone SKILL.md file must be plain UTF-8 text."
+                    if upload_kind == "standalone"
+                    else "The .skill file looks like a damaged ZIP package."
+                )
+                raise SkillImportError("invalid_skill", message)
+            package_root = _standalone_package(upload_path, temp_root)
+
         name, description = _parse_frontmatter(package_root / "SKILL.md")
         skill_id = _safe_skill_id(name)
         yield package_root, SkillMetadata(skill_id, name, description)
@@ -334,44 +422,120 @@ def validate_project_skill(project: dict, upload, filename: str) -> dict[str, st
 
 
 def import_project_skill(project: dict, upload, filename: str) -> dict[str, str]:
-    root = skills_root(project)
-    with _validated_skill_package(upload, filename) as (package_root, metadata):
-        name = metadata.name
-        skill_id = metadata.skill_id
-        final_dir = root / skill_id
-        if os.path.lexists(final_dir):
-            if final_dir.is_symlink():
+    with skill_mutation_guard():
+        root = skills_root(project)
+        with _validated_skill_package(upload, filename) as (package_root, metadata):
+            name = metadata.name
+            skill_id = metadata.skill_id
+            final_dir = root / skill_id
+            if os.path.lexists(final_dir):
+                if final_dir.is_symlink():
+                    raise SkillImportError("invalid_project", "This project's skill storage is unsafe.")
+                raise SkillImportError("duplicate_skill", f'A skill named "{name}" is already imported.')
+            root.mkdir(parents=True, exist_ok=True)
+            if skills_root(project) != root:
                 raise SkillImportError("invalid_project", "This project's skill storage is unsafe.")
-            raise SkillImportError("duplicate_skill", f'A skill named "{name}" is already imported.')
-        root.mkdir(parents=True, exist_ok=True)
-        if skills_root(project) != root:
-            raise SkillImportError("invalid_project", "This project's skill storage is unsafe.")
-        staging = root / f".import-{uuid.uuid4().hex}"
-        try:
-            shutil.copytree(package_root, staging, symlinks=False)
-            os.replace(staging, final_dir)
-        except FileExistsError as exc:
-            raise SkillImportError("duplicate_skill", f'A skill named "{name}" is already imported.') from exc
-        finally:
-            if staging.exists():
-                shutil.rmtree(staging, ignore_errors=True)
-        return metadata.as_dict()
+            staging = root / f".import-{uuid.uuid4().hex}"
+            try:
+                shutil.copytree(package_root, staging, symlinks=False)
+                os.replace(staging, final_dir)
+            except FileExistsError as exc:
+                raise SkillImportError("duplicate_skill", f'A skill named "{name}" is already imported.') from exc
+            finally:
+                if staging.exists():
+                    shutil.rmtree(staging, ignore_errors=True)
+            return metadata.as_dict()
 
 
 def remove_project_skill(project: dict, skill_id: str) -> dict[str, str]:
-    if not isinstance(skill_id, str) or not _SKILL_ID_RE.fullmatch(skill_id):
-        raise SkillImportError("invalid_skill_id", "The selected skill identifier is invalid.")
-    root = skills_root(project)
-    target = root / skill_id
-    if not target.is_dir() or target.is_symlink():
-        raise SkillImportError("skill_not_found", "That skill is no longer available.")
-    try:
-        if not target.resolve().is_relative_to(root.resolve()):
+    with skill_mutation_guard():
+        if not isinstance(skill_id, str) or not _SKILL_ID_RE.fullmatch(skill_id):
             raise SkillImportError("invalid_skill_id", "The selected skill identifier is invalid.")
+        root = skills_root(project)
+        target = root / skill_id
+        if not target.is_dir() or target.is_symlink():
+            raise SkillImportError("skill_not_found", "That skill is no longer available.")
+        try:
+            if not target.resolve().is_relative_to(root.resolve()):
+                raise SkillImportError("invalid_skill_id", "The selected skill identifier is invalid.")
+        except OSError as exc:
+            raise SkillImportError("skill_not_found", "That skill is no longer available.") from exc
+        metadata = metadata_from_directory(target).as_dict()
+        tombstone = root / f".remove-{uuid.uuid4().hex}"
+        os.replace(target, tombstone)
+        shutil.rmtree(tombstone)
+        return metadata
+
+
+def _snapshot_has_skills(snapshot: Path) -> bool:
+    try:
+        for child in snapshot.iterdir():
+            if not _SKILL_ID_RE.fullmatch(child.name):
+                continue
+            try:
+                metadata_from_directory(child)
+            except SkillImportError:
+                continue
+            return True
     except OSError as exc:
-        raise SkillImportError("skill_not_found", "That skill is no longer available.") from exc
-    metadata = metadata_from_directory(target).as_dict()
-    tombstone = root / f".remove-{uuid.uuid4().hex}"
-    os.replace(target, tombstone)
-    shutil.rmtree(tombstone)
-    return metadata
+        raise SkillImportError(
+            "invalid_project", "This round's captured skill storage is unavailable."
+        ) from exc
+    return False
+
+
+def _skill_tree_is_safe(skill_dir: Path) -> bool:
+    """Reject manually introduced links or special files before snapshotting."""
+    try:
+        for current, directories, filenames in os.walk(skill_dir, followlinks=False):
+            current_path = Path(current)
+            for name in [*directories, *filenames]:
+                entry = current_path / name
+                mode = entry.lstat().st_mode
+                if stat.S_ISLNK(mode) or not (stat.S_ISDIR(mode) or stat.S_ISREG(mode)):
+                    return False
+    except OSError:
+        return False
+    return True
+
+
+def capture_round_skills(project: dict, round_dir: Path) -> tuple[Path, bool]:
+    """Atomically capture the exact installed skill set for one round.
+
+    The snapshot directory itself is the durable capture marker, including for
+    an empty skill set. Once it exists, resume/restart paths reuse it rather
+    than consulting the project's live Skills directory.
+    """
+    target_round = Path(round_dir).expanduser().absolute()
+    snapshot = target_round / ROUND_SKILLS_SNAPSHOT_DIRECTORY
+    with skill_mutation_guard():
+        if os.path.lexists(snapshot):
+            if snapshot.is_symlink() or not snapshot.is_dir():
+                raise SkillImportError(
+                    "invalid_project", "This round's captured skill storage is unsafe."
+                )
+            return snapshot, _snapshot_has_skills(snapshot)
+
+        root = skills_root(project)
+        target_round.mkdir(parents=True, exist_ok=True)
+        staging = target_round / f".{ROUND_SKILLS_SNAPSHOT_DIRECTORY.lstrip('.')}.tmp-{uuid.uuid4().hex}"
+        copied = False
+        try:
+            staging.mkdir(mode=0o700)
+            if root.is_dir():
+                for child in sorted(root.iterdir(), key=lambda path: path.name.lower()):
+                    if not _SKILL_ID_RE.fullmatch(child.name):
+                        continue
+                    try:
+                        metadata_from_directory(child)
+                    except SkillImportError:
+                        continue
+                    if not _skill_tree_is_safe(child):
+                        continue
+                    shutil.copytree(child, staging / child.name, symlinks=False)
+                    copied = True
+            os.replace(staging, snapshot)
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging, ignore_errors=True)
+        return snapshot, copied

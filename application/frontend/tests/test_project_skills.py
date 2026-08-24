@@ -56,10 +56,13 @@ def _client_and_project(monkeypatch, tmp_path):
     return client, app_module._v2_get_project(project_id)
 
 
-def _post_skill(client, project_id, payload, filename="skill.zip", endpoint=""):
+def _post_skill(
+    client, project_id, payload, filename="skill.zip", endpoint="", mime_type=None,
+):
+    upload = (payload, filename, mime_type) if mime_type else (payload, filename)
     return client.post(
         f"/api/projects/{project_id}/skills{endpoint}",
-        data={"skill": (payload, filename)},
+        data={"skill": upload},
         content_type="multipart/form-data",
     )
 
@@ -89,6 +92,211 @@ def test_valid_zip_shapes_preserve_metadata_and_supporting_files(monkeypatch, tm
     assert (installed / "SKILL.md").is_file()
     assert (installed / "scripts" / "analyze.py").read_text() == "print('analysis')\n"
     assert (installed / "references" / "guide.txt").read_text() == "reference"
+
+
+def test_plain_skill_previews_and_installs_exact_skill_md_from_frontmatter(monkeypatch, tmp_path):
+    client, project = _client_and_project(monkeypatch, tmp_path)
+    exact = (
+        _skill_md("Plain Text Skill", "Use the supplied analysis protocol.")
+        + "Preserve this exact UTF-8 body: β-cell.\n"
+    ).encode("utf-8")
+
+    preview = _post_skill(
+        client, project["id"], io.BytesIO(exact), filename="misleading-name.skill",
+        endpoint="/preview", mime_type="application/octet-stream",
+    )
+    assert preview.status_code == 200, preview.data
+    assert preview.get_json()["skill"] == {
+        "id": "plain-text-skill",
+        "name": "Plain Text Skill",
+        "description": "Use the supplied analysis protocol.",
+    }
+
+    imported = _post_skill(
+        client, project["id"], io.BytesIO(exact), filename="misleading-name.skill",
+        mime_type="application/zip",
+    )
+    assert imported.status_code == 201, imported.data
+    installed = Path(project["code_dir"]) / ".claude" / "skills" / "plain-text-skill"
+    assert (installed / "SKILL.md").read_bytes() == exact
+    assert list(path.name for path in installed.iterdir()) == ["SKILL.md"]
+    assert stat.S_IMODE((installed / "SKILL.md").stat().st_mode) == 0o644
+    assert not (Path(project["code_dir"]) / ".claude" / "skills" / "misleading-name").exists()
+
+
+def test_archive_skill_uses_hardened_zip_pipeline_and_keeps_safe_resources(monkeypatch, tmp_path):
+    client, project = _client_and_project(monkeypatch, tmp_path)
+    archive_bytes = _zip({
+        "bundle/SKILL.md": _skill_md("Archive Skill"),
+        "bundle/scripts/run.py": "print('safe')\n",
+        "bundle/assets/example.txt": "asset",
+    }).getvalue()
+
+    preview = _post_skill(
+        client, project["id"], io.BytesIO(archive_bytes), filename="bundle.skill",
+        endpoint="/preview", mime_type="text/plain",
+    )
+    assert preview.status_code == 200, preview.data
+    assert preview.get_json()["skill"]["id"] == "archive-skill"
+
+    imported = _post_skill(
+        client, project["id"], io.BytesIO(archive_bytes), filename="bundle.skill",
+        mime_type="application/octet-stream",
+    )
+    assert imported.status_code == 201, imported.data
+    installed = Path(project["code_dir"]) / ".claude" / "skills" / "archive-skill"
+    assert (installed / "scripts" / "run.py").read_text(encoding="utf-8") == "print('safe')\n"
+    assert (installed / "assets" / "example.txt").read_text(encoding="utf-8") == "asset"
+
+
+def test_standalone_skill_md_uses_frontmatter_name_and_ignores_mime(monkeypatch, tmp_path):
+    client, project = _client_and_project(monkeypatch, tmp_path)
+    exact = _skill_md("Standalone Helper", "A standalone skill document.").encode("utf-8")
+    preview = _post_skill(
+        client, project["id"], io.BytesIO(exact), filename="SKILL.md",
+        endpoint="/preview", mime_type="application/zip",
+    )
+    assert preview.status_code == 200, preview.data
+    assert preview.get_json()["skill"]["id"] == "standalone-helper"
+    imported = _post_skill(
+        client, project["id"], io.BytesIO(exact), filename="SKILL.md",
+        mime_type="application/octet-stream",
+    )
+    assert imported.status_code == 201, imported.data
+    installed = Path(project["code_dir"]) / ".claude" / "skills" / "standalone-helper" / "SKILL.md"
+    assert installed.read_bytes() == exact
+
+
+@pytest.mark.parametrize(
+    ("payload", "filename", "code"),
+    [
+        (b"", "empty.skill", "invalid_skill"),
+        (b"   \n\t", "empty.skill", "invalid_skill"),
+        (b"\xff\xfe\xfd", "binary.skill", "invalid_skill"),
+        (_skill_md("Binary Skill").encode("utf-8") + b"\x00binary", "binary.skill", "invalid_skill"),
+        (b"# No frontmatter\n", "broken.skill", "missing_metadata"),
+        (b"---\ndescription: Missing name\n---\n", "missing-name.skill", "missing_metadata"),
+        (b"---\nname: missing-description\n---\n", "missing-description.skill", "missing_metadata"),
+        (b"---\nname: block-skill\ndescription: >\n  multiline\n---\n", "multiline.skill", "invalid_metadata"),
+        (_skill_md("../unsafe").encode("utf-8"), "unsafe.skill", "invalid_metadata"),
+        (_skill_md("Arbitrary Markdown").encode("utf-8"), "helper.md", "unsupported_skill_file"),
+        (b"not a zip", "broken.zip", "invalid_zip"),
+        (b"PK\x03\x04damaged", "damaged.skill", "invalid_skill"),
+    ],
+    ids=[
+        "empty", "whitespace", "invalid-utf8", "binary-control", "malformed-frontmatter",
+        "missing-name", "missing-description", "multiline-frontmatter", "unsafe-name",
+        "arbitrary-markdown", "non-zip-with-zip-extension", "damaged-archive-skill",
+    ],
+)
+def test_standalone_and_filename_failures_are_clear_and_leave_no_partial_install(
+    monkeypatch, tmp_path, payload, filename, code,
+):
+    client, project = _client_and_project(monkeypatch, tmp_path)
+    response = _post_skill(client, project["id"], io.BytesIO(payload), filename=filename)
+    assert response.status_code == 400
+    assert response.get_json()["code"] == code
+    assert not (Path(project["code_dir"]) / ".claude" / "skills").exists()
+
+
+def test_standalone_skill_md_limit_is_enforced_before_install(monkeypatch, tmp_path):
+    client, project = _client_and_project(monkeypatch, tmp_path)
+    payload = _skill_md("Tiny Limit").encode("utf-8")
+    monkeypatch.setattr(project_skills, "MAX_SKILL_MD_BYTES", len(payload) - 1)
+    response = _post_skill(
+        client, project["id"], io.BytesIO(payload), filename="tiny.skill", endpoint="/preview"
+    )
+    assert response.status_code == 400
+    assert response.get_json()["code"] == "archive_too_large"
+    assert "1,000,000-byte" in response.get_json()["error"]
+    assert not (Path(project["code_dir"]) / ".claude" / "skills").exists()
+
+
+@pytest.mark.parametrize("hazard", ["traversal", "symlink", "collision", "member-size"])
+def test_archive_skill_retains_zip_security_protections(monkeypatch, tmp_path, hazard):
+    client, project = _client_and_project(monkeypatch, tmp_path)
+    if hazard == "traversal":
+        payload = _zip({"SKILL.md": _skill_md(), "../escape.txt": "unsafe"})
+        expected = "unsafe_archive"
+    elif hazard == "symlink":
+        payload = _zip({"SKILL.md": _skill_md()}, symlink="scripts/latest")
+        expected = "unsafe_archive"
+    elif hazard == "collision":
+        payload = _zip({
+            "SKILL.md": _skill_md(), "scripts/Tool": "one", "scripts/tool": "two",
+        })
+        expected = "invalid_skill"
+    else:
+        monkeypatch.setattr(project_skills, "MAX_MEMBER_BYTES", 4)
+        payload = _zip({"SKILL.md": _skill_md()})
+        expected = "archive_too_large"
+    response = _post_skill(client, project["id"], payload, filename="secured.skill")
+    assert response.status_code == 400
+    assert response.get_json()["code"] == expected
+    assert not (Path(project["code_dir"]) / ".claude" / "skills").exists()
+
+
+def test_cross_format_collision_never_overwrites_installed_skill(monkeypatch, tmp_path):
+    client, project = _client_and_project(monkeypatch, tmp_path)
+    monkeypatch.setattr(app_module, "_v2_project_research_is_running", lambda _project: True)
+    original = (_skill_md("Collision Skill") + "original\n").encode("utf-8")
+    changed = (_skill_md("Collision Skill") + "replacement\n").encode("utf-8")
+    assert _post_skill(
+        client, project["id"], io.BytesIO(original), filename="original.skill"
+    ).status_code == 201
+    installed = Path(project["code_dir"]) / ".claude" / "skills" / "collision-skill" / "SKILL.md"
+    assert installed.read_bytes() == original
+
+    duplicate = _post_skill(
+        client, project["id"], _zip({"SKILL.md": changed}), filename="replacement.skill"
+    )
+    assert duplicate.status_code == 409
+    assert duplicate.get_json()["code"] == "duplicate_skill"
+    assert installed.read_bytes() == original
+    assert not list(installed.parent.parent.glob(".import-*"))
+
+
+@pytest.mark.parametrize(
+    ("filename", "payload_factory"),
+    [
+        ("active.skill", lambda: io.BytesIO(_skill_md().encode("utf-8"))),
+        ("active.skill", lambda: _zip({"SKILL.md": _skill_md()})),
+        ("active.zip", lambda: _zip({"SKILL.md": _skill_md()})),
+        ("SKILL.md", lambda: io.BytesIO(_skill_md().encode("utf-8"))),
+    ],
+)
+def test_each_skill_file_form_imports_while_round_runs(
+    monkeypatch, tmp_path, filename, payload_factory,
+):
+    client, project = _client_and_project(monkeypatch, tmp_path)
+    monkeypatch.setattr(app_module, "_v2_project_research_is_running", lambda _project: True)
+    response = _post_skill(
+        client, project["id"], payload_factory(), filename=filename,
+    )
+    assert response.status_code == 201
+    installed = (
+        Path(project["code_dir"]) / ".claude" / "skills"
+        / "single-cell-analysis" / "SKILL.md"
+    )
+    assert installed.is_file()
+    listed = client.get(f"/api/projects/{project['id']}/skills")
+    assert listed.status_code == 200
+    assert [skill["id"] for skill in listed.get_json()["skills"]] == [
+        "single-cell-analysis"
+    ]
+
+
+def test_skill_preview_is_available_while_round_runs_without_installing(monkeypatch, tmp_path):
+    client, project = _client_and_project(monkeypatch, tmp_path)
+    monkeypatch.setattr(app_module, "_v2_project_research_is_running", lambda _project: True)
+
+    response = _post_skill(
+        client, project["id"], _zip({"SKILL.md": _skill_md()}), endpoint="/preview",
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["skill"]["id"] == "single-cell-analysis"
+    assert not (Path(project["code_dir"]) / ".claude" / "skills").exists()
 
 
 @pytest.mark.parametrize(
@@ -260,9 +468,11 @@ def test_import_preserves_only_safe_executable_bits(monkeypatch, tmp_path):
 
 def test_non_zip_invalid_zip_and_duplicate_are_clear(monkeypatch, tmp_path):
     client, project = _client_and_project(monkeypatch, tmp_path)
-    not_zip = _post_skill(client, project["id"], io.BytesIO(b"text"), filename="SKILL.md")
-    assert not_zip.status_code == 400
-    assert not_zip.get_json()["code"] == "zip_required"
+    invalid_standalone = _post_skill(
+        client, project["id"], io.BytesIO(b"text"), filename="SKILL.md"
+    )
+    assert invalid_standalone.status_code == 400
+    assert invalid_standalone.get_json()["code"] == "missing_metadata"
     corrupt = _post_skill(client, project["id"], io.BytesIO(b"not a zip"))
     assert corrupt.status_code == 400
     assert corrupt.get_json()["code"] == "invalid_zip"
@@ -311,6 +521,7 @@ def test_supported_legacy_project_uses_its_trusted_code_directory(monkeypatch, t
         "checkpoint_dir": str(legacy_code.parent / "checkpoint"),
         "readme_path": str(legacy_code / "README.md"),
     }
+    app_module.write_project_metadata(legacy_code.parent, record["id"], record["display_name"])
     (legacy_disk / "v2_projects.json").write_text(
         json.dumps({"projects": [record]}), encoding="utf-8"
     )
@@ -399,16 +610,11 @@ def test_remove_rejects_symlinked_code_without_deleting_outside(monkeypatch, tmp
     assert (outside_skill / "SKILL.md").is_file()
 
 
-def test_import_and_remove_are_blocked_only_while_round_is_running(monkeypatch, tmp_path):
+def test_import_stays_enabled_but_remove_is_blocked_while_round_is_running(monkeypatch, tmp_path):
     client, project = _client_and_project(monkeypatch, tmp_path)
     monkeypatch.setattr(app_module, "_v2_project_research_is_running", lambda _project: True)
-    blocked = _post_skill(client, project["id"], _zip({"SKILL.md": _skill_md()}))
-    assert blocked.status_code == 409
-    assert blocked.get_json()["code"] == "round_running"
-
-    monkeypatch.setattr(app_module, "_v2_project_research_is_running", lambda _project: False)
-    assert _post_skill(client, project["id"], _zip({"SKILL.md": _skill_md()})).status_code == 201
-    monkeypatch.setattr(app_module, "_v2_project_research_is_running", lambda _project: True)
+    imported = _post_skill(client, project["id"], _zip({"SKILL.md": _skill_md()}))
+    assert imported.status_code == 201
     blocked_remove = client.delete(
         f"/api/projects/{project['id']}/skills/single-cell-analysis"
     )
@@ -437,7 +643,7 @@ def test_skills_page_and_navigation_render(monkeypatch, tmp_path):
     assert html.index(">Home</a>") < html.index("Hypothesis Studio")
     assert html.index("Hypothesis Studio") < html.index("Round Workspace")
     assert html.index("Round Workspace") < html.index(">Skills</a>")
-    assert html.index(">Skills</a>") < html.index("Audit Agent")
+    assert ">Audit Agent</a>" not in html
 
 
 def test_skills_client_preserves_error_codes_and_waits_for_initial_status():
@@ -448,13 +654,20 @@ def test_skills_client_preserves_error_codes_and_waits_for_initial_status():
 
     assert "class ApiError extends Error" in script
     assert "this.code = code || null" in script
-    assert "error.code !== 'round_running'" in script
+    assert "reconcileRemovalBlocked" in script
     assert "await loadSkills()" in script
-    assert "const disabled = !statusResolved || running" in script
+    assert "elements.open.disabled = !statusResolved" in script
+    assert "button.disabled = !statusResolved || running" in script
+    assert "if (!statusResolved || running) return" not in script
+    assert "if (!selectedFile || running) return" not in script
+    assert "Skills cannot be changed while a research round is running." not in script
+    assert "Skills cannot be changed while a research round is running." not in template
+    assert "v2-skills-running-note" not in styles
     assert 'id="skills-import-open" type="button" disabled' in template
     assert 'id="skills-empty-import"' not in template
     assert 'id="skill-import-dropzone" tabindex="0" role="button"' in template
-    assert 'id="skill-import-file" type="file" accept=".zip,application/zip" hidden' in template
+    assert 'id="skill-import-file" type="file" accept=".skill,.zip,.md" hidden' in template
+    assert "Drop a .skill, .zip, or SKILL.md file" in template
     assert "webkitdirectory" not in template
     assert " multiple" not in template
     assert "elements.dropzone.addEventListener('click'" in script
@@ -462,7 +675,9 @@ def test_skills_client_preserves_error_codes_and_waits_for_initial_status():
     assert "elements.dropzone.addEventListener('dragover'" in script
     assert "elements.dropzone.addEventListener('drop', dropFiles)" in script
     assert "files.length !== 1" in script
-    assert "Choose exactly one .zip skill package." in script
+    assert "Choose exactly one .skill, .zip, or SKILL.md file." in script
+    assert "Choose a .skill, .zip, or SKILL.md file." in script
+    assert "files.length === 0" in script
     assert "previewSelectedFiles(event.dataTransfer && event.dataTransfer.files)" in script
     assert ".v2-dropzone.is-dragover" in styles
     assert ".v2-skills-intro-row" in styles
@@ -503,13 +718,20 @@ def test_v2_principal_titles_share_home_size_and_skills_home_offset():
 
 @pytest.mark.parametrize("_repeat", range(5))
 def test_skill_import_serializes_with_round_launch_transition(monkeypatch, tmp_path, _repeat):
-    _client, project = _client_and_project(monkeypatch, tmp_path)
+    initial_client, project = _client_and_project(monkeypatch, tmp_path)
+    initial = _post_skill(
+        initial_client,
+        project["id"],
+        _zip({"SKILL.md": _skill_md("Round Start Skill")}),
+    )
+    assert initial.status_code == 201
     backend_root = tmp_path / "backend"
     backend_python = backend_root / ".venv" / "bin" / "python"
     launcher = backend_root / "scripts" / "run_hb_sherlock.py"
     backend_python.parent.mkdir(parents=True)
     launcher.parent.mkdir(parents=True)
     backend_python.write_text("", encoding="utf-8")
+    backend_python.chmod(0o755)
     launcher.write_text("", encoding="utf-8")
     environment = {
         "ANTHROPIC_API_KEY": "test-secret",
@@ -579,9 +801,22 @@ def test_skill_import_serializes_with_round_launch_transition(monkeypatch, tmp_p
     assert "error" not in launch_result
     assert launch_result["value"]["status"] == "starting"
     response = mutation_result["response"]
-    assert response.status_code == 409
-    assert response.get_json()["code"] == "round_running"
-    assert not (Path(project["code_dir"]) / ".claude" / "skills").exists()
+    assert response.status_code == 201
+    snapshot = (
+        Path(project["checkpoint_dir"])
+        / project_skills.ROUND_SKILLS_SNAPSHOT_DIRECTORY
+    )
+    assert snapshot.is_dir()
+    assert (snapshot / "round-start-skill" / "SKILL.md").is_file()
+    assert not (snapshot / "single-cell-analysis").exists()
+    assert (
+        Path(project["code_dir"]) / ".claude" / "skills"
+        / "round-start-skill" / "SKILL.md"
+    ).is_file()
+    assert (
+        Path(project["code_dir"]) / ".claude" / "skills"
+        / "single-cell-analysis" / "SKILL.md"
+    ).is_file()
     local_round_runner._PROCESSES.clear()
 
 

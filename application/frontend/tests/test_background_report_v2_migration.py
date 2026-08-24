@@ -52,7 +52,7 @@ def test_pdf_resource_route_remains_available_without_v2_audit_shortcut(monkeypa
     (paper_dir / "research_paper.pdf").write_bytes(b"%PDF-1.4\nPDF PREFERRED")
     resource = app_module._resolve_v2_research_paper_resource(project)
 
-    response = client.get(f"/projects/{project['url_slug']}/audit")
+    response = client.get(f"/rounds/?project={project['url_slug']}")
     html = response.get_data(as_text=True)
 
     assert resource is not None
@@ -79,7 +79,7 @@ def test_v2_audit_does_not_embed_markdown_paper_when_pdf_is_absent(monkeypatch, 
     )
     resource = app_module._resolve_v2_research_paper_resource(project)
 
-    response = client.get(f"/projects/{project['url_slug']}/audit")
+    response = client.get(f"/rounds/?project={project['url_slug']}")
     html = response.get_data(as_text=True)
 
     assert response.status_code == 200
@@ -104,7 +104,7 @@ def test_v2_audit_has_no_research_paper_placeholder_when_no_resource_exists(monk
     client = _client(monkeypatch, tmp_path)
     project = _create(client)
 
-    response = client.get(f"/projects/{project['url_slug']}/audit")
+    response = client.get(f"/rounds/?project={project['url_slug']}")
     html = response.get_data(as_text=True)
     resource = app_module._resolve_v2_research_paper_resource(project)
 
@@ -125,7 +125,7 @@ def test_v2_audit_never_embeds_configured_or_discovered_markdown(monkeypatch, tm
     )
     configured_project = app_module._v2_get_project(project["id"])
     assert app_module._resolve_v2_research_paper_resource(configured_project) is None
-    response = client.get(f"/projects/{project['url_slug']}/audit")
+    response = client.get(f"/rounds/?project={project['url_slug']}")
     assert 'id="audit-resource-paper"' not in response.get_data(as_text=True)
     assert "OUTSIDE PROJECT SECRET" not in response.get_data(as_text=True)
     persisted = json.loads(registry.read_text(encoding="utf-8"))
@@ -139,7 +139,7 @@ def test_v2_audit_never_embeds_configured_or_discovered_markdown(monkeypatch, tm
     _update_record(tmp_path, project["id"], research_paper_path="research_paper_link")
     configured_project = app_module._v2_get_project(project["id"])
     assert app_module._resolve_v2_research_paper_resource(configured_project) is None
-    response = client.get(f"/projects/{project['url_slug']}/audit")
+    response = client.get(f"/rounds/?project={project['url_slug']}")
     assert 'id="audit-resource-paper"' not in response.get_data(as_text=True)
 
     paper = _paper_dir(project, "20260817_120000") / "research_paper.md"
@@ -148,7 +148,7 @@ def test_v2_audit_never_embeds_configured_or_discovered_markdown(monkeypatch, tm
     monkeypatch.setattr(app_module, "V2_RESEARCH_PAPER_MARKDOWN_MAX_BYTES", 4)
     configured_project = app_module._v2_get_project(project["id"])
     assert app_module._resolve_v2_research_paper_resource(configured_project) is None
-    response = client.get(f"/projects/{project['url_slug']}/audit")
+    response = client.get(f"/rounds/?project={project['url_slug']}")
     assert 'id="audit-resource-paper"' not in response.get_data(as_text=True)
     assert "TOO LARGE" not in response.get_data(as_text=True)
 
@@ -162,8 +162,8 @@ def test_v2_audit_does_not_embed_any_project_research_paper(monkeypatch, tmp_pat
     resource_a = app_module._resolve_v2_research_paper_resource(project_a)
     resource_b = app_module._resolve_v2_research_paper_resource(project_b)
 
-    html_a = client.get(f"/projects/{project_a['url_slug']}/audit").get_data(as_text=True)
-    html_b = client.get(f"/projects/{project_b['url_slug']}/audit").get_data(as_text=True)
+    html_a = client.get(f"/rounds/?project={project_a['url_slug']}").get_data(as_text=True)
+    html_b = client.get(f"/rounds/?project={project_b['url_slug']}").get_data(as_text=True)
 
     assert resource_a is not None and resource_a["path"].read_text() == "ONLY PROJECT A"
     assert resource_b is not None and resource_b["path"].read_text() == "ONLY PROJECT B"
@@ -224,6 +224,6 @@ def test_background_and_report_shell_templates_and_v1_script_are_removed():
     source = Path(app_module.__file__).read_text(encoding="utf-8")
     assert "render_template('background_report.html'" not in source
     assert 'render_template("background_report.html"' not in source
-    audit_template = (root / "templates" / "project_audit_agent.html").read_text(encoding="utf-8")
+    audit_template = (root / "templates" / "round_workspace.html").read_text(encoding="utf-8")
     assert "Background Report Chat" not in audit_template
     assert "report-chat-panel" not in audit_template

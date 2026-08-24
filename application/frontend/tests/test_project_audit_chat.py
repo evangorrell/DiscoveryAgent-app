@@ -13,7 +13,7 @@ from da_selection_ui import app as app_module
 
 def test_current_audit_chat_action_is_labeled_download():
     root = Path(app_module.app.root_path)
-    html = (root / app_module.app.template_folder / "project_audit_agent.html").read_text(
+    html = (root / app_module.app.template_folder / "round_workspace.html").read_text(
         encoding="utf-8"
     )
     js = (root / app_module.app.static_folder / "project_audit_agent.js").read_text(
@@ -21,8 +21,9 @@ def test_current_audit_chat_action_is_labeled_download():
     )
 
     button = html.split('id="chat-export-current-btn"', 1)[1].split("</button>", 1)[0]
-    assert "<span>Download</span>" in button
-    assert "<span>Export</span>" not in button
+    assert 'aria-label="Download conversation"' in button
+    assert 'class="aa-embedded-download"' in button
+    assert button.index("<svg") < button.index("<span>Download</span>")
     handler = js.split("chatExportCurrentBtn &&", 1)[1].split("bootRetryBtn &&", 1)[0]
     assert "exportChat(getActiveChat());" in handler
 
@@ -30,7 +31,7 @@ def test_current_audit_chat_action_is_labeled_download():
 def test_audit_assistant_markdown_reuses_shared_scientific_presentation():
     root = Path(app_module.app.root_path)
     static = root / app_module.app.static_folder
-    template = root / app_module.app.template_folder / "project_audit_agent.html"
+    template = root / app_module.app.template_folder / "round_workspace.html"
     js = (static / "project_audit_agent.js").read_text(encoding="utf-8")
     audit_css = (static / "project_audit_agent.css").read_text(encoding="utf-8")
     shared_css = (static / "style.css").read_text(encoding="utf-8")
@@ -65,7 +66,7 @@ def test_audit_assistant_markdown_reuses_shared_scientific_presentation():
     assert ".aa-turn-user .aa-turn-body.markdown-body" in audit_css
     assert "filename='report_figures.js'" in html
     assert "dompurify@3" in html
-    assert "20260817-audit-figures" in html
+    assert "20260818-audit-figure-drag" in html
 
     for selector in (
         ".v2-report-markdown h1",
@@ -117,9 +118,11 @@ def _audit_figure_project(monkeypatch, tmp_path):
         }),
         encoding="utf-8",
     )
+    app_module.write_project_metadata(project_root, "optic-nerve-id", "Optic Nerve")
     record = {
         "id": "optic-nerve-id",
         "url_slug": "optic-nerve",
+        "project_root": str(project_root),
         "code_dir": str(code_root),
         "checkpoint_dir": str(round_dir),
     }
@@ -160,6 +163,36 @@ def test_audit_figures_use_exact_shared_tokens_for_current_historical_and_relati
     assert figures[1]["url"].startswith("/api/round_workspace_code_artifact?")
     assert figures[2]["url"].startswith("/api/round_workspace_code_artifact?")
     assert figures[3]["url"].startswith("/api/round_workspace_artifact?")
+    assert [figure["artifact"] for figure in figures[:3]] == [
+        {
+            "round": None,
+            "sourceKind": "project-code",
+            "source": "",
+            "artifactPath": "outputs/figures/current figure.png",
+        },
+        {
+            "round": None,
+            "sourceKind": "project-code",
+            "source": "",
+            "artifactPath": "analysis_output/nested/analysis.png",
+        },
+        {
+            "round": None,
+            "sourceKind": "project-code",
+            "source": "",
+            "artifactPath": "outputs/figures/current figure.png",
+        },
+    ]
+    assert figures[3]["artifact"]["round"] == 2
+    assert figures[3]["artifact"]["sourceKind"] == "external"
+    assert figures[3]["artifact"]["source"].startswith("src_")
+    assert figures[3]["artifact"]["artifactPath"] == "images/run-image.png"
+    assert not any(
+        str(value).startswith(("/", "file:"))
+        for figure in figures
+        for value in figure["artifact"].values()
+        if isinstance(value, str)
+    )
 
     client = app_module.app.test_client()
     for figure, expected in zip(figures, (output, analysis, output, run_image)):
@@ -196,6 +229,7 @@ def test_audit_figure_resolution_fails_closed_for_unsafe_references(
     assert len(figures) == 6
     assert all(figure["available"] is False for figure in figures)
     assert all(figure["url"] is None for figure in figures)
+    assert all("artifact" not in figure for figure in figures)
     assert "/lustre/" not in display
     assert str(symlink) not in display
     assert str(other_project) not in display
@@ -210,8 +244,8 @@ def test_audit_figure_endpoint_is_project_scoped_and_preserves_raw_chat_text(
     )
     monkeypatch.setattr(
         app_module,
-        "_v2_resolve_project_by_slug_or_id",
-        lambda key: (record, False) if key == "optic-nerve" else (None, False),
+        "_managed_interaction_project",
+        lambda key=None: record if key == record["id"] else None,
     )
     raw = f"Before\n\n![Current output]({output})\n\nAfter"
     client = app_module.app.test_client()
@@ -219,8 +253,8 @@ def test_audit_figure_endpoint_is_project_scoped_and_preserves_raw_chat_text(
         flask_session["v2_active_project_slug"] = "optic-nerve"
         flask_session["v2_active_project_id"] = record["id"]
     response = client.post(
-        "/api/audit_chat_figures?project=optic-nerve",
-        json={"markdown": raw},
+        f"/api/audit_chat_figures?project_id={record['id']}",
+        json={"project_id": record["id"], "markdown": raw},
     )
     assert response.status_code == 200
     payload = response.get_json()
@@ -228,10 +262,18 @@ def test_audit_figure_endpoint_is_project_scoped_and_preserves_raw_chat_text(
     assert payload["display_text"] != raw
     assert raw == f"Before\n\n![Current output]({output})\n\nAfter"
     assert payload["figures"][0]["available"] is True
-    assert client.post(
-        "/api/audit_chat_figures?project=other-project",
-        json={"markdown": raw},
-    ).status_code == 404
+    assert payload["figures"][0]["artifact"] == {
+        "round": None,
+        "sourceKind": "project-code",
+        "source": "",
+        "artifactPath": "outputs/figures/current figure.png",
+    }
+    mismatch = client.post(
+        "/api/audit_chat_figures?project_id=other-project",
+        json={"project_id": "other-project", "markdown": raw},
+    )
+    assert mismatch.status_code == 409
+    assert mismatch.get_json()["code"] == "project_identity_mismatch"
 
 
 def test_stored_audit_assistant_messages_are_reprocessed_with_shared_figures():
@@ -255,12 +297,12 @@ def test_deleting_active_audit_chat_opens_fresh_chat_instead_of_recent_chat():
     js = (Path(app_module.app.static_folder) / "project_audit_agent.js").read_text(encoding="utf-8")
 
     delete_branch = js.split("if (deletingActiveChat) {", 1)[1].split("} else {", 1)[0]
-    assert "const freshChat = createEmptyChat();" in delete_branch
-    assert "activeChatId = freshChat.id;" in delete_branch
-    assert "chatHistory = [];" in delete_branch
-    assert "syncEmptyState();" in delete_branch
+    assert "showBlankNewChat({ discardDraft: true, resetScroll: true });" in delete_branch
+    assert "persistAuditChatState({ touchActive: false, skipSync: true });" in delete_branch
+    assert "createEmptyChat" not in delete_branch
     assert "activeChatId = chatSessions[0].id;" not in delete_branch
     assert "restoreAuditConversationOnServer" not in delete_branch
+    assert "resetAuditConversationOnServer" not in delete_branch
 
 
 def test_stopping_audit_response_records_assistant_message():
@@ -331,9 +373,18 @@ def test_cancelled_audit_worker_does_not_block_or_overwrite_next_job(monkeypatch
     perf_started_at = time.perf_counter()
     base_job = {
         "session_id": "audit-queue-test-session",
+        "project_id": "prj_auditqueuetest",
         "status": "pending",
-        "request": {"message": "question", "mode": "audit", "messages": []},
-        "session": {"session_id": "audit-queue-test-session"},
+        "request": {
+            "message": "question",
+            "mode": "audit",
+            "messages": [],
+            "project_id": "prj_auditqueuetest",
+        },
+        "session": {
+            "session_id": "audit-queue-test-session",
+            "v2_active_project_id": "prj_auditqueuetest",
+        },
         "created_at": now,
         "updated_at": now,
         "perf_started_at": perf_started_at,
@@ -342,6 +393,11 @@ def test_cancelled_audit_worker_does_not_block_or_overwrite_next_job(monkeypatch
         "cancel_requested": False,
     }
 
+    monkeypatch.setattr(
+        app_module,
+        "_managed_interaction_project",
+        lambda project_id=None: {"id": project_id} if project_id == "prj_auditqueuetest" else None,
+    )
     with app_module.AUDIT_CHAT_JOBS_LOCK:
         prior_jobs = dict(app_module.AUDIT_CHAT_JOBS)
         app_module.AUDIT_CHAT_JOBS.clear()
@@ -383,24 +439,30 @@ def test_cancelled_audit_worker_does_not_block_or_overwrite_next_job(monkeypatch
             app_module.AUDIT_CHAT_JOBS.update(prior_jobs)
 
 
-def test_project_audit_chat_recovers_legacy_browser_storage_without_deleting_it():
+def test_project_audit_chat_ignores_ambiguous_legacy_browser_storage_without_deleting_it():
     static = Path(app_module.app.static_folder)
     js = (static / "project_audit_agent.js").read_text(encoding="utf-8")
     html = (
-        Path(app_module.app.root_path) / app_module.app.template_folder / "project_audit_agent.html"
+        Path(app_module.app.root_path) / app_module.app.template_folder / "round_workspace.html"
     ).read_text(encoding="utf-8")
 
-    assert "legacyChatStorageScopes" in html
+    assert "projectId:" in html
     assert "projectSlug:" in html
     assert "function readAuditChatStateAtKey(storageKey)" in js
-    assert "function legacyAuditChatStorageKeys()" in js
-    assert "key.endsWith(projectSuffix)" in js
-    assert ".filter(hasMeaningfulAuditChatState)" in js
-    assert "localStorage.setItem(auditChatStorageKey, JSON.stringify(selected.state))" in js
+    assert "function legacyAuditChatStorageKeys()" not in js
+    assert "key.endsWith(projectSuffix)" not in js
+    assert "legacyChatStorageScopes" not in html
+    assert "parsed.projectId !== projectId" in js
+    loader = js.split("function readAuditChatStateFromStorage()", 1)[1].split(
+        "function writeDurableAuditChatState", 1
+    )[0]
+    assert "return candidates[0].state;" in loader
+    assert "localStorage.setItem" not in loader
+    assert "queueDurableAuditChatState" not in loader
     assert "localStorage.removeItem(storageKey)" not in js
 
 
-def test_project_audit_chat_preserves_history_but_always_opens_fresh_entry():
+def test_project_audit_chat_preserves_history_but_restores_only_active_work():
     js = (Path(app_module.app.static_folder) / "project_audit_agent.js").read_text(
         encoding="utf-8"
     )
@@ -412,16 +474,16 @@ def test_project_audit_chat_preserves_history_but_always_opens_fresh_entry():
         "function setComposerEnabled", 1
     )[0]
     assert "Number(b.state.updatedAt)" in loader
-    assert "selected.source !== 'durable'" in loader
-    assert "queueDurableAuditChatState(selected.state)" in loader
+    assert "return candidates[0].state;" in loader
+    assert "queueDurableAuditChatState" not in loader
+    assert "localStorage.setItem" not in loader
     assert "chatSessions = storedState && Array.isArray(storedState.chats)" in restore
-    assert ": []" in restore
-    assert "const freshChat = createEmptyChat();" in restore
-    assert "chatSessions.unshift(freshChat);" in restore
-    assert "activeChatId = freshChat.id;" in restore
-    assert "activeChatId = storedState.activeChatId;" not in restore
-    assert "shouldRestoreStoredActiveChat" not in js
-    assert "returningFromSameProjectTab" not in js
+    assert "storedState.activeChatId" in restore
+    assert "activeAuditWorkChatId(storedActiveId)" in restore
+    assert "showAuditChatLocally(workChatId, 'active')" in restore
+    assert "showBlankNewChat({ discardDraft: true, resetScroll: true })" in restore
+    assert "activeChatId = restoredActive.id;" not in restore
+    assert "const freshChat = createEmptyChat();" not in restore
     assert ".filter(function(chat) { return !isUnlistedDraftChat(chat); })" in js
 
 
@@ -443,8 +505,12 @@ def test_project_audit_blank_entry_is_transient_until_first_message():
     assert ".filter(function(chat) { return !isUnlistedDraftChat(chat); })" in persist
     assert "const persistedActiveChatId = chats.some" in persist
     assert "activeChatId: persistedActiveChatId" in persist
-    assert "appendUserMessageToChat(requestChatId, message);" in send
+    assert "if (!activeChatId)" in send
+    assert "ensureActiveChat();" in send
+    assert "appendUserMessageToChat(requestChatId, message, viewerContext);" in send
+    assert send.index("ensureActiveChat();") < send.index("appendUserMessageToChat")
     assert send.index("appendUserMessageToChat") < send.index("persistAuditChatState();")
+    assert js.count("chat = createEmptyChat();") == 1
     assert "discoveryAgentContinuousProject" not in context_js
     assert "discoveryAgentAuditFreshEntry" not in context_js
     assert "auditFreshEntry" not in js
@@ -458,16 +524,16 @@ def test_project_audit_history_is_openable_and_new_chat_returns_to_blank():
     activate = js.split("async function activateChat(chatId, options)", 1)[1].split(
         "async function switchChat", 1
     )[0]
-    new_chat = js.split("async function startNewChat()", 1)[1].split(
-        "async function exportChat", 1
+    new_chat = js.split("function startNewChat()", 1)[1].split(
+        "async function restoreAuditConversationOnServer", 1
     )[0]
     assert "activeChatId = chat.id;" in activate
     assert "renderStoredChatHistory(chatHistory);" in activate
     assert "await restoreAuditConversationOnServer(chatHistory);" in activate
-    assert "const chat = createEmptyChat();" in new_chat
-    assert "activeChatId = newChatId;" in new_chat
-    assert "chatHistory = [];" in new_chat
-    assert "syncEmptyState();" in new_chat
+    assert "showBlankNewChat({ discardDraft: true, resetScroll: true });" in new_chat
+    assert "createEmptyChat" not in new_chat
+    assert "persistAuditChatState" not in new_chat
+    assert "resetAuditConversationOnServer" not in new_chat
 
 
 def test_project_audit_chat_flushes_to_explicit_project_on_pagehide():
@@ -475,8 +541,8 @@ def test_project_audit_chat_flushes_to_explicit_project_on_pagehide():
         encoding="utf-8"
     )
 
-    assert "?project=${encodeURIComponent(config.projectSlug)}" in js
-    assert "project: config.projectSlug" in js
+    assert "?project_id=${encodeURIComponent(projectId)}" in js
+    assert "project_id: projectId" in js
     assert "window.addEventListener('pagehide'" in js
     assert "writeDurableAuditChatState(snapshot, true)" in js
     assert "keepalive: keepalive === true" in js

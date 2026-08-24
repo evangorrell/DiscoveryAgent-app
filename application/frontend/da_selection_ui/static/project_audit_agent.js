@@ -10,14 +10,14 @@
     const newChatBtn = document.getElementById('audit-new-chat-btn');
     const chatListEl = document.getElementById('audit-chat-list');
     const chatExportCurrentBtn = document.getElementById('chat-export-current-btn');
+    const historyToggleBtn = document.getElementById('audit-history-toggle');
+    const historyDrawerEl = document.getElementById('aa-sidebar');
+    const historyClosedToggleSlotEl = document.getElementById('audit-history-closed-toggle-slot');
+    const historyOpenToggleSlotEl = document.getElementById('audit-history-open-toggle-slot');
     const bootOverlayEl = document.getElementById('audit-loading-overlay');
     const bootSpinnerEl = document.getElementById('audit-loading-spinner');
     const bootMessageEl = document.getElementById('audit-loading-message');
     const bootRetryBtn = document.getElementById('audit-loading-retry-btn');
-    const guideBtn = document.getElementById('audit-guide-btn');
-    const guideModal = document.getElementById('audit-guide-modal');
-    const guideCloseBtn = document.getElementById('audit-guide-close');
-    const guideDismissBtn = document.getElementById('audit-guide-dismiss');
 
     let sessionReady = false;
     let initPromise = null;
@@ -29,22 +29,59 @@
     let deleteConfirmChatId = null;
     let pendingAuditJobs = [];
     let queuedAuditMessages = {};
+    let stoppingAuditJobId = null;
+    let stoppingAuditJob = null;
+    let auditScreenState = 'new';
+    let auditClosed = false;
+    let auditHidden = true;
+    let auditLifecycleRevision = 0;
     const cancelledAuditJobIds = new Set();
     const pendingChatIds = new Set();
     const pollingJobIds = new Set();
-    const CHAT_STORAGE_VERSION = 1;
+    const CHAT_STORAGE_VERSION = 2;
     const AUDIT_CHAT_STORAGE_MAX_CHATS = 50;
     const AUDIT_CHAT_STORAGE_MAX_MESSAGES = 120;
     const AUDIT_CHAT_STORAGE_MAX_CHARS = 350000;
-    const chatStorageScope = (typeof config.chatStorageScope === 'string' && config.chatStorageScope.trim())
-        ? config.chatStorageScope.trim()
-        : 'anonymous';
-    const auditChatStorageKey = `da_audit_chat_state_v${CHAT_STORAGE_VERSION}_${chatStorageScope}`;
+    const projectId = (typeof config.projectId === 'string') ? config.projectId.trim() : '';
+    const hasProjectIdentity = /^prj_[A-Za-z0-9]+$/.test(projectId);
+    const auditChatStorageKey = hasProjectIdentity
+        ? `da_audit_chat_state_v${CHAT_STORAGE_VERSION}_project_${projectId}`
+        : '';
     let durablePersistTimer = null;
     let durablePersistChain = Promise.resolve();
     let pendingDurableAuditChatSnapshot = null;
-    const auditFigurePresentationCache = new Map();
+    const auditFigurePresentationInflight = new Map();
     let auditMarkdownRenderSequence = 0;
+
+    function responseBelongsToActiveProject(payload) {
+        return !!(
+            hasProjectIdentity
+            && payload
+            && typeof payload === 'object'
+            && payload.project_id === projectId
+        );
+    }
+
+    function setHistoryDrawerOpen(open) {
+        if (!historyDrawerEl || !historyToggleBtn) return;
+        const shouldOpen = open === true;
+        const restoreToggleFocus = document.activeElement === historyToggleBtn;
+        historyDrawerEl.hidden = !shouldOpen;
+        const targetToggleSlot = shouldOpen ? historyOpenToggleSlotEl : historyClosedToggleSlotEl;
+        if (targetToggleSlot && historyToggleBtn.parentElement !== targetToggleSlot) {
+            targetToggleSlot.appendChild(historyToggleBtn);
+        }
+        if (restoreToggleFocus) historyToggleBtn.focus();
+        historyToggleBtn.setAttribute('aria-expanded', String(shouldOpen));
+        const actionLabel = shouldOpen ? 'Close chat history' : 'Open chat history';
+        historyToggleBtn.setAttribute('aria-label', actionLabel);
+        historyToggleBtn.title = actionLabel;
+        historyToggleBtn.classList.toggle('is-active', shouldOpen);
+        if (shouldOpen) {
+            renderChatList();
+            revealActiveChatRow();
+        }
+    }
 
     function renderMarkdown(text) {
         if (!text) return '';
@@ -70,20 +107,41 @@
         );
     }
 
+    const auditFigureDragOptions = {
+        auditFigureDrag: {
+            start(event, artifact) {
+                const workspace = window.roundWorkspace;
+                if (!workspace || typeof workspace.startAuditFigureDrag !== 'function') return false;
+                return workspace.startAuditFigureDrag(event, {
+                    ...artifact,
+                    project: config.projectSlug,
+                });
+            },
+            end() {
+                const workspace = window.roundWorkspace;
+                if (workspace && typeof workspace.endAuditFigureDrag === 'function') {
+                    workspace.endAuditFigureDrag();
+                }
+            },
+        },
+    };
+
     async function prepareAuditFigurePresentation(text) {
-        if (auditFigurePresentationCache.has(text)) {
-            return auditFigurePresentationCache.get(text);
+        if (!hasProjectIdentity) {
+            throw new Error('Project identity is unavailable');
         }
-        const projectQuery = config.projectSlug
-            ? `?project=${encodeURIComponent(config.projectSlug)}`
-            : '';
+        const cacheKey = `${projectId}\n${text}`;
+        if (auditFigurePresentationInflight.has(cacheKey)) {
+            return auditFigurePresentationInflight.get(cacheKey);
+        }
+        const projectQuery = `?project_id=${encodeURIComponent(projectId)}`;
         const request = fetch(`/api/audit_chat_figures${projectQuery}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ markdown: text }),
+            body: JSON.stringify({ project_id: projectId, markdown: text }),
         }).then(async function(response) {
             const data = await response.json().catch(function() { return {}; });
-            if (!response.ok || !data.success) {
+            if (!response.ok || !data.success || !responseBelongsToActiveProject(data)) {
                 throw new Error(data.error || 'Could not prepare Audit figures');
             }
             return {
@@ -91,12 +149,13 @@
                 figures: Array.isArray(data.figures) ? data.figures : [],
             };
         });
-        auditFigurePresentationCache.set(text, request);
+        auditFigurePresentationInflight.set(cacheKey, request);
         try {
             return await request;
-        } catch (error) {
-            auditFigurePresentationCache.delete(text);
-            throw error;
+        } finally {
+            if (auditFigurePresentationInflight.get(cacheKey) === request) {
+                auditFigurePresentationInflight.delete(cacheKey);
+            }
         }
     }
 
@@ -111,7 +170,7 @@
             if (!element.isConnected || element.dataset.auditMarkdownRenderId !== renderId) return;
             if (window.DiscoveryReportFigures) {
                 window.DiscoveryReportFigures.renderReportMarkdown(
-                    element, presentation.displayText, presentation.figures,
+                    element, presentation.displayText, presentation.figures, auditFigureDragOptions,
                 );
             } else {
                 element.innerHTML = renderMarkdown(presentation.displayText);
@@ -133,6 +192,59 @@
         }
     }
 
+    function normalizeViewerContextSnapshot(snapshot) {
+        if (!snapshot || typeof snapshot !== 'object' || !Array.isArray(snapshot.artifacts)) return null;
+        const cleanString = function(value, limit) {
+            return typeof value === 'string' ? value.trim().slice(0, limit) : '';
+        };
+        const artifacts = snapshot.artifacts.slice(0, 2).map(function(artifact) {
+            if (!artifact || typeof artifact !== 'object') return null;
+            const sourceKind = cleanString(artifact.sourceKind, 32);
+            const path = cleanString(artifact.path, 1000);
+            const artifactPath = cleanString(artifact.artifactPath, 1000);
+            if (!path || !artifactPath || !['checkpoint', 'external', 'project-code'].includes(sourceKind)) return null;
+            const normalized = {
+                pane: Number.isInteger(artifact.pane) ? artifact.pane : 0,
+                project: cleanString(artifact.project, 200),
+                round: Number.isInteger(artifact.round) && artifact.round >= 0 ? artifact.round : null,
+                sourceKind,
+                source: cleanString(artifact.source, 160),
+                path,
+                artifactPath,
+                artifactType: cleanString(artifact.artifactType, 32),
+                reportView: artifact.reportView === 'summary' ? 'summary' : (artifact.reportView === 'full' ? 'full' : null),
+                figures: (Array.isArray(artifact.figures) ? artifact.figures : [])
+                    .map(function(figure) { return { index: Number(figure && figure.index) }; })
+                    .filter(function(figure) { return Number.isInteger(figure.index) && figure.index >= 0; })
+                    .slice(0, 4),
+            };
+            if (Number.isInteger(artifact.pdfPage) && artifact.pdfPage > 0 && artifact.pdfPage <= 100000) {
+                normalized.pdfPage = artifact.pdfPage;
+            }
+            return normalized;
+        }).filter(Boolean);
+        if (!artifacts.length) return null;
+        return {
+            version: 1,
+            capturedAt: Number.isFinite(snapshot.capturedAt) ? snapshot.capturedAt : Date.now(),
+            project: cleanString(snapshot.project, 200),
+            artifacts,
+        };
+    }
+
+    function captureViewerContextSnapshot() {
+        try {
+            const provider = window.DiscoveryRoundWorkspaceViewerContext;
+            return normalizeViewerContextSnapshot(
+                provider && typeof provider.captureSnapshot === 'function'
+                    ? provider.captureSnapshot()
+                    : null
+            );
+        } catch (_) {
+            return null;
+        }
+    }
+
     function normalizeStoredAuditChatMessages(messages) {
         if (!Array.isArray(messages)) return [];
         const normalized = [];
@@ -145,7 +257,12 @@
             const responseTimeMs = Number.isFinite(message.responseTimeMs)
                 ? Math.max(0, Math.round(message.responseTimeMs))
                 : null;
-            normalized.push({ role, text, responseTimeMs });
+            const entry = { role, text, responseTimeMs };
+            const viewerContext = role === 'user'
+                ? normalizeViewerContextSnapshot(message.viewerContext)
+                : null;
+            if (viewerContext) entry.viewerContext = viewerContext;
+            normalized.push(entry);
         }
         const bounded = normalized.length <= AUDIT_CHAT_STORAGE_MAX_MESSAGES
             ? normalized
@@ -177,6 +294,10 @@
         return `${Date.now().toString(16).padStart(16, '0')}${randomPart}`.slice(0, 32);
     }
 
+    function legacyChatId(index) {
+        return `legacy-audit-${Number.isInteger(index) && index >= 0 ? index : 0}`;
+    }
+
     function createEmptyChat() {
         const now = Date.now();
         return {
@@ -199,6 +320,7 @@
         const normalized = [];
         jobs.forEach(function(job) {
             if (!job || typeof job !== 'object') return;
+            if (job.projectId !== projectId) return;
             const jobId = typeof job.jobId === 'string' ? job.jobId.trim() : '';
             const chatId = typeof job.chatId === 'string' ? job.chatId.trim() : '';
             if (!jobId || !chatId || !chatIds.has(chatId) || seen.has(jobId)) return;
@@ -208,8 +330,10 @@
             normalized.push({
                 jobId,
                 chatId,
+                projectId,
                 message: typeof job.message === 'string' ? job.message : '',
                 createdAt,
+                viewerContext: normalizeViewerContextSnapshot(job.viewerContext),
             });
         });
         return normalized;
@@ -232,6 +356,7 @@
                     return {
                         text,
                         createdAt: Number.isFinite(entry.createdAt) ? entry.createdAt : Date.now(),
+                        viewerContext: normalizeViewerContextSnapshot(entry.viewerContext),
                     };
                 })
                 .filter(Boolean)
@@ -245,11 +370,15 @@
         return Array.isArray(queuedAuditMessages[chatId]) ? queuedAuditMessages[chatId] : [];
     }
 
-    function queueAuditMessage(chatId, text) {
+    function queueAuditMessage(chatId, text, viewerContext) {
         const messageText = (text || '').trim();
         if (!chatId || !messageText) return;
         const queue = getQueuedAuditMessages(chatId).slice();
-        queue.push({ text: messageText, createdAt: Date.now() });
+        queue.push({
+            text: messageText,
+            createdAt: Date.now(),
+            viewerContext: normalizeViewerContextSnapshot(viewerContext),
+        });
         queuedAuditMessages[chatId] = queue;
     }
 
@@ -324,7 +453,7 @@
         const messages = normalizeStoredAuditChatMessages(chat.messages);
         const createdAt = Number.isFinite(chat.createdAt) ? chat.createdAt : Date.now() - fallbackIndex;
         const updatedAt = Number.isFinite(chat.updatedAt) ? chat.updatedAt : createdAt;
-        const id = typeof chat.id === 'string' && chat.id.trim() ? chat.id.trim() : createChatId();
+        const id = typeof chat.id === 'string' && chat.id.trim() ? chat.id.trim() : legacyChatId(fallbackIndex);
         const title = typeof chat.title === 'string' && chat.title.trim()
             ? chat.title.trim()
             : deriveChatTitle(messages);
@@ -351,18 +480,46 @@
         return chatSessions.find(function(chat) { return chat.id === activeChatId; }) || null;
     }
 
+    function chatHasQueuedAuditWork(chatId) {
+        return !!chatId && getQueuedAuditMessages(chatId).length > 0;
+    }
+
+    function chatHasActiveAuditWork(chatId) {
+        if (!chatId) return false;
+        if (pendingAuditJobs.some(function(job) { return job.chatId === chatId && job.projectId === projectId; })) return true;
+        if (stoppingAuditJob && stoppingAuditJob.chatId === chatId && stoppingAuditJob.projectId === projectId) return true;
+        return chatHasQueuedAuditWork(chatId);
+    }
+
+    function activeAuditWorkChatId(preferredChatId) {
+        if (chatHasActiveAuditWork(preferredChatId)) return preferredChatId;
+        const pending = pendingAuditJobs.find(function(job) {
+            return job.projectId === projectId && chatSessions.some(function(chat) { return chat.id === job.chatId; });
+        });
+        if (pending) return pending.chatId;
+        if (stoppingAuditJob && stoppingAuditJob.projectId === projectId &&
+                chatSessions.some(function(chat) { return chat.id === stoppingAuditJob.chatId; })) {
+            return stoppingAuditJob.chatId;
+        }
+        return Object.keys(queuedAuditMessages).find(function(chatId) {
+            return chatSessions.some(function(chat) { return chat.id === chatId; }) && chatHasQueuedAuditWork(chatId);
+        }) || null;
+    }
+
     function ensureActiveChat() {
         let chat = getActiveChat();
         if (chat) return chat;
         chat = createEmptyChat();
         chatSessions.unshift(chat);
         activeChatId = chat.id;
+        auditScreenState = 'history';
         return chat;
     }
 
     function syncActiveChatFromHistory(options) {
         const syncOptions = options || {};
-        const chat = ensureActiveChat();
+        const chat = getActiveChat();
+        if (!chat) return null;
         chat.messages = normalizeStoredAuditChatMessages(chatHistory);
         if (!chat.titleEdited) {
             chat.title = deriveChatTitle(chat.messages);
@@ -383,8 +540,11 @@
         }
     }
 
-    function normalizeAuditChatStatePayload(parsed) {
+    function normalizeAuditChatStatePayload(parsed, source) {
             if (!parsed || typeof parsed !== 'object') return null;
+            if (!hasProjectIdentity) return null;
+            if (parsed.projectId && parsed.projectId !== projectId) return null;
+            if (source !== 'durable' && parsed.projectId !== projectId) return null;
             if (Array.isArray(parsed.chats)) {
                 const chats = parsed.chats
                     .map(function(chat, index) { return normalizeChatSession(chat, index); })
@@ -392,22 +552,31 @@
                     .slice(0, AUDIT_CHAT_STORAGE_MAX_CHATS);
                 if (chats.length === 0) return null;
                 const storedActiveChatId = typeof parsed.activeChatId === 'string' ? parsed.activeChatId : '';
-                const selectedChat = chats.find(function(chat) { return chat.id === storedActiveChatId; }) || chats[0];
+                const selectedChat = chats.find(function(chat) { return chat.id === storedActiveChatId; }) || null;
                 return {
                     version: CHAT_STORAGE_VERSION,
+                    projectId,
                     updatedAt: Number.isFinite(parsed.updatedAt) ? parsed.updatedAt : 0,
                     chats,
-                    activeChatId: selectedChat.id,
+                    activeChatId: selectedChat ? selectedChat.id : null,
                     pendingJobs: normalizePendingAuditJobs(parsed.pendingJobs, chats),
                     queuedMessages: normalizeQueuedAuditMessages(parsed.queuedMessages, chats),
                 };
             }
             const legacyMessages = normalizeStoredAuditChatMessages(parsed.messages);
             if (legacyMessages.length > 0) {
-                const migratedChat = createEmptyChat();
-                migratedChat.messages = legacyMessages;
-                migratedChat.title = deriveChatTitle(legacyMessages);
-                return { version: CHAT_STORAGE_VERSION, updatedAt: 0, chats: [migratedChat], activeChatId: migratedChat.id, pendingJobs: [], queuedMessages: {} };
+                const now = Number.isFinite(parsed.updatedAt) ? parsed.updatedAt : 0;
+                const migratedChat = {
+                    id: legacyChatId(0),
+                    title: deriveChatTitle(legacyMessages),
+                    titleEdited: false,
+                    pinned: false,
+                    unread: false,
+                    createdAt: now,
+                    updatedAt: now,
+                    messages: legacyMessages,
+                };
+                return { version: CHAT_STORAGE_VERSION, projectId, updatedAt: now, chats: [migratedChat], activeChatId: migratedChat.id, pendingJobs: [], queuedMessages: {} };
             }
             return null;
     }
@@ -416,60 +585,30 @@
         try {
             const raw = localStorage.getItem(storageKey);
             if (!raw) return null;
-            return normalizeAuditChatStatePayload(JSON.parse(raw));
+            return normalizeAuditChatStatePayload(JSON.parse(raw), 'browser');
         } catch (_) {
             return null;
         }
     }
 
-    function legacyAuditChatStorageKeys() {
-        const configured = Array.isArray(config.legacyChatStorageScopes)
-            ? config.legacyChatStorageScopes
-                .map(function(scope) { return String(scope || '').trim(); })
-                .filter(Boolean)
-                .map(function(scope) { return `da_audit_chat_state_v${CHAT_STORAGE_VERSION}_${scope}`; })
-            : [];
-        const projectSuffix = config.projectSlug ? `:v2:${config.projectSlug}` : '';
-        try {
-            for (let i = 0; i < localStorage.length; i += 1) {
-                const key = localStorage.key(i);
-                if (!key || !key.startsWith(`da_audit_chat_state_v${CHAT_STORAGE_VERSION}_`)) continue;
-                if (projectSuffix && key.endsWith(projectSuffix)) configured.push(key);
-            }
-        } catch (_) {}
-        return Array.from(new Set(configured)).filter(function(key) { return key !== auditChatStorageKey; });
-    }
-
-    function hasMeaningfulAuditChatState(candidate) {
-        return !!(candidate && candidate.state && Array.isArray(candidate.state.chats) && candidate.state.chats.length);
-    }
-
     function readAuditChatStateFromStorage() {
-        const durable = normalizeAuditChatStatePayload(config.durableChatState);
+        const durable = normalizeAuditChatStatePayload(config.durableChatState, 'durable');
         const current = readAuditChatStateAtKey(auditChatStorageKey);
-        const recovered = legacyAuditChatStorageKeys()
-            .map(function(storageKey) { return { storageKey, state: readAuditChatStateAtKey(storageKey) }; })
-            .filter(hasMeaningfulAuditChatState);
         const candidates = [
             durable ? { source: 'durable', state: durable } : null,
             current ? { source: 'current', state: current } : null,
-            ...recovered.map(function(entry) { return { source: entry.storageKey, state: entry.state }; }),
         ].filter(Boolean).sort(function(a, b) {
             return (Number(b.state.updatedAt) || 0) - (Number(a.state.updatedAt) || 0);
         });
         if (!candidates.length) return null;
-        const selected = candidates[0];
-        try {
-            localStorage.setItem(auditChatStorageKey, JSON.stringify(selected.state));
-        } catch (_) {}
-        // If page navigation happened before the debounced PUT, the newer
-        // project-local browser snapshot repairs the durable project copy.
-        if (selected.source !== 'durable') queueDurableAuditChatState(selected.state);
-        return selected.state;
+        // Reading history is deliberately side-effect free. A fresh or reopened
+        // idle Audit screen must not write browser or durable conversation state.
+        return candidates[0].state;
     }
 
     function writeDurableAuditChatState(snapshot, keepalive) {
-        const projectQuery = `?project=${encodeURIComponent(config.projectSlug)}`;
+        if (!hasProjectIdentity) return Promise.reject(new Error('Missing project identity'));
+        const projectQuery = `?project_id=${encodeURIComponent(projectId)}`;
         return fetch('/api/conversation_state' + projectQuery, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
@@ -478,14 +617,14 @@
             body: JSON.stringify({
                 surface: 'audit_agent',
                 scope: 'main',
-                project: config.projectSlug,
+                project_id: projectId,
                 state: snapshot,
             }),
         });
     }
 
     function queueDurableAuditChatState(state) {
-        if (!config.projectSlug || !state || typeof state !== 'object') return;
+        if (!hasProjectIdentity || !state || typeof state !== 'object' || state.projectId !== projectId) return;
         if (durablePersistTimer) window.clearTimeout(durablePersistTimer);
         const snapshot = JSON.parse(JSON.stringify(state));
         pendingDurableAuditChatSnapshot = snapshot;
@@ -518,12 +657,11 @@
     function persistAuditChatState(options) {
         const persistOptions = options || {};
         try {
-            if (!persistOptions.skipSync) {
+            if (!persistOptions.skipSync && activeChatId) {
                 syncActiveChatFromHistory({ touch: persistOptions.touchActive !== false });
             }
-            // The fresh blank composer is intentionally recreated on every
-            // visit; do not let it consume a durable History slot and evict an
-            // actual prior conversation merely because the user navigated.
+            // Blank New Chat stays transient. Persisted identity remains available
+            // only for history and genuine active-work recovery.
             const chats = chatSessions
                 .filter(function(chat) { return !isUnlistedDraftChat(chat); })
                 .slice(0, AUDIT_CHAT_STORAGE_MAX_CHATS);
@@ -532,12 +670,14 @@
                 : null;
             const state = {
                 version: CHAT_STORAGE_VERSION,
+                projectId,
                 updatedAt: Date.now(),
                 activeChatId: persistedActiveChatId,
                 chats,
                 pendingJobs: normalizePendingAuditJobs(pendingAuditJobs, chats),
                 queuedMessages: normalizeQueuedAuditMessages(queuedAuditMessages, chats),
             };
+            if (!auditChatStorageKey) return;
             localStorage.setItem(auditChatStorageKey, JSON.stringify(state));
             queueDurableAuditChatState(state);
         } catch (_) {}
@@ -789,20 +929,131 @@
         scrollToBottomAfterLayout();
     }
 
+    function showAuditChatLocally(chatId, requestedState) {
+        const chat = chatSessions.find(function(entry) { return entry.id === chatId; });
+        if (!chat) return false;
+        activeChatId = chat.id;
+        auditScreenState = requestedState === 'active' || chatHasActiveAuditWork(chat.id)
+            ? 'active'
+            : 'history';
+        chatHistory = normalizeStoredAuditChatMessages(chat.messages);
+        clearChatBubbles();
+        renderStoredChatHistory(chatHistory);
+        renderChatList();
+        revealActiveChatRow();
+        autoSizeInput();
+        updateComposerForActiveChat();
+        return true;
+    }
+
+    function showBlankNewChat(options) {
+        const blankOptions = options || {};
+        auditLifecycleRevision += 1;
+        auditScreenState = 'new';
+        activeChatId = null;
+        renamingChatId = null;
+        deleteConfirmChatId = null;
+        cleanupUnlistedDraftChats(null);
+        chatHistory = [];
+        auditMarkdownRenderSequence += 1;
+        if (blankOptions.discardDraft !== false && chatInputEl) chatInputEl.value = '';
+        clearChatBubbles();
+        syncEmptyState();
+        renderChatList();
+        setHistoryDrawerOpen(false);
+        autoSizeInput();
+        updateComposerForActiveChat();
+        if (blankOptions.resetScroll !== false) {
+            const scrollTarget = workspaceEl || chatMessagesEl;
+            if (scrollTarget) scrollTarget.scrollTop = 0;
+        }
+    }
+
+    function reconcileAuditScreenAfterWork(chatId) {
+        const workChatId = activeAuditWorkChatId(activeChatId || chatId);
+        if (workChatId) {
+            if (auditClosed) {
+                showAuditChatLocally(workChatId, 'active');
+            } else if (activeChatId === workChatId) {
+                auditScreenState = 'active';
+            }
+            return;
+        }
+        if (auditClosed) {
+            showBlankNewChat({ discardDraft: true, resetScroll: true });
+        } else if (activeChatId) {
+            auditScreenState = 'history';
+        } else {
+            auditScreenState = 'new';
+        }
+    }
+
+    function handleAuditPanelClosed() {
+        auditClosed = true;
+        auditHidden = true;
+        const workChatId = activeAuditWorkChatId(activeChatId);
+        if (workChatId) {
+            auditScreenState = 'active';
+            return;
+        }
+        showBlankNewChat({ discardDraft: true, resetScroll: true });
+    }
+
+    function handleAuditPanelReopened() {
+        auditClosed = false;
+        const workspaceState = window.roundWorkspace && window.roundWorkspace.state;
+        auditHidden = !!(workspaceState && workspaceState.panelTab !== 'chat');
+        const workChatId = activeAuditWorkChatId(activeChatId);
+        if (workChatId) {
+            showAuditChatLocally(workChatId, 'active');
+            resumePendingAuditJobs();
+            return;
+        }
+        showBlankNewChat({ discardDraft: true, resetScroll: true });
+    }
+
+    function handleAuditTemporarilyHidden() {
+        auditHidden = true;
+    }
+
+    function handleAuditTemporarilyShown() {
+        if (!auditClosed) auditHidden = false;
+    }
+
+    window.addEventListener('roundworkspace:audit-lifecycle', function(event) {
+        const transition = event && event.detail && event.detail.transition;
+        if (transition === 'closed') handleAuditPanelClosed();
+        else if (transition === 'reopened') handleAuditPanelReopened();
+        else if (transition === 'hidden') handleAuditTemporarilyHidden();
+        else if (transition === 'shown') handleAuditTemporarilyShown();
+    });
+
     function isActiveChatPending() {
-        return !!activeChatId && pendingChatIds.has(activeChatId);
+        return !!activeChatId && (
+            pendingChatIds.has(activeChatId) ||
+            !!(stoppingAuditJob && stoppingAuditJob.chatId === activeChatId && stoppingAuditJob.projectId === projectId)
+        );
     }
 
     function refreshSendEnabled() {
         if (!chatSendBtn) return;
         const isPending = isActiveChatPending();
         const hasMessage = !!(chatInputEl && (chatInputEl.value || '').trim());
-        chatSendBtn.classList.toggle('is-stop', isPending);
-        chatSendBtn.setAttribute('aria-label', isPending ? 'Cancel audit response' : 'Send message');
-        chatSendBtn.innerHTML = isPending
-            ? '<svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" focusable="false"><rect x="5.25" y="5.25" width="9.5" height="9.5" rx="1.8" fill="currentColor"/></svg>'
-            : '<svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" focusable="false"><path d="M10 4.2 4.9 9.3l1.2 1.2 3-3V16h1.8V7.5l3 3 1.2-1.2L10 4.2Z" fill="currentColor"/></svg>';
-        chatSendBtn.disabled = !chatInputEl || chatInputEl.disabled || (!isPending && !hasMessage);
+        if (isPending) {
+            chatSendBtn.classList.add('is-stop');
+            chatSendBtn.setAttribute('aria-label', 'Stop response');
+            chatSendBtn.setAttribute('title', 'Stop response');
+            chatSendBtn.setAttribute('aria-busy', String(stoppingAuditJobId !== null));
+            chatSendBtn.innerHTML = '<svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" focusable="false"><rect x="5.25" y="5.25" width="9.5" height="9.5" rx="1.8" fill="currentColor"/></svg>';
+            chatSendBtn.disabled = stoppingAuditJobId !== null;
+            return;
+        }
+        chatSendBtn.classList.remove('is-stop');
+        chatSendBtn.setAttribute('aria-label', 'Send message');
+        chatSendBtn.setAttribute('title', 'Send message');
+        chatSendBtn.setAttribute('aria-busy', 'false');
+        chatSendBtn.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><path d="M12 19V5M12 5l-6 6M12 5l6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+        chatSendBtn.disabled = !chatInputEl || chatInputEl.disabled || !hasMessage;
     }
 
     function updateComposerForActiveChat() {
@@ -823,7 +1074,9 @@
         }
         const chat = chatSessions.find(function(entry) { return entry.id === chatId; });
         if (!chat) return;
+        const selectionRevision = ++auditLifecycleRevision;
         activeChatId = chat.id;
+        auditScreenState = chatHasActiveAuditWork(chat.id) ? 'active' : 'history';
         chat.unread = false;
         chatHistory = normalizeStoredAuditChatMessages(chat.messages);
         clearChatBubbles();
@@ -831,18 +1084,22 @@
         renderChatList();
         revealActiveChatRow();
         scrollToBottomAfterLayout();
+        persistAuditChatState({ touchActive: false });
         if (sessionReady && !activateOptions.skipServerRestore && pendingChatIds.size === 0) {
             chatInputEl.disabled = true;
             chatSendBtn.disabled = true;
             await resetAuditConversationOnServer();
+            if (auditLifecycleRevision !== selectionRevision || activeChatId !== chatId || auditClosed) return;
             await restoreAuditConversationOnServer(chatHistory);
+            if (auditLifecycleRevision !== selectionRevision || activeChatId !== chatId || auditClosed) return;
             chatInputEl.disabled = false;
             refreshSendEnabled();
             chatInputEl.focus();
         } else {
             updateComposerForActiveChat();
         }
-        persistAuditChatState({ touchActive: false });
+        if (auditLifecycleRevision !== selectionRevision || activeChatId !== chatId || auditClosed) return;
+        setHistoryDrawerOpen(false);
     }
 
     async function switchChat(chatId) {
@@ -850,65 +1107,46 @@
         await activateChat(chatId);
     }
 
-    async function startNewChat() {
-        renamingChatId = null;
-        deleteConfirmChatId = null;
-        if (activeChatId && !isUnlistedDraftChat(getActiveChat())) {
-            persistAuditChatState({ touchActive: false });
-        }
-        cleanupUnlistedDraftChats(null);
-        const chat = createEmptyChat();
-        chatSessions.unshift(chat);
-        const newChatId = chat.id;
-
-        function selectNewChatLocally() {
-            activeChatId = newChatId;
-            chatHistory = [];
-            chat.messages = [];
-            clearChatBubbles();
-            syncEmptyState();
-            persistAuditChatState({ touchActive: false });
-            renderChatList();
-            revealActiveChatRow();
-        }
-
-        selectNewChatLocally();
-        if (sessionReady && pendingChatIds.size === 0) {
-            chatInputEl.disabled = true;
-            chatSendBtn.disabled = true;
-            await resetAuditConversationOnServer();
-            selectNewChatLocally();
-            chatInputEl.disabled = false;
-            refreshSendEnabled();
-            chatInputEl.focus();
-        } else {
-            updateComposerForActiveChat();
-        }
+    function startNewChat() {
+        auditClosed = false;
+        showBlankNewChat({ discardDraft: true, resetScroll: true });
+        if (chatInputEl) chatInputEl.focus();
     }
 
     async function restoreAuditConversationOnServer(entries) {
-        if (!Array.isArray(entries) || entries.length === 0) return;
+        if (!hasProjectIdentity || !Array.isArray(entries) || entries.length === 0) return;
         const payloadMessages = normalizeStoredAuditChatMessages(entries).map(function(entry) {
             return { role: entry.role, content: entry.text };
         });
         if (payloadMessages.length === 0) return;
         try {
-            await fetch('/api/audit_chat_restore', {
+            const response = await fetch('/api/audit_chat_restore', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
-                body: JSON.stringify({ messages: payloadMessages }),
+                body: JSON.stringify({ project_id: projectId, messages: payloadMessages }),
             });
+            const payload = await response.json().catch(function() { return {}; });
+            if (!response.ok || !responseBelongsToActiveProject(payload)) return;
         } catch (_) {}
     }
 
     async function resetAuditConversationOnServer() {
-        await fetch('/api/reset_chat_context', {
+        if (!hasProjectIdentity) return;
+        const response = await fetch('/api/reset_chat_context', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'include',
-            body: JSON.stringify({ scope: 'report', report_type: 'background', report_view: 'summary' }),
+            body: JSON.stringify({
+                project_id: projectId,
+                scope: 'report',
+                report_type: 'background',
+                report_view: 'summary',
+            }),
         }).catch(() => {});
+        if (!response) return;
+        const payload = await response.json().catch(function() { return {}; });
+        if (!response.ok || !responseBelongsToActiveProject(payload)) return;
     }
 
     function showBootOverlay(message, options) {
@@ -1025,22 +1263,9 @@
         rebuildPendingChatIds();
         sortChatSessions();
         if (deletingActiveChat) {
-            const freshChat = createEmptyChat();
-            chatSessions.unshift(freshChat);
-            activeChatId = freshChat.id;
-            chatHistory = [];
-            clearChatBubbles();
-            syncEmptyState();
-            renderChatList();
-            persistAuditChatState({ touchActive: false });
-            if (sessionReady) {
-                chatInputEl.disabled = true;
-                chatSendBtn.disabled = true;
-                await resetAuditConversationOnServer();
-                chatInputEl.disabled = false;
-                refreshSendEnabled();
-                chatInputEl.focus();
-            }
+            showBlankNewChat({ discardDraft: true, resetScroll: true });
+            persistAuditChatState({ touchActive: false, skipSync: true });
+            if (chatInputEl) chatInputEl.focus();
         } else {
             persistAuditChatState({ touchActive: false });
             renderChatList();
@@ -1156,6 +1381,8 @@
     }
 
     function handleAuditJobResult(job, data, replyContent) {
+        if (!job || job.projectId !== projectId) return;
+        if (data && data.project_id && !responseBelongsToActiveProject(data)) return;
         const chatId = job.chatId;
         removePendingAuditJob(job.jobId);
         if (cancelledAuditJobIds.has(job.jobId)) {
@@ -1167,6 +1394,7 @@
             updateComposerForActiveChat();
             syncEmptyState();
             promoteNextQueuedAuditMessage(chatId);
+            reconcileAuditScreenAfterWork(chatId);
             return;
         }
         if (data && data.cancelled) {
@@ -1178,6 +1406,7 @@
             updateComposerForActiveChat();
             syncEmptyState();
             promoteNextQueuedAuditMessage(chatId);
+            reconcileAuditScreenAfterWork(chatId);
             return;
         }
         if (data && data.success) {
@@ -1204,6 +1433,7 @@
         syncEmptyState();
         if (activeChatId === chatId) scrollToBottomAfterLayout();
         promoteNextQueuedAuditMessage(chatId);
+        reconcileAuditScreenAfterWork(chatId);
     }
 
     async function pollAuditChatJob(job, replyContent) {
@@ -1212,7 +1442,9 @@
         try {
             while (true) {
                 if (cancelledAuditJobIds.has(job.jobId)) return;
-                const res = await fetch(`/api/audit_chat_jobs/${encodeURIComponent(job.jobId)}`, {
+                if (job.projectId !== projectId) return;
+                const projectQuery = `?project_id=${encodeURIComponent(projectId)}`;
+                const res = await fetch(`/api/audit_chat_jobs/${encodeURIComponent(job.jobId)}${projectQuery}`, {
                     credentials: 'include',
                 });
                 if (cancelledAuditJobIds.has(job.jobId)) return;
@@ -1229,6 +1461,7 @@
                     }, replyContent);
                     return;
                 }
+                if (!responseBelongsToActiveProject(payload)) return;
                 if (payload.status === 'succeeded' || payload.status === 'failed' || payload.status === 'cancelled') {
                     handleAuditJobResult(job, payload.result || {
                         success: false,
@@ -1260,12 +1493,19 @@
     }
 
     function getActiveAuditJob() {
-        return pendingAuditJobs.find(function(job) { return job.chatId === activeChatId; }) || null;
+        return pendingAuditJobs.find(function(job) {
+            return job.chatId === activeChatId && job.projectId === projectId;
+        }) || null;
     }
 
     async function cancelActiveAuditResponse() {
+        if (stoppingAuditJobId !== null) return;
         const job = getActiveAuditJob();
-        if (!job) return;
+        if (!job || job.projectId !== projectId) return;
+        stoppingAuditJobId = job.jobId;
+        stoppingAuditJob = job;
+        auditScreenState = 'active';
+        refreshSendEnabled();
         cancelledAuditJobIds.add(job.jobId);
         removePendingAuditJob(job.jobId);
         appendAssistantMessageToChat(job.chatId, 'Response stopped.', null);
@@ -1277,50 +1517,41 @@
         updateComposerForActiveChat();
         syncEmptyState();
         promoteNextQueuedAuditMessage(job.chatId);
+        reconcileAuditScreenAfterWork(job.chatId);
+        if (activeChatId === job.chatId && chatInputEl) chatInputEl.focus();
         try {
             await fetch(`/api/audit_chat_jobs/${encodeURIComponent(job.jobId)}/cancel`, {
                 method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
+                body: JSON.stringify({ project_id: projectId }),
             });
         } catch (_) {
             // The UI already discarded the local job; a stale server response is ignored.
+        } finally {
+            if (stoppingAuditJobId === job.jobId) stoppingAuditJobId = null;
+            if (stoppingAuditJob && stoppingAuditJob.jobId === job.jobId) stoppingAuditJob = null;
+            reconcileAuditScreenAfterWork(job.chatId);
+            refreshSendEnabled();
         }
     }
 
     function autoSizeInput() {
         if (!chatInputEl) return;
         chatInputEl.style.height = 'auto';
+        if (!chatInputEl.value) {
+            chatInputEl.style.height = '';
+            refreshSendEnabled();
+            return;
+        }
         chatInputEl.style.height = `${Math.min(chatInputEl.scrollHeight, 260)}px`;
         refreshSendEnabled();
     }
 
-    function openGuide() {
-        if (!guideModal) return;
-        guideModal.classList.remove('hidden');
-        guideModal.hidden = false;
-        document.body.classList.add('v2-modal-open');
-    }
-
-    function closeGuide() {
-        if (!guideModal) return;
-        guideModal.classList.add('hidden');
-        guideModal.hidden = true;
-        document.body.classList.remove('v2-modal-open');
-    }
-
-    if (guideBtn && guideModal) {
-        guideBtn.addEventListener('click', function() { openGuide(); });
-        guideCloseBtn && guideCloseBtn.addEventListener('click', closeGuide);
-        guideDismissBtn && guideDismissBtn.addEventListener('click', closeGuide);
-        guideModal.addEventListener('click', function (e) {
-            if (e.target === guideModal) closeGuide();
-        });
-        document.addEventListener('keydown', function (e) {
-            if (e.key === 'Escape' && !guideModal.classList.contains('hidden')) closeGuide();
-        });
-    }
-
     function restoreLocalChatInterface() {
+        const workspaceState = window.roundWorkspace && window.roundWorkspace.state;
+        auditClosed = !!(workspaceState && workspaceState.panelCollapsed);
+        auditHidden = auditClosed || !!(workspaceState && workspaceState.panelTab !== 'chat');
         const storedState = readAuditChatStateFromStorage();
         chatSessions = storedState && Array.isArray(storedState.chats)
             ? storedState.chats
@@ -1329,28 +1560,18 @@
         queuedAuditMessages = normalizeQueuedAuditMessages(storedState && storedState.queuedMessages, chatSessions);
         rebuildPendingChatIds();
         cleanupUnlistedDraftChats(null);
-        // Every page entry starts in a transient blank composer. Restored
-        // project chats remain visible in History and keep running in the
-        // background, but none is selected until the user explicitly opens it.
-        const freshChat = createEmptyChat();
-        chatSessions.unshift(freshChat);
-        activeChatId = freshChat.id;
-        const activeChat = ensureActiveChat();
-        const restoredMessages = normalizeStoredAuditChatMessages(activeChat.messages);
-        clearChatBubbles();
-        if (restoredMessages.length > 0) {
-            chatHistory = restoredMessages;
-            renderStoredChatHistory(chatHistory);
+        const storedActiveId = storedState && typeof storedState.activeChatId === 'string'
+            ? storedState.activeChatId
+            : null;
+        const workChatId = activeAuditWorkChatId(storedActiveId);
+        if (workChatId) {
+            showAuditChatLocally(workChatId, 'active');
         } else {
-            chatHistory = [];
-            syncEmptyState();
+            showBlankNewChat({ discardDraft: true, resetScroll: true });
         }
-        renderChatList();
-        revealActiveChatRow();
         revealMainInterface();
         hideBootOverlay();
         autoSizeInput();
-        scrollToBottomAfterLayout();
         resumePendingAuditJobs();
     }
 
@@ -1373,6 +1594,7 @@
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
                 body: JSON.stringify({
+                    project_id: projectId,
                     checkpoint_dir: config.checkpointDir,
                     code_dir: config.codeDir,
                 }),
@@ -1386,14 +1608,20 @@
                 initPromise = null;
                 return;
             }
+            if (!responseBelongsToActiveProject(data)) {
+                initErrorMessage = 'Audit session project identity changed.';
+                hideBootOverlay();
+                updateComposerForActiveChat();
+                initPromise = null;
+                return;
+            }
             if (chatHistory.length > 0) {
                 await restoreAuditConversationOnServer(chatHistory);
             }
             sessionReady = true;
             initErrorMessage = '';
-            // Migrates any legacy browser-only chat snapshot into the managed
-            // project store on first successful project initialization.
-            persistAuditChatState({ touchActive: false });
+            // Idle initialization is read-only. History becomes durable only
+            // when an actual conversation mutation is persisted.
             hideBootOverlay();
             updateComposerForActiveChat();
             autoSizeInput();
@@ -1407,11 +1635,14 @@
         }
     }
 
-    function appendUserMessageToChat(chatId, message) {
+    function appendUserMessageToChat(chatId, message, viewerContext) {
         const chat = chatSessions.find(function(entry) { return entry.id === chatId; });
         if (!chat) return;
+        const userEntry = { role: 'user', text: message, responseTimeMs: null };
+        const normalizedViewerContext = normalizeViewerContextSnapshot(viewerContext);
+        if (normalizedViewerContext) userEntry.viewerContext = normalizedViewerContext;
         const nextMessages = normalizeStoredAuditChatMessages(
-            normalizeStoredAuditChatMessages(chat.messages).concat([{ role: 'user', text: message, responseTimeMs: null }])
+            normalizeStoredAuditChatMessages(chat.messages).concat([userEntry])
         );
         chat.messages = nextMessages;
         if (!chat.titleEdited) chat.title = deriveChatTitle(nextMessages);
@@ -1430,25 +1661,29 @@
         const requestContext = normalizeStoredAuditChatMessages(chat.messages).map(function(entry) {
             return { role: entry.role, content: entry.text };
         });
-        appendUserMessageToChat(chatId, next.text);
+        appendUserMessageToChat(chatId, next.text, next.viewerContext);
         if (activeChatId === chatId) {
             renderStoredChatHistory(chatHistory);
         }
         persistAuditChatState({ touchActive: activeChatId === chatId });
         renderChatList();
-        submitAuditJob(chatId, next.text, requestContext, null);
+        submitAuditJob(chatId, next.text, requestContext, null, next.viewerContext);
         return true;
     }
 
-    async function submitAuditJob(requestChatId, message, requestContext, replyContent) {
+    async function submitAuditJob(requestChatId, message, requestContext, replyContent, viewerContext) {
+        const submittedViewerContext = normalizeViewerContextSnapshot(viewerContext);
         const submittedJob = {
             jobId: createAuditJobId(),
             chatId: requestChatId,
+            projectId,
             message,
             createdAt: Date.now(),
+            viewerContext: submittedViewerContext,
         };
         let jobRegistered = false;
         addPendingAuditJob(submittedJob);
+        if (activeChatId === requestChatId) auditScreenState = 'active';
         persistAuditChatState({ touchActive: activeChatId === requestChatId });
         renderChatList();
         if (activeChatId === requestChatId && !replyContent) {
@@ -1466,9 +1701,11 @@
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
                 body: JSON.stringify({
+                    project_id: projectId,
                     job_id: submittedJob.jobId,
                     message,
                     messages: requestContext,
+                    viewer_context: submittedViewerContext,
                 }),
             });
             let data = null;
@@ -1484,9 +1721,11 @@
                         headers: { 'Content-Type': 'application/json' },
                         credentials: 'include',
                         body: JSON.stringify({
+                            project_id: projectId,
                             message,
                             mode: config.chatMode || 'audit',
                             messages: requestContext,
+                            viewer_context: submittedViewerContext,
                         }),
                     });
                     let legacyData = null;
@@ -1504,6 +1743,7 @@
                     }
                     if (!legacyData) throw new Error('Server returned an unreadable response payload.');
                     if (!legacyData.success) throw new Error(legacyData.error || 'unknown error');
+                    if (!responseBelongsToActiveProject(legacyData)) return;
                     jobRegistered = true;
                     handleAuditJobResult(submittedJob, legacyData, replyContent);
                     return;
@@ -1516,6 +1756,7 @@
             if (!data.success) {
                 throw new Error(data.error || 'unknown error');
             } else {
+                if (!responseBelongsToActiveProject(data)) return;
                 if (!data.job_id) throw new Error('Audit chat job did not return a job id.');
                 jobRegistered = true;
                 persistAuditChatState({ touchActive: activeChatId === requestChatId });
@@ -1545,13 +1786,19 @@
         const message = (chatInputEl.value || '').trim();
         if (!message) return;
 
+        if (!activeChatId) {
+            ensureActiveChat();
+            chatHistory = [];
+            renderChatList();
+        }
         const requestChatId = activeChatId;
+        const viewerContext = captureViewerContextSnapshot();
         chatInputEl.value = '';
         autoSizeInput();
         refreshSendEnabled();
 
         if (pendingChatIds.has(requestChatId)) {
-            queueAuditMessage(requestChatId, message);
+            queueAuditMessage(requestChatId, message, viewerContext);
             persistAuditChatState({ touchActive: true });
             renderQueuedMessages();
             syncEmptyState();
@@ -1562,36 +1809,48 @@
         const requestContext = normalizeStoredAuditChatMessages(chatHistory).map(function(entry) {
             return { role: entry.role, content: entry.text };
         });
-        appendUserMessageToChat(requestChatId, message);
+        appendUserMessageToChat(requestChatId, message, viewerContext);
         syncEmptyState();
         persistAuditChatState();
         renderChatList();
         renderStoredChatHistory(chatHistory);
-        submitAuditJob(requestChatId, message, requestContext, null);
+        submitAuditJob(requestChatId, message, requestContext, null, viewerContext);
     }
 
     newChatBtn && newChatBtn.addEventListener('click', startNewChat);
+    historyToggleBtn && historyToggleBtn.addEventListener('click', function() {
+        setHistoryDrawerOpen(historyDrawerEl && historyDrawerEl.hidden);
+    });
     chatInputEl && chatInputEl.addEventListener('input', function() {
         autoSizeInput();
         refreshSendEnabled();
     });
-    chatInputEl && chatInputEl.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
-    });
-    composerEl && composerEl.addEventListener('submit', (e) => {
+    function handleComposerKeydown(e) {
+        if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+            e.preventDefault();
+            sendMessage();
+        }
+    }
+    function handleComposerSubmit(e) {
         e.preventDefault();
         if (isActiveChatPending()) {
             cancelActiveAuditResponse();
             return;
         }
         sendMessage();
-    });
+    }
+    chatInputEl && chatInputEl.addEventListener('keydown', handleComposerKeydown);
+    composerEl && composerEl.addEventListener('submit', handleComposerSubmit);
 
     document.addEventListener('click', function() {
         closeChatMenus();
     });
     document.addEventListener('keydown', function(e) {
         if (e.key === 'Escape') {
+            if (historyDrawerEl && !historyDrawerEl.hidden) {
+                setHistoryDrawerOpen(false);
+                historyToggleBtn && historyToggleBtn.focus();
+            }
             closeChatMenus();
             if (renamingChatId || deleteConfirmChatId) {
                 renamingChatId = null;
@@ -1617,10 +1876,6 @@
     bootRetryBtn && bootRetryBtn.addEventListener('click', function () {
         bootRetryBtn.disabled = true;
         initPromise = initSession();
-    });
-
-    window.addEventListener('beforeunload', function () {
-        persistAuditChatState({ touchActive: false });
     });
 
     document.addEventListener('DOMContentLoaded', function() {

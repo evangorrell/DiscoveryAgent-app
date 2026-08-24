@@ -1,7 +1,7 @@
 {
   "application_schema_version": 1,
   "backend": {
-    "commit": "d547cedabc0d983b518d1a1c9e66df21ea249560",
+    "commit": "5e7995a5e7627efb334d22df255dc7963b4be7e2",
     "remote_url": "https://github.com/owencqueen/discoveryagent",
     "repository": "discoveryagent",
     "uv_lock_sha256": "7043fde28b946ba615f8eb1c337bfb750a49ee5cfb85be3e11f8ff677f0e2b4a",
@@ -15,7 +15,7 @@
     }
   },
   "frontend": {
-    "commit": "8923b2825e28c09a2dff768747813ca1d0916f6f",
+    "commit": "d6d09412a141bbfe3998554f6cd6c7cd5e474d22",
     "remote_url": "https://github.com/owencqueen/DA_selection_ui",
     "repository": "DA_selection_ui",
     "uv_lock_sha256": "a81e89b5a66d9946dcaf7162f7117e669e0f7e59c350d1858388dd98fd4ebc47",
@@ -32,7 +32,7 @@
     "sha256": "036362c1408eb872183f7614d1784e1d5c2a770456878d2c6e02808cad593db8",
     "vendored_wheel": "vendor/gxl_paperclip-0.7.24-py3-none-any.whl"
   },
-  "release_id": "dev-8923b2825e28-d547cedabc0d",
+  "release_id": "dev-d6d09412a141-5e7995a5e762",
   "release_type": "development",
   "required_cpython_version": "3.11.11",
   "schema_version": 1

@@ -11,6 +11,7 @@ def _projects(tmp_path):
         round_zero = root / "checkpoint" / "checkpoints" / "round_0"
         (code / "data").mkdir(parents=True)
         round_zero.mkdir(parents=True)
+        app_module.write_project_metadata(root, f"id-{slug}", slug.title())
         records[slug] = {
             "id": f"id-{slug}",
             "url_slug": slug,
@@ -43,21 +44,22 @@ def test_api_requests_rebind_project_and_agent_scope_per_tab(monkeypatch, tmp_pa
         seen.append((project["url_slug"], app_module.session.get("session_id")))
         return {
             "project_id": project["id"], "round": 0,
+            "run_id": ("a" if project["url_slug"] == "alpha" else "b") * 32,
             "status": "not_started", "pid": None, "resumable": False,
         }
 
     monkeypatch.setattr(app_module.local_round_runner, "round_status", status)
     client = app_module.app.test_client()
 
-    alpha = client.get("/api/rounds/status", headers={
+    alpha = client.get("/api/rounds/status?project_id=id-alpha&round=0&run_id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", headers={
         "X-DiscoveryAgent-Project": "alpha",
         "X-DiscoveryAgent-Tab": "aaaaaaaaaaaaaaaa",
     })
-    beta = client.get("/api/rounds/status", headers={
+    beta = client.get("/api/rounds/status?project_id=id-beta&round=0&run_id=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", headers={
         "X-DiscoveryAgent-Project": "beta",
         "X-DiscoveryAgent-Tab": "bbbbbbbbbbbbbbbb",
     })
-    alpha_again = client.get("/api/rounds/status", headers={
+    alpha_again = client.get("/api/rounds/status?project_id=id-alpha&round=0&run_id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", headers={
         "X-DiscoveryAgent-Project": "alpha",
         "X-DiscoveryAgent-Tab": "aaaaaaaaaaaaaaaa",
     })
@@ -139,7 +141,7 @@ def test_round_workspace_direct_resources_include_project_context():
     script = (root / "static" / "round_workspace.js").read_text(encoding="utf-8")
 
     assert "const projectQuery" in script
-    assert "round_workspace_code_artifact?path=" in script
+    assert "round_workspace_code_location?path=" in script
     assert "checkpoint_assets/round_" in script
     assert "?project=" in script
     assert "round_workspace_markdown?round=" in script
@@ -149,6 +151,8 @@ def test_audit_images_include_project_context():
     root = Path(app_module.app.root_path)
     script = (root / "static" / "project_audit_agent.js").read_text(encoding="utf-8")
 
-    assert "?project=${encodeURIComponent(config.projectSlug)}" in script
+    assert "?project_id=${encodeURIComponent(projectId)}" in script
+    assert "project_id: projectId, markdown: text" in script
+    assert "responseBelongsToActiveProject(data)" in script
     assert "/api/audit_chat_figures" in script
     assert "/api/serve_asset" not in script

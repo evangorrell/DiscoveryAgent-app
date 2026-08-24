@@ -17,6 +17,7 @@ def _project_record(tmp_path: Path) -> dict:
     checkpoint_dir.mkdir(parents=True)
     readme = data_dir / "README.md"
     readme.write_text("# Optic Nerve Regeneration", encoding="utf-8")
+    app_module.write_project_metadata(project_root, "optic-project", "Optic Nerve Regeneration")
     return {
         "id": "optic-project",
         "url_slug": "optic-nerve-regeneration",

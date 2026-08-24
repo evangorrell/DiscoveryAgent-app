@@ -11,7 +11,6 @@
         retry: document.getElementById('skills-retry'),
         empty: document.getElementById('skills-empty'),
         list: document.getElementById('skills-list'),
-        runningNote: document.getElementById('skills-running-note'),
         overlay: document.getElementById('skill-import-overlay'),
         close: document.getElementById('skill-import-close'),
         cancel: document.getElementById('skill-import-cancel'),
@@ -53,10 +52,10 @@
     }
 
     function updateMutationControls() {
-        const disabled = !statusResolved || running;
-        elements.runningNote.hidden = !running;
-        elements.open.disabled = disabled;
-        elements.list.querySelectorAll('[data-remove-skill]').forEach((button) => { button.disabled = disabled; });
+        elements.open.disabled = !statusResolved;
+        elements.list.querySelectorAll('[data-remove-skill]').forEach((button) => {
+            button.disabled = !statusResolved || running;
+        });
     }
 
     function setMutationState(isRunning, resolved) {
@@ -132,7 +131,7 @@
     }
 
     function openImport() {
-        if (!statusResolved || running) return;
+        if (!statusResolved) return;
         resetImport();
         elements.overlay.hidden = false;
         document.body.classList.add('v2-modal-open');
@@ -146,14 +145,19 @@
         elements.open.focus();
     }
 
-    async function reconcileRunningState(error) {
+    async function reconcileRemovalBlocked(error) {
         if (!error || error.code !== 'round_running') return false;
-        if (!elements.overlay.hidden) closeImport();
         setMutationState(true, true);
-        elements.errorDetail.textContent = 'Skills cannot be changed while a research round is running.';
+        elements.errorDetail.textContent = 'Skills cannot be removed while a research round is running.';
         elements.error.hidden = false;
         await loadSkills();
         return true;
+    }
+
+    function isSupportedSkillFilename(filename) {
+        const name = typeof filename === 'string' ? filename : '';
+        const lower = name.toLowerCase();
+        return name === 'SKILL.md' || lower.endsWith('.skill') || lower.endsWith('.zip');
     }
 
     async function previewFile(file) {
@@ -163,8 +167,8 @@
         elements.confirm.disabled = true;
         setImportError(null);
         if (!file) return;
-        if (!file.name.toLowerCase().endsWith('.zip')) {
-            setImportError('Choose a .zip skill package.');
+        if (!isSupportedSkillFilename(file.name)) {
+            setImportError('Choose a .skill, .zip, or SKILL.md file.');
             return;
         }
         const body = new FormData();
@@ -183,7 +187,6 @@
             elements.confirm.disabled = false;
         } catch (error) {
             if (sequence !== previewSequence) return;
-            if (await reconcileRunningState(error)) return;
             setImportError(error.message);
         }
     }
@@ -191,12 +194,16 @@
     function previewSelectedFiles(fileList) {
         const files = Array.from(fileList || []);
         elements.file.value = '';
+        if (files.length === 0) {
+            setImportError(null);
+            return;
+        }
         if (files.length !== 1) {
             selectedFile = null;
             previewSequence += 1;
             elements.preview.hidden = true;
             elements.confirm.disabled = true;
-            setImportError('Choose exactly one .zip skill package.');
+            setImportError('Choose exactly one .skill, .zip, or SKILL.md file.');
             return;
         }
         void previewFile(files[0]);
@@ -232,7 +239,7 @@
     }
 
     async function importSkill() {
-        if (!selectedFile || running) return;
+        if (!selectedFile) return;
         elements.confirm.disabled = true;
         elements.confirm.classList.add('is-busy');
         elements.confirm.textContent = 'Importing…';
@@ -247,7 +254,6 @@
             closeImport();
             await loadSkills();
         } catch (error) {
-            if (await reconcileRunningState(error)) return;
             setImportError(error.message);
             elements.confirm.disabled = false;
             elements.confirm.classList.remove('is-busy');
@@ -271,7 +277,7 @@
             await readJson(response);
             await loadSkills();
         } catch (error) {
-            if (await reconcileRunningState(error)) return;
+            if (await reconcileRemovalBlocked(error)) return;
             elements.errorDetail.textContent = error.message;
             elements.error.hidden = false;
         }

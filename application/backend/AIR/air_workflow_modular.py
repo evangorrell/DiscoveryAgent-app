@@ -22,6 +22,8 @@ import shutil
 from typing import Optional, List, Dict, Any
 from termcolor import colored
 from .utils.logger import Logger
+from .utils.llm_diagnostics import REFUSAL_ADVICE, first_refusal
+from .utils.query_artifacts import persist_query_input, persist_query_report, query_directory
 from .config import LLMConfig, ExecutionAgentConfig, HypothesisGenerationConfig, get_default_execution_config, get_default_hypothesis_config
 from .context_managers import NotebookManager, NotebookManagerXML, strip_code_markers
 from .tool_agents.execution_agent_cc import ExecutionAgentCC
@@ -371,6 +373,12 @@ class AIRWorkflowModular:
         print(f"🔧 Executing agent with tag '{tag}'")
         if tag not in self.agents:
             raise ValueError(f"Agent with tag '{tag}' not found in self.agents")
+
+        current_query_num = getattr(self, "query_num", None)
+        query_round_dir = None
+        if current_query_num is not None and hasattr(self, "checkpoint_manager"):
+            query_round_dir = self.checkpoint_manager.get_checkpoint_dir(current_query_num).parent
+            persist_query_input(query_round_dir, current_query_num, query)
         
         agent = self.agents[tag]
         # Persist search outputs under the run log directory to avoid polluting
@@ -411,6 +419,8 @@ class AIRWorkflowModular:
             if checkpoint_query_dir:
                 kwargs['checkpoint_query_dir'] = checkpoint_query_dir
             agent_output = agent.execute(query, **kwargs)
+            if query_round_dir is not None:
+                persist_query_report(query_round_dir, current_query_num, agent_output)
             return agent_output, query
 
         # For other agents, call execute and pass searches_dir when the method supports it
@@ -423,6 +433,9 @@ class AIRWorkflowModular:
         except Exception:
             # Fallback to calling without searches_dir
             agent_output = agent.execute(query)
+
+        if query_round_dir is not None:
+            persist_query_report(query_round_dir, current_query_num, agent_output)
 
         try:
             agent.cleanup()
@@ -577,16 +590,47 @@ class AIRWorkflowModular:
                 # Reset retry counter on success
                 tool_invocation_retry_count = 0
             else:
+                # An API refusal, an empty completion, and a genuinely malformed
+                # one all land here looking identical. Only the agent knows which.
+                refusal = first_refusal(self.director_agent, self.hypothesis_gen_agent)
+                self.logger.log_error(
+                    f"Query {query_num}: "
+                    f"{refusal or 'no XML tool invocation found in director output.'}\n"
+                    f"raw_output_chars={len(query)}\n"
+                    f"raw_output={query[:1000]!r}"
+                )
+                if refusal:
+                    print(f"⚠️ {refusal}")
                 # If multiturn, prompt the hypothesis agent to try again and restart loop
                 if self.multiturn_hypothesis:
                     tool_invocation_retry_count += 1
 
                     if tool_invocation_retry_count > self.max_tool_invocation_retries:
-                        error_msg = f"Max tool invocation retries ({self.max_tool_invocation_retries}) exceeded. Gracefully exiting query loop (early stopping)."
+                        error_msg = (
+                            f"Refused by the API on {self.max_tool_invocation_retries} "
+                            f"consecutive attempts. Gracefully exiting query loop (early "
+                            f"stopping). {REFUSAL_ADVICE}"
+                        ) if refusal else (
+                            f"Max tool invocation retries ({self.max_tool_invocation_retries}) exceeded. Gracefully exiting query loop (early stopping)."
+                        )
                         self.logger.log_error(error_msg)
                         self.logger.log_action("early_stopping", f"Query {query_num}: Max tool invocation retries exceeded - proceeding to summary generation")
                         print(f"⚠️ Max tool invocation retries exceeded - ending iterations early at query {query_num}")
                         break  # Exit while loop
+
+                    if refusal:
+                        # Nothing was malformed, so asking for a shorter query is
+                        # noise. Refusals are non-deterministic; just ask again.
+                        self.logger.log_error(
+                            f"Retrying after refusal (attempt {tool_invocation_retry_count}/"
+                            f"{self.max_tool_invocation_retries}). {REFUSAL_ADVICE}"
+                        )
+                        self.logger.log_action(
+                            "model_refusal",
+                            f"Query {query_num}: declined by the API. Retry attempt {tool_invocation_retry_count}",
+                        )
+                        feedback = None
+                        continue
 
                     self.logger.log_error(f"Tool invocation did not match expected format (attempt {tool_invocation_retry_count}/{self.max_tool_invocation_retries}). Asking hypothesis agent to try again with shorter query.")
                     self.logger.log_action("tool_invocation_error", f"Query {query_num}: Tool invocation did not match expected format. Retry attempt {tool_invocation_retry_count}")
@@ -1032,7 +1076,7 @@ Generated on: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
         else:
             try:
                 query_num = int(checkpoint_path_or_query)
-                checkpoint_file = Path(log_dir) / "checkpoints" / f"query_{query_num:03d}" / "checkpoint.json"
+                checkpoint_file = query_directory(Path(log_dir) / "checkpoints", query_num) / "checkpoint.json"
             except ValueError:
                 raise ValueError(f"Invalid checkpoint path or query number: {checkpoint_path_or_query}")
         
@@ -1092,7 +1136,7 @@ Generated on: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
                 query_num = int(checkpoint_path_or_query)
                 # Need to find the log directory - use current directory as fallback
                 log_dir = override_kwargs.get('log_dir', 'logs')
-                checkpoint_file = Path(log_dir) / "checkpoints" / f"query_{query_num:03d}" / "checkpoint.json"
+                checkpoint_file = query_directory(Path(log_dir) / "checkpoints", query_num) / "checkpoint.json"
             except ValueError:
                 raise ValueError(f"Invalid checkpoint path or query number: {checkpoint_path_or_query}")
         

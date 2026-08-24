@@ -36,6 +36,12 @@ from ..utils.token_utils import (
     count_openai_tokens_messages,
     count_anthropic_tokens,
 )
+from ..utils.llm_diagnostics import (
+    describe_response,
+    log_api_exception,
+    log_api_exchange,
+    refusal_notice,
+)
 
 # =============================================================================
 # DIRECTOR AGENT SYSTEM PROMPT
@@ -354,7 +360,11 @@ class DirectorAgent:
                 if getattr(block, "type", None) == "text" and hasattr(block, "text"):
                     text_parts.append(block.text)
             return "\n".join(part for part in text_parts if part)
-        except Exception:
+        except Exception as e:
+            self.logger.log_error(
+                f"Failed to extract text from response: {type(e).__name__}: {e}\n"
+                f"response: {describe_response(response)}"
+            )
             return ""
 
     def _call_api_with_retry(self, api_params: dict, max_retries: int = 5, wait_time: int = 60) -> str:
@@ -374,6 +384,9 @@ class DirectorAgent:
         """
         # Track raw response content for compaction block preservation
         self._last_response_content = None
+        # Set when Anthropic declines this call, so callers can tell a refusal
+        # apart from a malformed completion (they look identical downstream).
+        self.last_refusal = None
 
         # Inject compaction parameters for Anthropic when enabled
         use_beta = bool(self.mcp_servers)
@@ -401,7 +414,14 @@ class DirectorAgent:
                         model=self.llm_config.model_name,
                         messages=self.messages,
                     )
-                    return response.choices[0].message.content
+                    text = response.choices[0].message.content
+                    if not (text or "").strip():
+                        self.logger.log_error(
+                            "[EMPTY RESPONSE] OpenAI returned no text.\n"
+                            f"source=DirectorAgent model={self.llm_config.model_name} "
+                            f"finish_reason={getattr(response.choices[0], 'finish_reason', None)}"
+                        )
+                    return text
                 else:  # anthropic
                     # Extract beta-only params that the SDK doesn't have typed kwargs for
                     call_params = {k: v for k, v in api_params.items() if k != "context_management"}
@@ -436,7 +456,10 @@ class DirectorAgent:
                                     f"Context compacted (summary: {len(summary)} chars)")
                                 break
 
-                    return self._extract_text_from_anthropic_response(response)
+                    text = self._extract_text_from_anthropic_response(response)
+                    log_api_exchange(self.logger, "DirectorAgent", call_params, response, text)
+                    self.last_refusal = refusal_notice(response)
+                    return text
 
             except (anthropic.InternalServerError, anthropic.APIError, openai.APIError) as e:
                 last_error = e
@@ -478,15 +501,36 @@ class DirectorAgent:
                         time.sleep(wait_time)
                         continue
                     else:
-                        self.logger.log_error(f"Max retries ({max_retries}) reached. Last error: {error_msg}")
+                        self.logger.log_error(f"Max retries ({max_retries}) reached.")
+                        log_api_exception(
+                            self.logger,
+                            e,
+                            source="DirectorAgent",
+                            api_params=api_params,
+                            retryable=False,
+                        )
                         raise Exception(f"API call failed after {max_retries} retries: {error_msg}")
                 else:
                     # Non-retryable error, raise immediately
+                    log_api_exception(
+                        self.logger,
+                        e,
+                        source="DirectorAgent",
+                        api_params=api_params,
+                        retryable=False,
+                    )
                     raise
 
             except Exception as e:
                 # For unexpected errors, raise immediately without retry
                 last_error = e
+                log_api_exception(
+                    self.logger,
+                    e,
+                    source="DirectorAgent",
+                    api_params=api_params,
+                    retryable=False,
+                )
                 raise
 
         # If we somehow exit the loop without returning or raising

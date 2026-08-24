@@ -17,6 +17,8 @@ from typing import Dict, Any, Optional, List, Tuple
 from dataclasses import dataclass, asdict, is_dataclass
 import datetime
 
+from .utils.query_artifacts import query_directory
+
 
 @dataclass
 class ValidationResult:
@@ -87,18 +89,16 @@ class CheckpointManager:
 
         Returns:
             Path: Checkpoint directory path in format:
-                - With round: checkpoints/round_X/query_YYY/
-                - Without round: checkpoints/query_YYY/ (legacy format)
+                - With round: checkpoints/round_X/query_YY/
+                - Without round: checkpoints/query_YY/ (legacy root layout)
         """
         # Use provided round_num or fall back to instance round_num
         effective_round = round_num if round_num is not None else self.round_num
 
         if effective_round is not None:
-            # Round-aware path: checkpoints/round_X/query_YYY/
-            return self.checkpoint_base / f"round_{effective_round}" / f"query_{query_num:03d}"
+            return query_directory(self.checkpoint_base / f"round_{effective_round}", query_num)
         else:
-            # Legacy path for backwards compatibility: checkpoints/query_YYY/
-            return self.checkpoint_base / f"query_{query_num:03d}"
+            return query_directory(self.checkpoint_base, query_num)
     
     def _recursive_serialize(self, obj) -> Any:
         """Recursively convert objects into JSON-serializable structures."""
@@ -262,9 +262,6 @@ class CheckpointManager:
             with open(checkpoint_path, 'w', encoding='utf-8') as f:
                 json.dump(checkpoint_data, f, indent=2, ensure_ascii=False)
             
-            # Save queries and reports as markdown
-            self._save_queries_and_reports_markdown(checkpoint_dir, query_num)
-
             # Update latest symlink
             self._update_latest_link(query_num)
             
@@ -847,11 +844,11 @@ class CheckpointManager:
                 # Round-aware: create latest link inside round directory
                 round_dir = self.checkpoint_base / f"round_{self.round_num}"
                 latest_link = round_dir / "latest"
-                target = f"query_{query_num:03d}"
+                target = self.get_checkpoint_dir(query_num).name
             else:
                 # Legacy: latest link at checkpoint base
                 latest_link = self.checkpoint_base / "latest"
-                target = f"query_{query_num:03d}"
+                target = self.get_checkpoint_dir(query_num).name
 
             if latest_link.exists() or latest_link.is_symlink():
                 latest_link.unlink()

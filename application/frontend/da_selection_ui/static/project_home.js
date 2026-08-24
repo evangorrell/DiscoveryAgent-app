@@ -6,6 +6,7 @@
     'use strict';
 
     const ReportFigures = window.DiscoveryReportFigures;
+    const projectContext = window.discoveryProjectContext || {};
     if (!ReportFigures) throw new Error('Shared report figure renderer is unavailable');
 
     // Auth-fetch: redirect to login on an expired session (the small shared
@@ -110,7 +111,15 @@
             const response = await fetch(endpoint, {
                 method: 'POST',
                 credentials: 'include',
-                headers: { 'Accept': 'application/json' },
+                headers: {
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    project_id: status.project_id || projectContext.projectId || '',
+                    round: status.round,
+                    run_id: status.run_id,
+                }),
             });
             const data = await response.json();
             if (!response.ok || data.ok === false) {
@@ -295,7 +304,9 @@
         els.error.hidden = true;
         els.content.hidden = true;
         try {
-            const response = await fetch('/api/project_state', {
+            const stateUrl = '/api/project_state?project_id='
+                + encodeURIComponent(projectContext.projectId || '');
+            const response = await fetch(stateUrl, {
                 credentials: 'include',
                 headers: { 'Accept': 'application/json' },
             });
@@ -308,6 +319,10 @@
                 showError((data && data.error) || 'Unknown error.');
                 return;
             }
+            if (
+                projectContext.projectId
+                && (!data.project || data.project.id !== projectContext.projectId)
+            ) return;
             render(data);
         } catch (err) {
             showError(err && err.message ? err.message : 'Network error.');

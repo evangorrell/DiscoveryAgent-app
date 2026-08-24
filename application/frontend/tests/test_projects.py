@@ -5,6 +5,8 @@ import io
 import json
 from pathlib import Path
 
+import pytest
+
 from da_selection_ui import app as app_module
 
 
@@ -32,6 +34,10 @@ def _create(client, name="Optic Nerve Regeneration", context="Single-cell RNA-se
     return client.post("/api/projects", data=data, content_type="multipart/form-data")
 
 
+def _project_root(project_id):
+    return Path(app_module._v2_get_project(project_id)["project_root"])
+
+
 def _list(client):
     resp = client.get("/api/projects")
     assert resp.status_code == 200, resp.data
@@ -48,6 +54,21 @@ def test_projects_page_renders(monkeypatch, tmp_path):
     assert resp.status_code == 200
     assert b"Projects" in resp.data
     assert b"New Project" in resp.data
+    html = resp.get_data(as_text=True)
+    assert 'id="np-model"' not in html
+    assert html.count('id="np-reasoning-model"') == 1
+    assert html.count('id="np-execution-model"') == 1
+    assert html.count('(Default)</option>') == 2
+    assert 'id="np-query-count"' in html
+    assert 'id="np-deep-research"' in html and 'id="np-web-search"' in html
+    assert 'id="np-project-location-path"' in html
+    assert html.count('id="np-advanced-settings-toggle"') == 1
+    assert 'aria-expanded="false" aria-controls="np-advanced-settings-panel"' in html
+    assert 'id="np-advanced-settings-panel" hidden' in html
+    assert html.index('RESEARCH OBJECTIVE') < html.index('PROJECT CONTEXT')
+    assert html.index('PROJECT CONTEXT') < html.index('id="np-data-field"')
+    assert html.index('id="np-data-field"') < html.index('ADVANCED SETTINGS')
+    assert html.index('ADVANCED SETTINGS') < html.index('id="np-project-footer"')
 
 
 def test_list_returns_only_real_projects_no_demo(monkeypatch, tmp_path):
@@ -66,8 +87,10 @@ def test_create_persists_metadata_and_readme(monkeypatch, tmp_path):
     resp = _create(client, name="Optic Nerve Regeneration", context=ctx)
     assert resp.status_code == 200, resp.data
     body = resp.get_json()
-    # canonical slug-based Project Home destination, not the generic /app or Hypothesis Studio
+    # Preserve the API's project-scoped URL while exposing the canonical list
+    # destination used by the completed Create Project workflow.
     assert body["success"] is True and body["destination"] == "/projects/optic-nerve-regeneration"
+    assert body["projects_url"] == "/projects"
     pid = body["project_id"]
 
     # registry persisted outside git, under DISK_PATH
@@ -77,12 +100,17 @@ def test_create_persists_metadata_and_readme(monkeypatch, tmp_path):
     assert record["display_name"] == "Optic Nerve Regeneration"
     assert record["task_description"] == "Identify mechanisms that promote retinal ganglion cell regeneration."
     assert record["dataset_context"] == ctx
+    assert record["reasoning_model"] == app_module.model_catalog.DEFAULT_REASONING_MODEL
+    assert record["execution_model"] == app_module.model_catalog.DEFAULT_EXECUTION_MODEL
+    assert "project_model" not in record and "hypothesis_model" not in record
+    assert record["query_count"] == 12
+    assert record["deep_research"] is True and record["web_search"] is True
     assert record["data_dir"] == "code/data"
     resolved = app_module._v2_get_project(pid)
-    assert resolved["data_dir"] == str(tmp_path / pid / "code" / "data")
+    assert resolved["data_dir"] == str(_project_root(pid) / "code" / "data")
 
     # README.md written at the canonical dataset root with exact Project Context.
-    readme = tmp_path / pid / "code" / "data" / "README.md"
+    readme = _project_root(pid) / "code" / "data" / "README.md"
     assert readme.exists()
     text = readme.read_text()
     assert text.startswith("# Optic Nerve Regeneration\n\n")
@@ -94,18 +122,120 @@ def test_create_persists_metadata_and_readme(monkeypatch, tmp_path):
     # (select_hypothesis.py's loader never reads config['readme_path'] --
     # the app passes it at runtime via the constructor argument instead, from
     # project_cfg['readme_path'] / the registry's own readme_path field).
-    cfg = tmp_path / pid / "checkpoint" / "checkpoints" / "round_0" / "config.json"
+    cfg = _project_root(pid) / "checkpoint" / "checkpoints" / "round_0" / "config.json"
     assert cfg.exists()
     config = json.loads(cfg.read_text())["config"]
     assert config["dataset_name"] == "Optic Nerve Regeneration"
     assert config["task_description"] == "Identify mechanisms that promote retinal ganglion cell regeneration."
     assert "readme_path" not in config
-    assert config["working_directory"] == str(tmp_path / pid / "code")
+    assert config["working_directory"] == str(_project_root(pid) / "code")
+    assert {config[field] for field in app_module.model_catalog.REASONING_MODEL_CONFIG_FIELDS} == {
+        record["reasoning_model"]
+    }
+    assert config["execution_model"] == record["execution_model"]
+    assert config["num_queries"] == 5
+    assert config["omit_deepresearch"] is False and config["omit_singlesearch"] is False
 
     # list uses display_name + a short overview excerpt from dataset_context
     proj = next(p for p in _list(client) if p["id"] == pid)
     assert proj["display_name"] == "Optic Nerve Regeneration"
     assert proj["overview"] and proj["overview"].startswith("These are single-cell")
+    assert len(_list(client)) == 1
+
+
+def test_create_projects_destination_respects_script_root(monkeypatch, tmp_path):
+    client = _client(monkeypatch, tmp_path)
+    response = client.post(
+        "/api/projects",
+        data={
+            "project_name": "Prefixed Project",
+            "task_description": "Verify canonical deployment-aware navigation.",
+            "dataset_context": "A temporary project used only by this test.",
+        },
+        environ_overrides={"SCRIPT_NAME": "/discoveryagent"},
+    )
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["projects_url"] == "/discoveryagent/projects"
+    assert body["destination"] == "/discoveryagent/projects/prefixed-project"
+
+
+def test_create_persists_a_supported_selected_model(monkeypatch, tmp_path):
+    client = _client(monkeypatch, tmp_path)
+    response = client.post("/api/projects", data={
+        "project_name": "Model Project",
+        "task_description": "Investigate a testable mechanism.",
+        "dataset_context": "A documented test dataset.",
+        "reasoning_model": "claude-sonnet-4-6",
+        "execution_model": "claude-haiku-4-5-20251001",
+        "query_count": "17",
+        "deep_research": "false",
+        "web_search": "true",
+    })
+
+    assert response.status_code == 200
+    project_id = response.get_json()["project_id"]
+    record = app_module._v2_get_project(project_id)
+    config_path = Path(record["checkpoint_dir"]) / "config.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))["config"]
+    assert record["reasoning_model"] == "claude-sonnet-4-6"
+    assert record["execution_model"] == "claude-haiku-4-5-20251001"
+    assert {config[field] for field in app_module.model_catalog.REASONING_MODEL_CONFIG_FIELDS} == {
+        "claude-sonnet-4-6"
+    }
+    assert config["execution_model"] == "claude-haiku-4-5-20251001"
+    assert record["query_count"] == 17
+    assert record["deep_research"] is False and record["web_search"] is True
+    assert config["num_queries"] == 5
+    assert config["omit_deepresearch"] is True and config["omit_singlesearch"] is False
+
+
+def test_create_rejects_invalid_explicit_query_counts_without_writing(monkeypatch, tmp_path):
+    client = _client(monkeypatch, tmp_path)
+    for query_count in ("", "automatic", "0", "-1", "1.5", "51", "many"):
+        response = client.post("/api/projects", data={
+            "project_name": "Invalid Query",
+            "task_description": "Investigate a testable mechanism.",
+            "dataset_context": "A documented test dataset.",
+            "query_count": query_count,
+        })
+        assert response.status_code == 400
+        assert response.get_json()["code"] == "invalid_project_settings"
+    assert not (tmp_path / "v2_projects.json").exists()
+
+
+@pytest.mark.parametrize("query_count", [1, 50])
+def test_create_accepts_query_count_boundaries_for_later_rounds(monkeypatch, tmp_path, query_count):
+    client = _client(monkeypatch, tmp_path)
+    response = client.post("/api/projects", data={
+        "project_name": f"Query Boundary {query_count}",
+        "task_description": "Investigate a testable mechanism.",
+        "dataset_context": "A documented test dataset.",
+        "query_count": str(query_count),
+    })
+
+    assert response.status_code == 200
+    project = app_module._v2_get_project(response.get_json()["project_id"])
+    config = json.loads(
+        (Path(project["checkpoint_dir"]) / "config.json").read_text(encoding="utf-8")
+    )["config"]
+    assert project["query_count"] == query_count
+    assert config["num_queries"] == 5
+
+
+def test_create_rejects_unlisted_or_non_anthropic_models_before_writing(monkeypatch, tmp_path):
+    client = _client(monkeypatch, tmp_path)
+    for model_id in ("gpt-4o", "claude-unlisted-future-model"):
+        response = client.post("/api/projects", data={
+            "project_name": "Invalid Model",
+            "task_description": "Investigate a testable mechanism.",
+            "dataset_context": "A documented test dataset.",
+            "project_model": model_id,
+        })
+        assert response.status_code == 400
+        assert response.get_json()["code"] == "unsupported_project_model"
+    assert not (tmp_path / "v2_projects.json").exists()
 
 
 # --- (8,9) optional fields ---------------------------------------------------
@@ -161,7 +291,7 @@ def test_multiple_files_saved(monkeypatch, tmp_path):
     ]
     resp = _create(client, files=files)
     pid = resp.get_json()["project_id"]
-    data = tmp_path / pid / "code" / "data"
+    data = _project_root(pid) / "code" / "data"
     assert (data / "sample_metadata.csv").exists()
     assert (data / "differential_expression_d3.tsv").exists()
 
@@ -171,7 +301,7 @@ def test_path_traversal_filename_contained(monkeypatch, tmp_path):
     files = [(io.BytesIO(b"evil"), "../../../etc/pwn.txt")]
     resp = _create(client, files=files)
     pid = resp.get_json()["project_id"]
-    data = tmp_path / pid / "code" / "data"
+    data = _project_root(pid) / "code" / "data"
     # sanitized to a basename inside the hardcoded dataset dir; nothing escapes the root
     assert (data / "pwn.txt").exists()
     assert not (tmp_path / "etc" / "pwn.txt").exists()
@@ -189,7 +319,7 @@ def test_duplicate_upload_names_are_stored_once(monkeypatch, tmp_path):
     ]
     resp = _create(client, files=files)
     pid = resp.get_json()["project_id"]
-    data = tmp_path / pid / "code" / "data"
+    data = _project_root(pid) / "code" / "data"
     assert (data / "data.csv").exists()
     assert (data / "data.csv").read_text() == "first"
     assert not (data / "data_1.csv").exists()
@@ -214,7 +344,7 @@ def test_repeated_file_endpoint_upload_keeps_existing_file(monkeypatch, tmp_path
     assert first.get_json()["already_exists"] is False
     assert repeated.status_code == 200
     assert repeated.get_json()["already_exists"] is True
-    data = tmp_path / pid / "code" / "data" / "ProcessedData"
+    data = _project_root(pid) / "code" / "data" / "ProcessedData"
     assert (data / "counts.csv").read_bytes() == b"first"
     assert list(data.iterdir()) == [data / "counts.csv"]
 
@@ -232,7 +362,7 @@ def test_single_file_upload_preserves_folder_relative_path(monkeypatch, tmp_path
     body = resp.get_json()
     assert body["success"] is True
     assert body["file"]["name"] == "ProcessedData/tran2019/counts.csv"
-    data = tmp_path / pid / "code" / "data"
+    data = _project_root(pid) / "code" / "data"
     assert (data / "ProcessedData" / "tran2019" / "counts.csv").read_text() == "gene,count\nA,1\n"
 
     detail = client.get(f"/api/projects/{pid}").get_json()["project"]
@@ -273,20 +403,25 @@ def test_single_file_upload_rejects_relative_path_traversal(monkeypatch, tmp_pat
     }, content_type="multipart/form-data")
 
     assert resp.status_code == 400
-    assert not (tmp_path / pid / "code" / "data" / "evil.txt").exists()
-    assert not (tmp_path / pid / "code" / "evil.txt").exists()
+    assert not (_project_root(pid) / "code" / "data" / "evil.txt").exists()
+    assert not (_project_root(pid) / "code" / "evil.txt").exists()
 
 
 # --- (15) distinct dirs for same name ---------------------------------------
 
-def test_same_name_creates_distinct_projects(monkeypatch, tmp_path):
+def test_normalized_duplicate_name_is_rejected_without_creating_a_second_project(monkeypatch, tmp_path):
     client = _client(monkeypatch, tmp_path)
-    p1 = _create(client, name="Repeat Project", context="c1").get_json()["project_id"]
-    p2 = _create(client, name="Repeat Project", context="c2").get_json()["project_id"]
-    assert p1 != p2
-    assert (tmp_path / p1).exists() and (tmp_path / p2).exists()
-    ids = {p["id"] for p in _list(client)}
-    assert p1 in ids and p2 in ids
+    first = _create(client, name="Repeat Project", context="c1")
+    duplicate = _create(client, name="  repeat   project  ", context="c2")
+
+    assert first.status_code == 200
+    assert duplicate.status_code == 409
+    assert duplicate.get_json() == {
+        "success": False,
+        "code": "duplicate_project_name",
+        "error": "A project named “repeat   project” already exists. Choose a different project name.",
+    }
+    assert len(_list(client)) == 1
 
 
 # --- (16) failed creation leaves no half-project ----------------------------
@@ -314,8 +449,8 @@ def test_delete_project_removes_registry_entry_and_project_root(monkeypatch, tmp
     client = _client(monkeypatch, tmp_path)
     delete_id = _create(client, name="Delete Me").get_json()["project_id"]
     keep_id = _create(client, name="Keep Me").get_json()["project_id"]
-    delete_root = tmp_path / delete_id
-    keep_root = tmp_path / keep_id
+    delete_root = _project_root(delete_id)
+    keep_root = _project_root(keep_id)
     assert delete_root.exists() and keep_root.exists()
 
     resp = client.delete(f"/api/projects/{delete_id}")
@@ -325,7 +460,7 @@ def test_delete_project_removes_registry_entry_and_project_root(monkeypatch, tmp
     assert body["success"] is True
     assert body["destination"] == "/projects"
     assert not delete_root.exists()
-    assert (tmp_path / ".test-trash" / delete_id / "code" / "data" / "README.md").is_file()
+    assert (tmp_path / ".test-trash" / delete_root.name / "code" / "data" / "README.md").is_file()
     assert keep_root.exists()
     remaining = {p["id"] for p in json.loads((tmp_path / "v2_projects.json").read_text())["projects"]}
     assert delete_id not in remaining
@@ -357,7 +492,7 @@ def test_delete_unknown_project_returns_404(monkeypatch, tmp_path):
 # --- (5,6,7) status / rounds / updated --------------------------------------
 
 def _round0(tmp_path, pid):
-    return tmp_path / pid / "checkpoint" / "checkpoints" / "round_0"
+    return _project_root(pid) / "checkpoint" / "checkpoints" / "round_0"
 
 
 def test_new_project_status_not_started(monkeypatch, tmp_path):
@@ -486,7 +621,7 @@ def test_project_objective_endpoint_persists_canonical_task_description(monkeypa
 
     record = next(p for p in json.loads((tmp_path / "v2_projects.json").read_text())["projects"] if p["id"] == pid)
     assert record["task_description"] == objective
-    cfg = json.loads((tmp_path / pid / "checkpoint" / "checkpoints" / "round_0" / "config.json").read_text())["config"]
+    cfg = json.loads((_project_root(pid) / "checkpoint" / "checkpoints" / "round_0" / "config.json").read_text())["config"]
     assert cfg["task_description"] == objective
 
 

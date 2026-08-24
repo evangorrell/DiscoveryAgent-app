@@ -19,9 +19,11 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
+from .query_artifacts import artifact_filename, query_directory
+
 PathLike = Union[str, Path]
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 ALLOWED_STATUSES = {"running", "completed", "failed"}
 ALLOWED_STEPS = {
@@ -49,11 +51,11 @@ def _now_iso() -> str:
 
 
 def _query_name(query_num: int) -> str:
-    return f"query_{query_num:03d}"
+    return f"query_{query_num:02d}"
 
 
 def _query_dir(round_dir: PathLike, query_num: int) -> Path:
-    return Path(round_dir) / _query_name(query_num)
+    return query_directory(round_dir, query_num)
 
 
 def _status_path(round_dir: PathLike, query_num: int) -> Path:
@@ -97,7 +99,7 @@ def _load_existing(path: Path) -> Optional[Dict[str, Any]]:
 def _detect_artifacts(round_dir: PathLike, query_num: int) -> List[str]:
     """Best-effort, deterministic listing of files already present in query_NNN/.
 
-    Lists query_NNN.md and checkpoint.json first (if present), then any other
+    Lists canonical query artifacts and checkpoint.json first (if present), then any other
     files already in the directory, excluding query_status.json itself.
     """
     try:
@@ -105,7 +107,12 @@ def _detect_artifacts(round_dir: PathLike, query_num: int) -> List[str]:
         if not qdir.exists():
             return []
         names: List[str] = []
-        for candidate in (f"{_query_name(query_num)}.md", "checkpoint.json"):
+        for candidate in (
+            artifact_filename(query_num, "input"),
+            artifact_filename(query_num, "report"),
+            f"{qdir.name}.md",
+            "checkpoint.json",
+        ):
             if (qdir / candidate).exists():
                 names.append(candidate)
         for entry in sorted(qdir.iterdir()):
@@ -158,10 +165,12 @@ def _write_status(round_dir: PathLike, query_num: int, **updates: Any) -> None:
     record: Dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "query_num": query_num,
-        "query_name": _query_name(query_num),
+        "query_name": _query_dir(round_dir, query_num).name,
         "status": existing.get("status", "running"),
         "current_step": existing.get("current_step", "planning"),
         "objective": existing.get("objective", DEFAULT_OBJECTIVE),
+        "query_input": existing.get("query_input"),
+        "agent_tag": existing.get("agent_tag"),
         "summary": existing.get("summary", RUNNING_SUMMARY),
         "started_at": existing.get("started_at"),
         "updated_at": None,
@@ -186,26 +195,37 @@ def _write_status(round_dir: PathLike, query_num: int, **updates: Any) -> None:
     _atomic_write_json(path, record)
 
 
-def write_query_started(round_dir: PathLike, query_num: int, objective: Optional[str] = None) -> None:
+def write_query_started(
+    round_dir: PathLike,
+    query_num: int,
+    objective: Optional[str] = None,
+    agent_tag: Optional[str] = None,
+) -> None:
     """Create/update query_status.json marking a query as started (status=running).
 
     `objective` should be the actual query/task text being pursued (e.g. the parsed
     instruction sent to a helper agent for this query), not dataset README/context
-    boilerplate. Falls back to DEFAULT_OBJECTIVE if not yet available.
+    boilerplate. Schema 2 retains that exact instruction separately as
+    `query_input`; the concise objective remains bounded for existing status UI.
+    Falls back to DEFAULT_OBJECTIVE if not yet available.
     """
     try:
-        objective_value = _truncate(objective, _MAX_OBJECTIVE_CHARS) or DEFAULT_OBJECTIVE
+        query_input = str(objective).strip() if objective is not None else None
+        query_input = query_input or None
+        objective_value = _truncate(query_input, _MAX_OBJECTIVE_CHARS) or DEFAULT_OBJECTIVE
         _write_status(
             round_dir,
             query_num,
             status="running",
             current_step="planning",
             objective=objective_value,
+            query_input=query_input,
+            agent_tag=str(agent_tag).strip() if agent_tag else None,
             summary=RUNNING_SUMMARY,
             completed_at=None,
             error=None,
         )
-        _append_round_event(round_dir, "query_started", query_name=_query_name(query_num))
+        _append_round_event(round_dir, "query_started", query_name=_query_dir(round_dir, query_num).name)
     except Exception:
         pass
 
@@ -227,7 +247,7 @@ def write_query_step(
         if artifacts_written is not None:
             updates["artifacts_written"] = list(artifacts_written)
         _write_status(round_dir, query_num, **updates)
-        _append_round_event(round_dir, "query_step", message=step, query_name=_query_name(query_num))
+        _append_round_event(round_dir, "query_step", message=step, query_name=_query_dir(round_dir, query_num).name)
     except Exception:
         pass
 
@@ -260,7 +280,7 @@ def write_query_completed(
             artifacts_written=detected_artifacts,
             error=None,
         )
-        _append_round_event(round_dir, "query_completed", query_name=_query_name(query_num))
+        _append_round_event(round_dir, "query_completed", query_name=_query_dir(round_dir, query_num).name)
     except Exception:
         pass
 
@@ -281,6 +301,11 @@ def write_query_failed(round_dir: PathLike, query_num: int, error: str) -> None:
             completed_at=_now_iso(),
             error=_truncate(str(error), _MAX_ERROR_CHARS),
         )
-        _append_round_event(round_dir, "query_failed", message=str(error), query_name=_query_name(query_num))
+        _append_round_event(
+            round_dir,
+            "query_failed",
+            message=str(error),
+            query_name=_query_dir(round_dir, query_num).name,
+        )
     except Exception:
         pass

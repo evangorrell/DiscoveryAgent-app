@@ -56,6 +56,14 @@ from typing import Optional, List, Dict, Any
 from termcolor import colored
 from .utils.logger import Logger
 from .utils import progress_recorder
+from .utils.query_artifacts import (
+    artifact_filename,
+    persist_query_input,
+    persist_query_report,
+    query_directory,
+    read_query_artifact,
+)
+from .utils.llm_diagnostics import REFUSAL_ADVICE, first_refusal
 from .config import LLMConfig, ExecutionAgentConfig, HypothesisGenerationConfig, get_default_execution_config, get_default_hypothesis_config
 from .context_managers import NotebookManager, NotebookManagerXML, strip_code_markers
 from .tool_agents.execution_agent_cc import ExecutionAgentCC
@@ -867,6 +875,71 @@ class DirectorWorkflow:
         except Exception:
             return None
 
+    def _partial_query_agent_tag(self, round_dir: Path, query_num: int) -> Optional[str]:
+        """Recover the helper identity without trusting arbitrary persisted paths."""
+        query_dir = query_directory(round_dir, query_num)
+        status_path = query_dir / "query_status.json"
+        try:
+            if (
+                status_path.is_file()
+                and not status_path.is_symlink()
+                and status_path.stat().st_size <= 1024 * 1024
+            ):
+                status = json.loads(status_path.read_text(encoding="utf-8"))
+                tag = status.get("agent_tag") if isinstance(status, dict) else None
+                if isinstance(tag, str) and tag in self.agents:
+                    return tag
+        except (OSError, ValueError, TypeError):
+            pass
+
+        # Schema-2 status records created before agent_tag was added can still
+        # be identified as ExecutionAgent work by their canonical public log.
+        execution_log = query_dir / artifact_filename(query_num, "execution_log")
+        try:
+            has_execution_log = (
+                execution_log.is_file()
+                and not execution_log.is_symlink()
+                and execution_log.stat().st_size > 0
+            )
+        except OSError:
+            has_execution_log = False
+        if has_execution_log:
+            execution_tags = [
+                tag for tag, agent in self.agents.items()
+                if isinstance(agent, ExecutionAgentCC)
+            ]
+            if len(execution_tags) == 1:
+                return execution_tags[0]
+        return None
+
+    def _load_partial_query_for_resume(self, query_num: int) -> Optional[Dict[str, Any]]:
+        """Return a safe, persisted unfinished-query handoff for exact retry.
+
+        A completed checkpoint remains the sole authority for advancing the
+        query number. This helper only handles artifacts for that next number:
+        it reuses a valid report for local checkpoint handoff, or retries the
+        exact saved input. It never asks the Director to invent a replacement.
+        """
+        round_dir = self._progress_round_dir(query_num)
+        if round_dir is None:
+            return None
+        query_input = read_query_artifact(round_dir, query_num, "input")
+        if query_input is None:
+            return None
+        query_report = read_query_artifact(round_dir, query_num, "report")
+        tag = self._partial_query_agent_tag(round_dir, query_num)
+        if query_report is None and tag is None:
+            raise RuntimeError(
+                f"query {query_num} has persisted input but its helper identity cannot be recovered"
+            )
+        query_raw = f"<{tag}>{query_input}</{tag}>" if tag else query_input
+        return {
+            "query_raw": query_raw,
+            "query_parsed": query_input,
+            "report": query_report,
+            "agent_tag": tag,
+        }
+
     def execute_agent(self, hypothesis_agent_out: str) -> str:
         """
         Execute the agent based on the tool call output from the hypothesis agent.
@@ -884,9 +957,17 @@ class DirectorWorkflow:
             raise ValueError(f"Agent with tag '{tag}' not found in self.agents")
 
         current_query_num_for_progress = getattr(self, "query_num", None)
+        progress_round_dir = None
         if current_query_num_for_progress is not None:
             progress_round_dir = self._progress_round_dir(current_query_num_for_progress)
-            progress_recorder.write_query_started(progress_round_dir, current_query_num_for_progress, objective=query)
+            if progress_round_dir is not None:
+                persist_query_input(progress_round_dir, current_query_num_for_progress, query)
+            progress_recorder.write_query_started(
+                progress_round_dir,
+                current_query_num_for_progress,
+                objective=query,
+                agent_tag=tag,
+            )
             progress_step = "running_literature_check" if tag == DEEP_RESEARCH_TAG else "executing_code"
             progress_recorder.write_query_step(progress_round_dir, current_query_num_for_progress, progress_step)
 
@@ -939,6 +1020,8 @@ class DirectorWorkflow:
             if checkpoint_query_dir:
                 kwargs['checkpoint_query_dir'] = checkpoint_query_dir
             agent_output = agent.execute(query, **kwargs)
+            if progress_round_dir is not None:
+                persist_query_report(progress_round_dir, current_query_num_for_progress, agent_output)
             self.logger.log_action(
                 "helper_agent_completed",
                 (
@@ -960,6 +1043,9 @@ class DirectorWorkflow:
         except Exception:
             # Fallback to calling without searches_dir
             agent_output = agent.execute(query)
+
+        if progress_round_dir is not None:
+            persist_query_report(progress_round_dir, current_query_num_for_progress, agent_output)
 
         self.logger.log_action(
             "helper_agent_completed",
@@ -1141,18 +1227,42 @@ class DirectorWorkflow:
             if feedback is not None:
                 self.logger.log_action("feedback_provided", f"Providing feedback to director agent for query {query_num}: {len(feedback)} characters")
 
-            query = self.director_agent.generate_query(
-                dataset_description=self.dataset_description,
-                report=self.report,
-                query_count=query_num,
-                total_queries=self.max_queries,
-                feedback=feedback,
-                after_hypothesis_step=False,  # No mid-workflow hypothesis generation in Director mode
-                background_report=self.background_report,
-                target_hypothesis=hypothesis_output,  # Passed on every call; director handles first-time injection
-                human_selection_mode=self.hypothesis_config.human_selection_mode,
-                exploratory_mode=exploratory_mode,  # Tells director to explore data without hypothesis
-            )
+            try:
+                partial_query = (
+                    self._load_partial_query_for_resume(query_num)
+                    if mid_round_resuming and query_num == start_query and attempt_count == 1
+                    else None
+                )
+            except Exception as recovery_exc:
+                progress_recorder.write_query_failed(
+                    self._progress_round_dir(query_num), query_num, error=str(recovery_exc)
+                )
+                raise
+            if partial_query is not None:
+                query = partial_query["query_raw"]
+                recovery_kind = (
+                    "persisted_report_handoff"
+                    if partial_query["report"] is not None
+                    else "persisted_input_retry"
+                )
+                self.logger.log_action(
+                    "partial_query_recovered",
+                    f"query={query_num}\nrecovery={recovery_kind}",
+                )
+                print(f"🔄 Recovering query {query_num} from its persisted {recovery_kind}")
+            else:
+                query = self.director_agent.generate_query(
+                    dataset_description=self.dataset_description,
+                    report=self.report,
+                    query_count=query_num,
+                    total_queries=self.max_queries,
+                    feedback=feedback,
+                    after_hypothesis_step=False,  # No mid-workflow hypothesis generation in Director mode
+                    background_report=self.background_report,
+                    target_hypothesis=hypothesis_output,  # Passed on every call; director handles first-time injection
+                    human_selection_mode=self.hypothesis_config.human_selection_mode,
+                    exploratory_mode=exploratory_mode,  # Tells director to explore data without hypothesis
+                )
 
             if feedback is not None:
                 feedback = None # Reset so it's not added next time
@@ -1161,6 +1271,11 @@ class DirectorWorkflow:
             if query is None:
                 print(f"🛑 No query generated by hypothesis agent - ending iterations at query {query_num}")
                 self.logger.log_action("query_generation", "No query generated - ending iterations")
+                progress_recorder.write_round_event(
+                    self._progress_round_dir(query_num),
+                    "early_stopping",
+                    message=f"Query {query_num}: director returned no query",
+                )
                 break  # Exit while loop
 
             # Director can opt to stop early by emitting the sentinel
@@ -1170,7 +1285,8 @@ class DirectorWorkflow:
                 director_requested_stop = True
                 break  # Exit query loop early
             
-            self.logger.log_response(f"Generated query: {query}", "hypothesis_agent")
+            if partial_query is None:
+                self.logger.log_response(f"Generated query: {query}", "hypothesis_agent")
             
             # Check query for "<STOP>" pattern
             
@@ -1178,7 +1294,13 @@ class DirectorWorkflow:
             self.logger.log_action("execute_query", f"Executing query {query_num} with CodeAct framework")
             # Accept XML-style tool call appearing anywhere in the response
             xml_match = re.search(r'<(\w+)>([\s\S]*?)</\1>', query, re.DOTALL)
-            if xml_match:
+            if partial_query is not None and partial_query["report"] is not None:
+                # The helper result was durably written before the prior process
+                # exited. Replay only the local Director/checkpoint handoff.
+                agent_output = partial_query["report"]
+                parsed_query = partial_query["query_parsed"]
+                tool_invocation_retry_count = 0
+            elif xml_match:
                 # Use the general agent execution logic
                 try:
                     agent_output, parsed_query = self.execute_agent(query)
@@ -1190,16 +1312,59 @@ class DirectorWorkflow:
                 # Reset retry counter on success
                 tool_invocation_retry_count = 0
             else:
+                # An API refusal, an empty completion, and a genuinely malformed
+                # one all land here looking identical. Only the agent knows which.
+                refusal = first_refusal(self.director_agent)
+                self.logger.log_error(
+                    f"Query {query_num}: "
+                    f"{refusal or 'no XML tool invocation found in director output.'}\n"
+                    f"raw_output_chars={len(query)}\n"
+                    f"raw_output={query[:1000]!r}"
+                )
+                if refusal:
+                    progress_recorder.write_round_event(
+                        self._progress_round_dir(query_num),
+                        "model_refusal",
+                        message=f"Query {query_num}: {refusal}",
+                    )
+                    print(f"⚠️ {refusal}")
                 # If multiturn, prompt the hypothesis agent to try again and restart loop
                 if self.multiturn_hypothesis:
                     tool_invocation_retry_count += 1
 
                     if tool_invocation_retry_count > self.max_tool_invocation_retries:
-                        error_msg = f"Max tool invocation retries ({self.max_tool_invocation_retries}) exceeded. Gracefully exiting query loop (early stopping)."
+                        error_msg = (
+                            f"Refused by the API on {self.max_tool_invocation_retries} "
+                            f"consecutive attempts. Gracefully exiting query loop (early "
+                            f"stopping). {REFUSAL_ADVICE}"
+                        ) if refusal else (
+                            f"Max tool invocation retries ({self.max_tool_invocation_retries}) exceeded. Gracefully exiting query loop (early stopping)."
+                        )
                         self.logger.log_error(error_msg)
                         self.logger.log_action("early_stopping", f"Query {query_num}: Max tool invocation retries exceeded - proceeding to summary generation")
+                        # Surface the abort in round_activity.jsonl — otherwise the round
+                        # reports "completed" with no record of why nothing ran.
+                        progress_recorder.write_round_event(
+                            self._progress_round_dir(query_num),
+                            "early_stopping",
+                            message=f"Query {query_num}: {error_msg}",
+                        )
                         print(f"⚠️ Max tool invocation retries exceeded - ending iterations early at query {query_num}")
                         break  # Exit while loop
+
+                    if refusal:
+                        # Nothing was malformed, so asking for a shorter query is
+                        # noise. Refusals are non-deterministic; just ask again.
+                        self.logger.log_error(
+                            f"Retrying after refusal (attempt {tool_invocation_retry_count}/"
+                            f"{self.max_tool_invocation_retries}). {REFUSAL_ADVICE}"
+                        )
+                        self.logger.log_action(
+                            "model_refusal",
+                            f"Query {query_num}: declined by the API. Retry attempt {tool_invocation_retry_count}",
+                        )
+                        feedback = None
+                        continue
 
                     self.logger.log_error(f"Tool invocation did not match expected format (attempt {tool_invocation_retry_count}/{self.max_tool_invocation_retries}). Asking hypothesis agent to try again with shorter query.")
                     self.logger.log_action("tool_invocation_error", f"Query {query_num}: Tool invocation did not match expected format. Retry attempt {tool_invocation_retry_count}")
@@ -1319,9 +1484,21 @@ Make sure your query is complete and the closing XML tag is present. Keep your i
                     report_path = self._save_final_report(report=structured_report)
                     final_report_content = structured_report  # Use structured report for return
                 else:
-                    self.logger.log_error("final_report_generation_failed", 
-                        "No structured report generated, falling back to cumulative report")
-                    print(f"⚠️ Warning: Final report generation returned no output, using cumulative report")
+                    refusal = first_refusal(self.director_agent)
+                    self.logger.log_error(
+                        "final_report_generation_failed",
+                        f"{refusal or 'No structured report generated'}, falling back to cumulative report",
+                    )
+                    if refusal:
+                        progress_recorder.write_round_event(
+                            self._progress_round_dir(getattr(self, "query_num", 1)),
+                            "model_refusal",
+                            message=f"Final report: {refusal}",
+                        )
+                    print(
+                        f"⚠️ Warning: {refusal or 'Final report generation returned no output'}, "
+                        "using cumulative report"
+                    )
                     report_path = self._save_final_report()
                     final_report_content = self.cumulative_report  # Fallback to cumulative
             except Exception as e:
@@ -1761,7 +1938,7 @@ Generated on: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
         else:
             try:
                 query_num = int(checkpoint_path_or_query)
-                checkpoint_file = Path(log_dir) / "checkpoints" / f"query_{query_num:03d}" / "checkpoint.json"
+                checkpoint_file = query_directory(Path(log_dir) / "checkpoints", query_num) / "checkpoint.json"
             except ValueError:
                 raise ValueError(f"Invalid checkpoint path or query number: {checkpoint_path_or_query}")
         
@@ -1821,7 +1998,7 @@ Generated on: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
                 query_num = int(checkpoint_path_or_query)
                 # Need to find the log directory - use current directory as fallback
                 log_dir = override_kwargs.get('log_dir', 'logs')
-                checkpoint_file = Path(log_dir) / "checkpoints" / f"query_{query_num:03d}" / "checkpoint.json"
+                checkpoint_file = query_directory(Path(log_dir) / "checkpoints", query_num) / "checkpoint.json"
             except ValueError:
                 raise ValueError(f"Invalid checkpoint path or query number: {checkpoint_path_or_query}")
         

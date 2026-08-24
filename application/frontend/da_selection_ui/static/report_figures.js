@@ -118,9 +118,11 @@
         return html;
     }
 
-    function attachEmbeddedFigureResizer(shell, stage) {
+    function attachFigureResizer(shell, stage, options = {}) {
+        if (!shell || !stage) return null;
         const handle = node('button', 'rw-figure-resize-handle');
         handle.type = 'button';
+        handle.draggable = false;
         handle.setAttribute('role', 'slider');
         handle.setAttribute('aria-label', 'Resize figure');
         handle.title = 'Drag to resize figure';
@@ -133,15 +135,18 @@
         handle.append(icon);
         stage.append(handle);
 
+        const horizontalGutter = Math.max(0, Number(options.horizontalGutter) || 0);
         const limits = () => {
             const parent = shell.parentElement;
-            const max = Math.max(
-                1,
-                parent ? parent.getBoundingClientRect().width : shell.getBoundingClientRect().width,
-            );
+            const available = parent
+                ? parent.getBoundingClientRect().width
+                : shell.getBoundingClientRect().width;
+            const max = Math.max(1, available - horizontalGutter);
             return { min: Math.min(240, max), max };
         };
+        let destroyed = false;
         const applyWidth = (requested) => {
+            if (destroyed) return;
             const range = limits();
             const width = Math.max(range.min, Math.min(range.max, requested));
             shell.style.width = width >= range.max - 1 ? '100%' : Math.round(width) + 'px';
@@ -154,9 +159,10 @@
             );
         };
         let drag = null;
-        handle.addEventListener('pointerdown', (event) => {
+        const onPointerDown = (event) => {
             if (event.pointerType === 'mouse' && event.button !== 0) return;
             event.preventDefault();
+            event.stopPropagation();
             const rect = shell.getBoundingClientRect();
             drag = {
                 pointerId: event.pointerId,
@@ -166,24 +172,22 @@
             };
             shell.classList.add('is-resizing');
             if (handle.setPointerCapture) handle.setPointerCapture(event.pointerId);
-        });
-        handle.addEventListener('pointermove', (event) => {
+        };
+        const onPointerMove = (event) => {
             if (!drag || event.pointerId !== drag.pointerId) return;
             event.preventDefault();
+            event.stopPropagation();
             const diagonalDelta = (
                 (event.clientX - drag.startX) + (event.clientY - drag.startY)
             ) / 2;
             applyWidth(drag.startWidth + diagonalDelta);
-        });
+        };
         const finishResize = (event) => {
             if (!drag || event.pointerId !== drag.pointerId) return;
             drag = null;
             shell.classList.remove('is-resizing');
         };
-        handle.addEventListener('pointerup', finishResize);
-        handle.addEventListener('pointercancel', finishResize);
-        handle.addEventListener('lostpointercapture', finishResize);
-        handle.addEventListener('keydown', (event) => {
+        const onKeyDown = (event) => {
             const range = limits();
             const current = shell.getBoundingClientRect().width;
             let next = null;
@@ -193,14 +197,73 @@
             if (event.key === 'End') next = range.max;
             if (next === null) return;
             event.preventDefault();
+            event.stopPropagation();
             applyWidth(next);
-        });
-        requestAnimationFrame(() => {
-            if (shell.getBoundingClientRect().width) {
-                applyWidth(shell.getBoundingClientRect().width);
-            }
-        });
+        };
+        const stopClick = (event) => event.stopPropagation();
+        const stopNativeDrag = (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+        };
+        handle.addEventListener('pointerdown', onPointerDown);
+        handle.addEventListener('pointermove', onPointerMove);
+        handle.addEventListener('pointerup', finishResize);
+        handle.addEventListener('pointercancel', finishResize);
+        handle.addEventListener('lostpointercapture', finishResize);
+        handle.addEventListener('keydown', onKeyDown);
+        handle.addEventListener('click', stopClick);
+        handle.addEventListener('dragstart', stopNativeDrag);
+
+        const animationFrame = typeof root.requestAnimationFrame === 'function'
+            ? root.requestAnimationFrame(() => {
+                if (shell.getBoundingClientRect().width) {
+                    applyWidth(shell.getBoundingClientRect().width);
+                }
+            })
+            : null;
+        if (animationFrame === null && shell.getBoundingClientRect().width) {
+            applyWidth(shell.getBoundingClientRect().width);
+        }
+
+        return {
+            handle,
+            limits,
+            resize: applyWidth,
+            destroy() {
+                if (destroyed) return;
+                destroyed = true;
+                if (
+                    animationFrame !== null
+                    && typeof root.cancelAnimationFrame === 'function'
+                ) {
+                    root.cancelAnimationFrame(animationFrame);
+                }
+                if (
+                    drag
+                    && handle.hasPointerCapture
+                    && handle.hasPointerCapture(drag.pointerId)
+                    && handle.releasePointerCapture
+                ) {
+                    try { handle.releasePointerCapture(drag.pointerId); } catch (_error) {}
+                }
+                drag = null;
+                shell.classList.remove('is-resizing');
+                handle.removeEventListener('pointerdown', onPointerDown);
+                handle.removeEventListener('pointermove', onPointerMove);
+                handle.removeEventListener('pointerup', finishResize);
+                handle.removeEventListener('pointercancel', finishResize);
+                handle.removeEventListener('lostpointercapture', finishResize);
+                handle.removeEventListener('keydown', onKeyDown);
+                handle.removeEventListener('click', stopClick);
+                handle.removeEventListener('dragstart', stopNativeDrag);
+            },
+        };
     }
+
+    function attachEmbeddedFigureResizer(shell, stage) {
+        return attachFigureResizer(shell, stage);
+    }
+
 
     function collapseEmbeddedFigures(element) {
         const candidates = Array.from(element.querySelectorAll('figure, img')).filter(
@@ -245,6 +308,40 @@
         });
     }
 
+    function attachAuditFigureDragging(element, figures, options) {
+        const drag = options && options.auditFigureDrag;
+        if (!drag || typeof drag.start !== 'function') return;
+        const rendered = Array.from(element.querySelectorAll('details.rw-embedded-figure'));
+        rendered.forEach((details, index) => {
+            const figure = Array.isArray(figures) ? figures[index] : null;
+            if (!figure || !figure.available || !figure.artifact) return;
+            const stage = details.querySelector('.rw-figure-image-stage');
+            if (!stage) return;
+            const caption = details.querySelector('figcaption');
+            const image = stage.querySelector('img');
+            details.classList.add('is-audit-artifact-draggable');
+            const start = (event) => {
+                if (!event.dataTransfer || drag.start(event, figure.artifact) === false) {
+                    event.preventDefault();
+                    return;
+                }
+                event.stopPropagation();
+            };
+            const end = () => {
+                if (typeof drag.end === 'function') drag.end();
+            };
+            [image, stage, caption].filter(Boolean).forEach((source) => {
+                source.draggable = true;
+                source.addEventListener('dragstart', start);
+                source.addEventListener('dragend', end);
+            });
+            details.querySelectorAll('summary,button,a,.rw-figure-resize-handle').forEach((control) => {
+                control.draggable = false;
+                control.addEventListener('dragstart', (event) => event.preventDefault());
+            });
+        });
+    }
+
     function renderMarkdown(element, text) {
         if (!root.marked) {
             element.innerHTML = renderFallbackMarkdown(text);
@@ -255,7 +352,7 @@
         collapseEmbeddedFigures(element);
     }
 
-    function renderReportMarkdown(element, text, figures) {
+    function renderReportMarkdown(element, text, figures, options = {}) {
         if (!root.marked) {
             element.innerHTML = renderFallbackMarkdown(text);
             return;
@@ -287,10 +384,13 @@
         const html = root.marked.parse(text || '', { gfm: true, breaks: true, renderer });
         element.innerHTML = root.DOMPurify ? root.DOMPurify.sanitize(html) : html;
         collapseEmbeddedFigures(element);
+        attachAuditFigureDragging(element, figures, options);
     }
 
     root.DiscoveryReportFigures = {
+        attachFigureResizer,
         attachEmbeddedFigureResizer,
+        attachAuditFigureDragging,
         collapseEmbeddedFigures,
         renderFallbackMarkdown,
         renderMarkdown,

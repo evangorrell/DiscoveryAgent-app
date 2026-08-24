@@ -19,6 +19,7 @@ from .config import HypothesisGenerationConfig
 from .memory.results_memory import ResultsMemoryManager
 from .utils.data_directory_manager import DataDirectoryManager
 from .utils import progress_recorder
+from .utils.report_summaries import persist_report_summaries
 
 
 @dataclass
@@ -207,6 +208,91 @@ class HypothesisBrancher:
         
         print("⚠️ Warning: Could not determine data directory for expanding dataset mode")
         return None
+
+    def _summary_readme_context(self) -> Optional[str]:
+        """Read only the dataset README used by the established V1 prompts."""
+        working_directory = self.run_config.get("working_directory")
+        if not working_directory and self.workflow_config.agent_config_list:
+            working_directory = next((
+                getattr(config, "working_directory", None)
+                for config in self.workflow_config.agent_config_list
+                if getattr(config, "working_directory", None)
+            ), None)
+        if not working_directory:
+            return None
+        readme_path = Path(working_directory) / "data" / "README.txt"
+        try:
+            if readme_path.is_symlink() or not readme_path.is_file():
+                return None
+            content = readme_path.read_text(encoding="utf-8")
+            return content if content.strip() else None
+        except (OSError, UnicodeError):
+            return None
+
+    def _persist_completed_report_summaries(
+        self,
+        workflow,
+        round_idx: int,
+        round_report_path: str,
+        memory_report_path: str,
+    ) -> None:
+        """Best-effort summary generation after both full reports are durable."""
+        summary_config = getattr(workflow, "report_summarization_llm_config", None)
+        if summary_config is None:
+            summary_config = self.workflow_config.report_summarization_llm_config
+        if summary_config is None:  # Preserve the explicit omit-report-summarization option.
+            return
+        round_path = Path(round_report_path) if round_report_path else None
+        memory_path = Path(memory_report_path) if memory_report_path else None
+        if (
+            round_path is None
+            or memory_path is None
+            or round_path.parent != memory_path.parent
+            or round_path.name != "round_report.md"
+            or memory_path.name != "memory_report.md"
+            or not round_path.is_file()
+            or not memory_path.is_file()
+        ):
+            return
+        try:
+            outcomes = persist_report_summaries(
+                round_path.parent,
+                round_idx,
+                model_name=summary_config.model_name,
+                readme=self._summary_readme_context(),
+            )
+        except Exception as exc:
+            diagnostic = (
+                "report summary failed: report=paired "
+                f"category=local_error exception={type(exc).__name__}"
+            )
+            outcomes = ()
+            if hasattr(workflow, "logger"):
+                workflow.logger.log_error(diagnostic)
+            progress_recorder.write_round_event(round_path.parent, "report_summary_failed", diagnostic)
+            print(f"⚠️ Warning: {diagnostic}")
+        for outcome in outcomes:
+            if outcome.status == "created":
+                if hasattr(workflow, "logger"):
+                    workflow.logger.log_action(
+                        "report_summary_saved",
+                        f"{outcome.report_kind} summary saved to {outcome.path}",
+                    )
+                progress_recorder.write_round_event(
+                    round_path.parent,
+                    "report_summary_saved",
+                    f"{outcome.report_kind} report summary saved",
+                )
+            elif outcome.status == "failed":
+                diagnostic = outcome.diagnostic or (
+                    f"report summary failed: report={outcome.report_kind} category=unknown"
+                )
+                if hasattr(workflow, "logger"):
+                    workflow.logger.log_error(diagnostic)
+                progress_recorder.write_round_event(
+                    round_path.parent, "report_summary_failed", diagnostic,
+                )
+                print(f"⚠️ Warning: {diagnostic}")
 
     def refresh_dataset_description(self) -> str:
         """
@@ -843,6 +929,8 @@ class HypothesisBrancher:
                             print(f"⚠️ Warning: Report path {report_path} does not exist")
 
                     # Save the current round's report before memory integration
+                    round_report_path = ""
+                    memory_report_path = ""
                     if round_dir is not None:
                         progress_recorder.write_round_event(round_dir, "round_report_started")
                     if final_report and hasattr(workflow, 'checkpoint_manager'):
@@ -903,6 +991,16 @@ class HypothesisBrancher:
                                 print(f"   ⚠️ Warning: Error saving memory report checkpoint: {str(e)}")
                         else:
                             print(f"   ⚠️ Results memory update may have failed")
+
+                    # The V1 summary contract is derived only after both full
+                    # report siblings were successfully persisted. Failures are
+                    # diagnostic-only and never invalidate the completed round.
+                    self._persist_completed_report_summaries(
+                        workflow,
+                        round_idx,
+                        round_report_path,
+                        memory_report_path,
+                    )
 
                     # Check if workflow paused for hypothesis selection
                     if results.get('status') == 'paused_for_selection':

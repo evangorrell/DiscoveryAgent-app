@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}DiscoveryAgent{% endblock %}</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=20260817-research-status">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=20260823-active-round-skill-import-1">
     {% block head %}{% endblock %}
 </head>
 <body class="v2{% if page_class %} {{ page_class }}{% endif %}">
@@ -12,12 +12,14 @@
       Shared V2 application shell. This is the first Jinja base template in the
       repository; only new V2 screens extend it. Navigation uses real links
       (server-rendered route changes), not hash navigation. The view passes
-      nav_active as one of: home | studio | workspace | skills | audit | settings.
+      nav_active as one of: home | studio | workspace | skills | settings.
+      Global entry pages use global_nav_active as projects | data.
     -->
     {% set nav_active = nav_active | default('') %}
     {% set bare_shell = bare_shell | default(false) %}
     {% set project_slug = project_slug | default('') %}
     {% set round_workspace_url = round_workspace_url | default(none) %}
+    {% set global_nav_active = global_nav_active | default('') %}
     <header class="v2-appbar{% if bare_shell %} v2-appbar-bare{% endif %}">
         <div class="v2-appbar-inner">
             <a class="v2-brand" href="{{ url_for('projects') }}">DiscoveryAgent</a>
@@ -41,28 +43,49 @@
                 <a class="v2-nav-link{% if nav_active == 'skills' %} is-active{% endif %}"
                    href="{{ url_for('project_skills', project_slug=project_slug) }}"
                    {% if nav_active == 'skills' %}aria-current="page"{% endif %}>Skills</a>
-                <a class="v2-nav-link{% if nav_active == 'audit' %} is-active{% endif %}"
-                   href="{{ url_for('project_audit_agent', project_slug=project_slug) }}"
-                   {% if nav_active == 'audit' %}aria-current="page"{% endif %}>Audit Agent</a>
             </nav>
             <div class="v2-appbar-actions">
-                <a class="v2-appbar-back" href="{{ url_for('projects') }}">&#8592; Back to Projects</a>
+                <a class="v2-appbar-back v2-compact-secondary" href="{{ url_for('projects') }}">&#8592; Back to Projects</a>
             </div>
             {% endif %}
         </div>
     </header>
 
-    <main class="v2-main">
+    {% if bare_shell and global_nav_active %}
+    <div class="v2-global-shell">
+        <aside class="v2-workspace-sidebar v2-global-sidebar">
+            <nav class="v2-workspace-sidebar-list v2-global-nav" aria-label="DiscoveryAgent sections">
+                <a class="v2-workspace-sidebar-item{% if global_nav_active == 'projects' %} is-active{% endif %}"
+                   href="{{ url_for('projects') }}"
+                   {% if global_nav_active == 'projects' %}aria-current="page"{% endif %}>Projects</a>
+                <a class="v2-workspace-sidebar-item{% if global_nav_active == 'data' %} is-active{% endif %}"
+                   href="{{ url_for('discoveryagent_data') }}"
+                   {% if global_nav_active == 'data' %}aria-current="page"{% endif %}>Data</a>
+            </nav>
+        </aside>
+        <main class="v2-main v2-main-global v2-global-content">
+            <div class="v2-global-content-inner">
+    {% else %}
+    <main class="v2-main{% if bare_shell %} v2-main-global{% endif %}">
+    {% endif %}
         {% block content %}{% endblock %}
+    {% if bare_shell and global_nav_active %}
+            </div>
+        </main>
+    </div>
+    {% else %}
     </main>
+    {% endif %}
 
     <script>
       window.discoveryProjectContext = {
+        projectId: {{ project_id | default(session.get('v2_active_project_id', '')) | tojson }},
         projectSlug: {{ project_slug | tojson }}
       };
     </script>
     <script src="{{ url_for('static', filename='project_context.js') }}?v=20260817-audit-new-chat-1"></script>
     <script src="{{ url_for('static', filename='v2_dialog.js') }}?v=20260808-modal-regions-1"></script>
+    <script src="{{ url_for('static', filename='data_picker.js') }}?v=20260822-selector-picker-1"></script>
     {% if project_slug and not bare_shell %}
     <script>
       window.hypothesisActivityConfig = {

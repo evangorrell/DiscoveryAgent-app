@@ -15,6 +15,7 @@ def _project_record(tmp_path, *, project_id="managed-id", slug="managed-project"
     checkpoint_dir.mkdir(parents=True)
     readme = data_dir / "README.md"
     readme.write_text("# Project", encoding="utf-8")
+    app_module.write_project_metadata(project_root, project_id, slug.replace("-", " ").title())
     return {
         "id": project_id,
         "url_slug": slug,
@@ -45,10 +46,11 @@ def test_v2_audit_has_no_round_artifacts_or_checkpoint_browser_action(
     record = _project_record(tmp_path)
     client, _registry = _managed_client(monkeypatch, tmp_path, [record])
 
-    response = client.get("/projects/managed-project/audit")
+    response = client.get("/rounds/?project=managed-project")
 
     assert response.status_code == 200
     html = response.get_data(as_text=True)
+    assert "AUDIT AGENT" in html
     assert 'id="audit-resource-round-artifacts"' not in html
     assert ">Round Artifacts<" not in html
     assert "/checkpoint_browser" not in html

@@ -17,7 +17,10 @@ from AIR.tool_agents.deep_research import DeepResearchConfig
 from AIR.tool_agents.execution_agent_cc import ExecutionAgentCCConfig
 from AIR.utils.sandbox import init_sandbox_dir
 from AIR.utils.init_codebase_structure import init_from_structure_file
-from AIR.utils.arg_parsers import create_hb_sherlock_parser
+from AIR.utils.arg_parsers import (
+    create_hb_sherlock_parser,
+    normalize_anthropic_model_configuration,
+)
 from AIR.utils.config_loader import (
     apply_updates_with_cli_priority,
     load_yaml_config,
@@ -858,6 +861,11 @@ if __name__ == "__main__":
                 source_label=f"YAML config: {args.config_yaml}",
             )
             print()
+
+    try:
+        args = normalize_anthropic_model_configuration(args)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     # Apply fallback defaults for args whose default was set to None to enable
     # CLI-override detection (e.g. --num_rounds 1 would be indistinguishable from

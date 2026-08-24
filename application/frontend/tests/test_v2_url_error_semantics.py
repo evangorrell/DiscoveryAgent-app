@@ -92,7 +92,6 @@ def test_valid_project_pages_and_exact_round_remain_healthy(monkeypatch, tmp_pat
         project["destination"],
         f"/projects/{slug}/hypotheses",
         f"/projects/{slug}/skills",
-        f"/projects/{slug}/audit",
         f"/rounds/?project={slug}",
         f"/rounds/?project={slug}&round=0",
     ):
@@ -140,7 +139,6 @@ def test_supported_internal_id_links_canonicalize(monkeypatch, tmp_path):
     expected = {
         f"/projects/{project_id}": "/projects/url-semantics",
         f"/projects/{project_id}/hypotheses": "/projects/url-semantics/hypotheses",
-        f"/projects/{project_id}/audit": "/projects/url-semantics/audit",
         f"/projects/{project_id}/skills": "/projects/url-semantics/skills",
     }
     for path, location in expected.items():
@@ -244,7 +242,7 @@ def test_conflicting_explicit_audit_identifiers_are_not_guessed(
         },
     )
     assert response.status_code == 302
-    assert response.headers["Location"] == "/projects/project-alpha/audit"
+    assert response.headers["Location"] == "/rounds/?project=project-alpha"
 
 
 def test_invalid_report_view_is_a_missing_resource(monkeypatch, tmp_path):

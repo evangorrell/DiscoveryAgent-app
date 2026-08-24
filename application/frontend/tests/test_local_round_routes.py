@@ -1,9 +1,15 @@
 from da_selection_ui import app as app_module
 
 
+RUN_ID = "a" * 32
+
+
 def client_with_project(monkeypatch):
     project = {"id": "project-1", "url_slug": "local-project"}
     monkeypatch.setattr(app_module, "_v2_get_project", lambda project_id: project if project_id == "project-1" else None)
+    monkeypatch.setattr(app_module, "_v2_project_availability", lambda _project: {
+        "available": True, "registered_path": "/test/project", "root": "/test/project", "message": None,
+    })
     client = app_module.app.test_client()
     with client.session_transaction() as session:
         session["v2_active_project_id"] = "project-1"
@@ -15,27 +21,83 @@ def test_start_route_returns_monitor_redirect(monkeypatch):
     monkeypatch.setattr(
         app_module.local_round_runner,
         "start_round",
-        lambda actual: {"project_id": actual["id"], "round": 0, "status": "starting", "pid": 10},
+        lambda actual, options=None: {"project_id": actual["id"], "round": 0, "run_id": RUN_ID, "status": "starting", "pid": 10},
     )
-    response = client.post("/api/rounds/start", json={"project_root": "/untrusted/client/path"})
+    response = client.post("/api/rounds/start", json={"project_id": project["id"], "project_root": "/untrusted/client/path"})
     assert response.status_code == 202
     assert response.get_json() == {
         "ok": True,
         "project_id": project["id"],
         "round": 0,
+        "run_id": RUN_ID,
         "status": "starting",
         "redirect_url": "/rounds/?project=local-project&round=0&started=1",
     }
 
 
+def test_start_route_ignores_browser_round_overrides(monkeypatch):
+    client, _project = client_with_project(monkeypatch)
+    seen = {}
+
+    def record(actual, options=None):
+        seen["options"] = options
+        return {"project_id": actual["id"], "round": 0, "run_id": RUN_ID, "status": "starting", "pid": 10}
+
+    monkeypatch.setattr(app_module.local_round_runner, "start_round", record)
+    response = client.post("/api/rounds/start", json={
+        "project_id": "project-1",
+        "num_queries": 9,
+        "deep_research": False,
+        # Agents that need outside authorization, and a setting that is no
+        # longer a choice — all dropped rather than forwarded.
+        "opentargets": True,
+        "sub_agents": False,
+        # Neither a round setting nor something a browser may dictate.
+        "working_directory": "/untrusted/client/path",
+        "no_sandbox": True,
+    })
+
+    assert response.status_code == 202
+    assert seen["options"] is None
+
+
+def test_options_route_contains_only_per_round_settings(monkeypatch):
+    client, _project = client_with_project(monkeypatch)
+    monkeypatch.setattr(app_module.local_round_runner, "next_round_number", lambda _project: 0)
+
+    payload = client.get("/api/rounds/options", query_string={"project_id": "project-1"}).get_json()
+
+    assert payload["ok"] is True
+    assert "models" not in payload
+    assert "models_source" not in payload
+    assert "reasoning_model" not in payload["defaults"]
+    assert "execution_model" not in payload["defaults"]
+
+
+def test_start_route_does_not_accept_an_out_of_range_browser_override(monkeypatch):
+    client, _project = client_with_project(monkeypatch)
+    monkeypatch.setattr(
+        app_module.local_round_runner,
+        "start_round",
+        lambda actual, options=None: {
+            "project_id": actual["id"], "round": 0, "run_id": RUN_ID,
+            "status": "starting", "pid": 10,
+        },
+    )
+
+    response = client.post("/api/rounds/start", json={"project_id": "project-1", "num_queries": 500})
+
+    assert response.status_code == 202
+
+
 def test_start_route_returns_actionable_runner_error(monkeypatch):
     client, _project = client_with_project(monkeypatch)
 
-    def fail(_project):
+    def fail(_project, options=None):
         raise app_module.local_round_runner.RoundLaunchError("anthropic_api_key_missing", "Set it and restart.")
 
     monkeypatch.setattr(app_module.local_round_runner, "start_round", fail)
-    response = client.post("/api/rounds/start")
+    response = client.post("/api/rounds/start", json={"project_id": "project-1"})
     assert response.status_code == 400
     assert response.get_json() == {"ok": False, "code": "anthropic_api_key_missing", "message": "Set it and restart."}
 
@@ -43,7 +105,7 @@ def test_start_route_returns_actionable_runner_error(monkeypatch):
 def test_start_and_resume_routes_return_missing_key_as_expected_validation(monkeypatch):
     client, _project = client_with_project(monkeypatch)
 
-    def fail(_project):
+    def fail(_project, options=None, **_identity):
         raise app_module.local_round_runner.RoundLaunchError(
             "anthropic_api_key_missing",
             app_module.local_round_runner.MISSING_KEY_MESSAGE,
@@ -51,8 +113,14 @@ def test_start_and_resume_routes_return_missing_key_as_expected_validation(monke
 
     monkeypatch.setattr(app_module.local_round_runner, "start_round", fail)
     monkeypatch.setattr(app_module.local_round_runner, "resume_round", fail)
-    for route in ("/api/rounds/start", "/api/rounds/resume"):
-        response = client.post(route)
+    requests = {
+        "/api/rounds/start": {"project_id": "project-1"},
+        "/api/rounds/resume": {
+            "project_id": "project-1", "round": 4, "run_id": RUN_ID,
+        },
+    }
+    for route, identity in requests.items():
+        response = client.post(route, json=identity)
         assert response.status_code == 400
         payload = response.get_json()
         assert payload["ok"] is False
@@ -66,9 +134,15 @@ def test_status_route_and_missing_active_project(monkeypatch):
     monkeypatch.setattr(
         app_module.local_round_runner,
         "round_status",
-        lambda project: {"project_id": project["id"], "round": 0, "status": "running", "pid": 10},
+        lambda project: {
+            "project_id": project["id"], "round": 0, "run_id": RUN_ID,
+            "status": "running", "pid": 10,
+        },
     )
-    assert client.get("/api/rounds/status").get_json()["status"] == "running"
+    assert client.get(
+        "/api/rounds/status",
+        query_string={"project_id": "project-1", "round": 0, "run_id": RUN_ID},
+    ).get_json()["status"] == "running"
 
     empty_client = app_module.app.test_client()
     response = empty_client.post("/api/rounds/start")
@@ -76,22 +150,88 @@ def test_status_route_and_missing_active_project(monkeypatch):
     assert response.get_json()["code"] == "no_active_project"
 
 
-def test_stop_resume_and_resubmit_routes_use_active_project_only(monkeypatch):
+def test_status_route_requires_and_matches_the_exact_run_identity(monkeypatch):
     client, project = client_with_project(monkeypatch)
-    monkeypatch.setattr(app_module.local_round_runner, "stop_round", lambda actual: {
-        "project_id": actual["id"], "round": 4, "status": "interrupted", "pid": None, "resumable": True,
-    })
-    monkeypatch.setattr(app_module.local_round_runner, "resume_round", lambda actual: {
-        "project_id": actual["id"], "round": 4, "status": "starting", "pid": 22, "resumed": True,
-    })
-    monkeypatch.setattr(app_module.local_round_runner, "resubmit_round", lambda actual: {
-        "project_id": actual["id"], "round": 4, "status": "starting", "pid": 23, "resubmitted": True,
-    })
-    assert client.post("/api/rounds/stop", json={"pid": 999, "round": 99}).get_json()["status"] == "interrupted"
-    assert client.post("/api/rounds/resume", json={"config_file": "/tmp/evil"}).get_json()["round"] == 4
-    resubmitted = client.post("/api/rounds/resubmit", json={"round": 99})
+    monkeypatch.setattr(
+        app_module.local_round_runner,
+        "round_status",
+        lambda actual: {
+            "project_id": actual["id"], "round": 0, "run_id": RUN_ID,
+            "status": "running", "pid": 10,
+        },
+    )
+
+    missing = client.get(
+        "/api/rounds/status",
+        query_string={"project_id": project["id"], "round": 0},
+    )
+    assert missing.status_code == 409
+    assert missing.get_json()["code"] == "run_identity_mismatch"
+
+    stale = client.get(
+        "/api/rounds/status",
+        query_string={
+            "project_id": project["id"], "round": 0, "run_id": "b" * 32,
+        },
+    )
+    assert stale.status_code == 409
+    assert stale.get_json()["code"] == "run_identity_mismatch"
+
+
+def test_stop_resume_and_resubmit_routes_validate_exact_active_run(monkeypatch):
+    client, project = client_with_project(monkeypatch)
+    seen = []
+
+    def stop(actual, **identity):
+        seen.append(("stop", actual["id"], identity))
+        return {
+            "project_id": actual["id"], "round": 4, "run_id": RUN_ID,
+            "status": "interrupted", "pid": None, "resumable": True,
+        }
+
+    def resume(actual, **identity):
+        seen.append(("resume", actual["id"], identity))
+        return {
+            "project_id": actual["id"], "round": 4, "run_id": "b" * 32,
+            "status": "starting", "pid": 22, "resumed": True,
+        }
+
+    def resubmit(actual, **identity):
+        seen.append(("resubmit", actual["id"], identity))
+        return {
+            "project_id": actual["id"], "round": 4, "run_id": "c" * 32,
+            "status": "starting", "pid": 23, "resubmitted": True,
+        }
+
+    monkeypatch.setattr(app_module.local_round_runner, "stop_round", stop)
+    monkeypatch.setattr(app_module.local_round_runner, "resume_round", resume)
+    monkeypatch.setattr(app_module.local_round_runner, "resubmit_round", resubmit)
+    identity = {"project_id": project["id"], "round": 4, "run_id": RUN_ID}
+    assert client.post("/api/rounds/stop", json=identity).get_json()["status"] == "interrupted"
+    assert client.post("/api/rounds/resume", json=identity).get_json()["round"] == 4
+    resubmitted = client.post("/api/rounds/resubmit", json=identity)
     assert resubmitted.status_code == 202
     assert resubmitted.get_json()["resubmitted"] is True
+    assert seen == [
+        (action, project["id"], {"expected_round": 4, "expected_run_id": RUN_ID})
+        for action in ("stop", "resume", "resubmit")
+    ]
+
+
+def test_mutating_round_routes_reject_missing_or_mismatched_identity(monkeypatch):
+    client, _project = client_with_project(monkeypatch)
+    monkeypatch.setattr(
+        app_module.local_round_runner, "stop_round",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not stop")),
+    )
+    for payload, code in (
+        ({"project_id": "other", "round": 4, "run_id": RUN_ID}, "project_identity_mismatch"),
+        ({"project_id": "project-1", "round": "bad", "run_id": RUN_ID}, "round_identity_mismatch"),
+        ({"project_id": "project-1", "round": 4, "run_id": "bad"}, "run_identity_mismatch"),
+    ):
+        response = client.post("/api/rounds/stop", json=payload)
+        assert response.status_code == 409
+        assert response.get_json()["code"] == code
 
 
 def test_round_delete_api_is_not_registered(monkeypatch):

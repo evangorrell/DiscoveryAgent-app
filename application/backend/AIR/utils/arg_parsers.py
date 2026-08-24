@@ -1,6 +1,54 @@
 import argparse
 
 
+DEFAULT_ANTHROPIC_MODEL = "claude-opus-4-6"
+ANTHROPIC_MODEL_FIELDS = (
+    "execution_model",
+    "hypothesis_model",
+    "memory_llm_model",
+    "review_optimization_model",
+    "review_designer_model",
+    "director_model",
+    "report_summarization_model",
+    "single_search_model",
+    "opentargets_model",
+)
+
+
+def anthropic_model_id(value):
+    """Validate the Anthropic identifier contract used by DiscoveryAgent."""
+    model_id = str(value or "").strip()
+    if not model_id.startswith("claude-"):
+        raise argparse.ArgumentTypeError(
+            f"{model_id or 'The selected model'} is not a valid Anthropic Claude model identifier"
+        )
+    return model_id
+
+
+def normalize_anthropic_model_configuration(args):
+    """Apply one project model to every backend model role and validate all.
+
+    Historical checkpoint configs do not have ``project_model``; their
+    independently snapshotted fields remain intact on resume.  New V2 configs
+    include it, making this the backend-side invariant that all agent roles use
+    the same selected Anthropic model.
+    """
+    project_model = getattr(args, "project_model", None)
+    try:
+        if project_model:
+            project_model = anthropic_model_id(project_model)
+            args.project_model = project_model
+            for field in ANTHROPIC_MODEL_FIELDS:
+                setattr(args, field, project_model)
+            return args
+
+        for field in ANTHROPIC_MODEL_FIELDS:
+            setattr(args, field, anthropic_model_id(getattr(args, field)))
+    except argparse.ArgumentTypeError as exc:
+        raise ValueError(str(exc)) from exc
+    return args
+
+
 def create_hb_sherlock_parser():
     """Argument parser for scripts/run_hb_sherlock.py."""
     parser = argparse.ArgumentParser(description="Run HypothesisBrancher workflow on any dataset")
@@ -50,26 +98,29 @@ def create_hb_sherlock_parser():
                         help="Optional path to dataset README to use instead of data/README.txt")
     parser.add_argument("--num_queries", type=int, default=5,
                         help="Number of queries to generate from hypothesis agent per branch (default: 5)")
-    parser.add_argument("--execution_max_turns", type=int, default=10,
-                        help="Maximum number of turns for the execution agent (default: 10)")
+    parser.add_argument("--execution_max_turns", type=int, default=0,
+                        help="Maximum number of turns for the execution agent. "
+                             "0 (the default) lets it run until it finishes the task.")
 
     # Models
-    parser.add_argument("--execution_model", type=str, default="claude-sonnet-4-6",
+    parser.add_argument("--project_model", type=anthropic_model_id, default=None,
+                        help="One Anthropic model for every DiscoveryAgent agent role")
+    parser.add_argument("--execution_model", type=anthropic_model_id, default=DEFAULT_ANTHROPIC_MODEL,
                         help="LLM model for the execution agent")
-    parser.add_argument("--hypothesis_model", type=str, default="claude-sonnet-4-6",
+    parser.add_argument("--hypothesis_model", type=anthropic_model_id, default=DEFAULT_ANTHROPIC_MODEL,
                         help="Model for the hypothesis agent")
-    parser.add_argument("--memory_llm_model", type=str, default="claude-sonnet-4-5-20250929",
+    parser.add_argument("--memory_llm_model", type=anthropic_model_id, default=DEFAULT_ANTHROPIC_MODEL,
                         help="LLM model for the memory agent")
-    parser.add_argument("--review_optimization_model", type=str, default="claude-sonnet-4-5-20250929",
+    parser.add_argument("--review_optimization_model", type=anthropic_model_id, default=DEFAULT_ANTHROPIC_MODEL,
                         help="LLM model for the review optimization agent")
-    parser.add_argument("--review_designer_model", type=str, default="claude-sonnet-4-5-20250929",
+    parser.add_argument("--review_designer_model", type=anthropic_model_id, default=DEFAULT_ANTHROPIC_MODEL,
                         help="LLM model for the review designer agent")
-    parser.add_argument("--director_model", type=str, default="claude-sonnet-4-5-20250929",
-                        help="LLM model for the director agent")
-    parser.add_argument("--report_summarization_model", type=str, default="claude-haiku-4-5-20251001",
-                        help="LLM model for report summarization (default: claude-haiku-4-5-20251001)")
-    parser.add_argument("--single_search_model", type=str, default="claude-opus-4-6",
-                        help="LLM model for the single search agent (default: claude-opus-4-6)")
+    parser.add_argument("--director_model", type=anthropic_model_id, default=DEFAULT_ANTHROPIC_MODEL,
+                        help=f"LLM model for the director agent (default: {DEFAULT_ANTHROPIC_MODEL})")
+    parser.add_argument("--report_summarization_model", type=anthropic_model_id, default=DEFAULT_ANTHROPIC_MODEL,
+                        help=f"LLM model for report summarization (default: {DEFAULT_ANTHROPIC_MODEL})")
+    parser.add_argument("--single_search_model", type=anthropic_model_id, default=DEFAULT_ANTHROPIC_MODEL,
+                        help=f"LLM model for the single search agent (default: {DEFAULT_ANTHROPIC_MODEL})")
     parser.add_argument("--single_search_max_tokens", type=int, default=16384,
                         help="Maximum output tokens for the single search agent (default: 16384)")
     # Paperclip is the default deep-research provider; this flag is an optional override,
@@ -119,8 +170,8 @@ def create_hb_sherlock_parser():
                              "In expanding_dataset mode, defaults to expanding_dataset_dir.")
     parser.add_argument("--opentargets_max_turns", type=int, default=15,
                         help="Maximum Claude Code turns per OpenTargets query (default: 15)")
-    parser.add_argument("--opentargets_model", type=str, default="claude-sonnet-4-6",
-                        help="Model for the OpenTargets agent Claude Code session (default: claude-sonnet-4-6)")
+    parser.add_argument("--opentargets_model", type=anthropic_model_id, default=DEFAULT_ANTHROPIC_MODEL,
+                        help=f"Model for the OpenTargets agent Claude Code session (default: {DEFAULT_ANTHROPIC_MODEL})")
 
     # OpenTargets MCP for execution agent (direct MCP access within ExecutionAgentCC)
     parser.add_argument("--execution_opentargets_mcp", action="store_true",

@@ -29,6 +29,10 @@ def _create(client, name: str) -> dict:
     return response.get_json()
 
 
+def _project_root(project_id: str) -> Path:
+    return Path(app_module._v2_get_project(project_id)["project_root"])
+
+
 def _write_for(project_id: str, label: str, event_type: str, payload: dict) -> Path:
     with app_module.app.test_request_context("/"):
         session["v2_active_project_id"] = project_id
@@ -63,7 +67,7 @@ def test_new_interaction_is_project_local_and_never_writes_package_storage(tmp_p
     })
 
     expected = (
-        tmp_path / project_id / ".discoveryagent" / "interactions"
+        _project_root(project_id) / ".discoveryagent" / "interactions"
         / "audit_interactions.jsonl"
     )
     assert path == expected
@@ -139,7 +143,7 @@ def test_restart_reads_report_conversation_from_project_local_store(monkeypatch,
         "role": "assistant",
         "content": "Yes.",
     }
-    expected = tmp_path / project_id / ".discoveryagent" / "interactions" / "audit_interactions.jsonl"
+    expected = _project_root(project_id) / ".discoveryagent" / "interactions" / "audit_interactions.jsonl"
     assert expected.is_file()
 
 
@@ -150,7 +154,8 @@ def test_conversation_ui_state_survives_restart_and_is_project_isolated(tmp_path
 
     first_client.post(f"/api/projects/{project_a['project_id']}/continue")
     state_a = {
-        "version": 1,
+        "version": 2,
+        "projectId": project_a["project_id"],
         "activeChatId": "chat-a",
         "chats": [{
             "id": "chat-a",
@@ -162,6 +167,7 @@ def test_conversation_ui_state_survives_restart_and_is_project_isolated(tmp_path
         }],
     }
     saved_a = first_client.put("/api/conversation_state", json={
+        "project_id": project_a["project_id"],
         "surface": "audit_agent",
         "scope": "main",
         "state": state_a,
@@ -170,7 +176,8 @@ def test_conversation_ui_state_survives_restart_and_is_project_isolated(tmp_path
 
     first_client.post(f"/api/projects/{project_b['project_id']}/continue")
     state_b = {
-        "version": 1,
+        "version": 2,
+        "projectId": project_b["project_id"],
         "activeChatId": "chat-b",
         "chats": [{
             "id": "chat-b",
@@ -182,6 +189,7 @@ def test_conversation_ui_state_survives_restart_and_is_project_isolated(tmp_path
         }],
     }
     assert first_client.put("/api/conversation_state", json={
+        "project_id": project_b["project_id"],
         "surface": "audit_agent",
         "scope": "main",
         "state": state_b,
@@ -192,27 +200,185 @@ def test_conversation_ui_state_survives_restart_and_is_project_isolated(tmp_path
     restarted = _client()
     restarted.post(f"/api/projects/{project_a['project_id']}/continue")
     restored_a = restarted.get(
-        "/api/conversation_state?surface=audit_agent&scope=main"
+        f"/api/conversation_state?project_id={project_a['project_id']}&surface=audit_agent&scope=main"
     ).get_json()["state"]
     assert restored_a == state_a
     assert "conversation B" not in json.dumps(restored_a)
 
     restarted.post(f"/api/projects/{project_b['project_id']}/continue")
     restored_b = restarted.get(
-        "/api/conversation_state?surface=audit_agent&scope=main"
+        f"/api/conversation_state?project_id={project_b['project_id']}&surface=audit_agent&scope=main"
     ).get_json()["state"]
     assert restored_b == state_b
     assert "conversation A" not in json.dumps(restored_b)
 
     path_a = (
-        tmp_path / project_a["project_id"] / ".discoveryagent" / "interactions"
+        _project_root(project_a["project_id"]) / ".discoveryagent" / "interactions"
         / "conversation_state.json"
     )
     path_b = (
-        tmp_path / project_b["project_id"] / ".discoveryagent" / "interactions"
+        _project_root(project_b["project_id"]) / ".discoveryagent" / "interactions"
         / "conversation_state.json"
     )
     assert path_a.is_file() and path_b.is_file() and path_a != path_b
+
+
+def test_audit_history_follows_immutable_id_through_rename_and_relocation(tmp_path):
+    client = _client()
+    created = _create(client, "Lifecycle Audit Project")
+    project_id = created["project_id"]
+    client.post(f"/api/projects/{project_id}/continue")
+    state = {
+        "version": 2,
+        "projectId": project_id,
+        "activeChatId": "lifecycle-chat",
+        "chats": [{
+            "id": "lifecycle-chat",
+            "title": "Immutable identity",
+            "messages": [{"role": "user", "text": "Follow this project only."}],
+        }],
+    }
+    saved = client.put("/api/conversation_state", json={
+        "project_id": project_id,
+        "surface": "audit_agent",
+        "scope": "main",
+        "state": state,
+    })
+    assert saved.status_code == 200
+
+    destination_parent = tmp_path / "relocated"
+    destination_parent.mkdir()
+    edited = client.post(f"/api/projects/{project_id}/edit", data={
+        "project_name": "Renamed Lifecycle Audit Project",
+        "task_description": "Investigate Lifecycle Audit Project.",
+        "dataset_context": "Dataset context for Lifecycle Audit Project.",
+        "project_parent_dir": str(destination_parent),
+        "confirm_project_relocation": "true",
+    })
+    assert edited.status_code == 200, edited.get_data(as_text=True)
+    relocated = app_module._v2_get_project(project_id)
+    marker = json.loads(
+        (Path(relocated["project_root"]) / ".discoveryagent" / "project.json").read_text(
+            encoding="utf-8",
+        )
+    )
+    assert marker["project_id"] == project_id
+
+    restored = client.get(
+        f"/api/conversation_state?project_id={project_id}&surface=audit_agent&scope=main"
+    )
+    assert restored.status_code == 200
+    assert restored.get_json()["state"] == state
+
+
+def test_audit_state_rejects_cross_project_and_marker_mismatch(tmp_path):
+    client = _client()
+    first = _create(client, "Identity Guard A")
+    second = _create(client, "Identity Guard B")
+    first_id = first["project_id"]
+    second_id = second["project_id"]
+
+    client.post(f"/api/projects/{first_id}/continue")
+    first_state = {
+        "version": 2,
+        "projectId": first_id,
+        "activeChatId": "first-only",
+        "chats": [{"id": "first-only", "messages": [{"role": "user", "text": "A"}]}],
+    }
+    assert client.put("/api/conversation_state", json={
+        "project_id": first_id,
+        "surface": "audit_agent",
+        "scope": "main",
+        "state": first_state,
+    }).status_code == 200
+
+    client.post(f"/api/projects/{second_id}/continue")
+    cross_read = client.get(
+        f"/api/conversation_state?project_id={first_id}&surface=audit_agent&scope=main"
+    )
+    assert cross_read.status_code == 409
+    cross_write = client.put("/api/conversation_state", json={
+        "project_id": second_id,
+        "surface": "audit_agent",
+        "scope": "main",
+        "state": {**first_state, "projectId": first_id},
+    })
+    assert cross_write.status_code == 409
+
+    second_root = Path(app_module._v2_get_project(second_id)["project_root"])
+    marker_path = second_root / ".discoveryagent" / "project.json"
+    original_marker = marker_path.read_text(encoding="utf-8")
+    marker_path.write_text(
+        json.dumps({"project_id": first_id, "display_name": "Wrong owner"}),
+        encoding="utf-8",
+    )
+    try:
+        unavailable = client.get(
+            f"/api/conversation_state?project_id={second_id}&surface=audit_agent&scope=main"
+        )
+        assert unavailable.status_code == 409
+        assert unavailable.get_json()["code"] == "project_identity_unavailable"
+    finally:
+        marker_path.write_text(original_marker, encoding="utf-8")
+
+
+def test_audit_jobs_cannot_be_polled_cancelled_or_reused_from_another_project(
+    monkeypatch,
+):
+    client = _client()
+    first_id = _create(client, "Job Identity A")["project_id"]
+    second_id = _create(client, "Job Identity B")["project_id"]
+    job_id = "c" * 32
+
+    class DeferredThread:
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+
+        def start(self):
+            return None
+
+    monkeypatch.setattr(app_module.threading, "Thread", DeferredThread)
+    with app_module.AUDIT_CHAT_JOBS_LOCK:
+        previous_jobs = dict(app_module.AUDIT_CHAT_JOBS)
+        app_module.AUDIT_CHAT_JOBS.clear()
+    try:
+        client.post(f"/api/projects/{first_id}/continue")
+        with client.session_transaction() as state:
+            state["session_id"] = "project-job-isolation-session"
+        submitted = client.post("/api/audit_chat_jobs", json={
+            "project_id": first_id,
+            "job_id": job_id,
+            "message": "Only project A may receive this.",
+            "messages": [],
+        })
+        assert submitted.status_code == 200
+        assert submitted.get_json()["project_id"] == first_id
+
+        client.post(f"/api/projects/{second_id}/continue")
+        status = client.get(
+            f"/api/audit_chat_jobs/{job_id}?project_id={second_id}"
+        )
+        assert status.status_code == 404
+        cancel = client.post(
+            f"/api/audit_chat_jobs/{job_id}/cancel",
+            json={"project_id": second_id},
+        )
+        assert cancel.status_code == 404
+        collision = client.post("/api/audit_chat_jobs", json={
+            "project_id": second_id,
+            "job_id": job_id,
+            "message": "Do not adopt A's job.",
+            "messages": [],
+        })
+        assert collision.status_code == 409
+        assert collision.get_json()["code"] == "audit_job_identity_conflict"
+        with app_module.AUDIT_CHAT_JOBS_LOCK:
+            assert app_module.AUDIT_CHAT_JOBS[job_id]["project_id"] == first_id
+    finally:
+        with app_module.AUDIT_CHAT_JOBS_LOCK:
+            app_module.AUDIT_CHAT_JOBS.clear()
+            app_module.AUDIT_CHAT_JOBS.update(previous_jobs)
 
 
 def test_audit_page_bootstraps_from_managed_state_not_browser_storage(tmp_path):
@@ -225,7 +391,8 @@ def test_audit_page_bootstraps_from_managed_state_not_browser_storage(tmp_path):
     )
     client.post(f"/api/projects/{project_id}/continue")
     state = {
-        "version": 1,
+        "version": 2,
+        "projectId": project_id,
         "activeChatId": "managed-chat",
         "chats": [{
             "id": "managed-chat",
@@ -234,91 +401,17 @@ def test_audit_page_bootstraps_from_managed_state_not_browser_storage(tmp_path):
         }],
     }
     client.put("/api/conversation_state", json={
+        "project_id": project_id,
         "surface": "audit_agent",
         "scope": "main",
         "state": state,
     })
 
-    response = client.get(f"/projects/{project_slug}/audit")
+    response = client.get(f"/rounds/?project={project_slug}")
     assert response.status_code == 200
     html = response.get_data(as_text=True)
     assert "durableChatState" in html
     assert "survives without localStorage" in html
-
-
-def test_round_workspace_chat_state_is_round_grouped_and_restart_safe(tmp_path):
-    client = _client()
-    project = _create(client, "Round Chat Persistence")
-    project_id = project["project_id"]
-    project_slug = next(
-        item["url_slug"] for item in app_module._v2_load_projects()
-        if item["id"] == project_id
-    )
-    client.post(f"/api/projects/{project_id}/continue")
-    state = {
-        "rounds": {
-            "0": [{"role": "user", "text": "round zero"}],
-            "2": [{"role": "assistant", "text": "round two reply"}],
-        }
-    }
-    assert client.put("/api/conversation_state", json={
-        "surface": "round_workspace_chat",
-        "scope": "main",
-        "state": state,
-    }).status_code == 200
-
-    restarted = _client()
-    restarted.post(f"/api/projects/{project_id}/continue")
-    response = restarted.get(f"/rounds/?project={project_slug}")
-    assert response.status_code == 200
-    html = response.get_data(as_text=True)
-    assert "durableChatState" in html
-    assert "round zero" in html and "round two reply" in html
-
-
-def test_round_chat_state_write_stays_with_explicit_project_across_navigation(tmp_path):
-    client = _client()
-    project_a = _create(client, "Explicit Round Chat Project A")
-    project_b = _create(client, "Explicit Round Chat Project B")
-    records = {item["id"]: item for item in app_module._v2_load_projects()}
-    slug_a = records[project_a["project_id"]]["url_slug"]
-
-    # Simulate navigation changing the cookie's active project while a delayed
-    # Round Workspace persistence write for A is still in flight.
-    client.post(f"/api/projects/{project_b['project_id']}/continue")
-    state_a = {
-        "rounds": {
-            "4": [{"id": "user-4", "role": "user", "text": "Only project A"}],
-        },
-    }
-    saved = client.put(
-        f"/api/conversation_state?project={slug_a}",
-        json={
-            "surface": "round_workspace_chat",
-            "scope": "main",
-            "project": slug_a,
-            "state": state_a,
-        },
-    )
-    assert saved.status_code == 200
-
-    restored = client.get(
-        "/api/conversation_state"
-        f"?project={slug_a}&surface=round_workspace_chat&scope=main"
-    )
-    assert restored.status_code == 200
-    assert restored.get_json()["state"] == state_a
-
-    project_a_state = (
-        tmp_path / project_a["project_id"] / ".discoveryagent" / "interactions"
-        / "conversation_state.json"
-    )
-    project_b_state = (
-        tmp_path / project_b["project_id"] / ".discoveryagent" / "interactions"
-        / "conversation_state.json"
-    )
-    assert project_a_state.is_file()
-    assert not project_b_state.exists()
 
 
 def test_report_discussions_are_isolated_by_round_scope(tmp_path):
@@ -367,7 +460,7 @@ def test_explicit_dev_override_remains_project_namespaced(monkeypatch, tmp_path)
     assert path == override_root / project_id / "audit_interactions.jsonl"
     assert path.is_file()
     assert not (
-        tmp_path / project_id / ".discoveryagent" / "interactions"
+        _project_root(project_id) / ".discoveryagent" / "interactions"
         / "audit_interactions.jsonl"
     ).exists()
 
@@ -460,7 +553,7 @@ def test_registered_project_discovery_triggers_idempotent_legacy_migration(tmp_p
     app_module._INTERACTION_MIGRATION_STATE.update({"signature": None, "result": None})
 
     assert client.get("/api/projects").status_code == 200
-    destination = tmp_path / project_id / ".discoveryagent" / "interactions" / "audit_interactions.jsonl"
+    destination = _project_root(project_id) / ".discoveryagent" / "interactions" / "audit_interactions.jsonl"
     assert destination.read_text(encoding="utf-8") == line + "\n"
     assert client.get("/api/projects").status_code == 200
     assert destination.read_text(encoding="utf-8") == line + "\n"

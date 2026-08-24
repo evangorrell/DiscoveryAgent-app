@@ -42,6 +42,7 @@ def backend(tmp_path):
     python.parent.mkdir(parents=True)
     launcher.parent.mkdir(parents=True)
     python.write_text("", encoding="utf-8")
+    python.chmod(0o755)
     launcher.write_text("", encoding="utf-8")
     return root, python, launcher
 
@@ -49,8 +50,10 @@ def backend(tmp_path):
 @pytest.fixture(autouse=True)
 def clear_process_registry():
     runner._PROCESSES.clear()
+    runner._PROCESS_RUN_IDS.clear()
     yield
     runner._PROCESSES.clear()
+    runner._PROCESS_RUN_IDS.clear()
 
 
 def launch_env(backend):
@@ -124,7 +127,11 @@ def test_start_uses_backend_venv_and_secret_free_files(monkeypatch, project, bac
     root, python, launcher = backend
     round_dir = Path(project["checkpoint_dir"])
     checkpoint_root = Path(project["project_root"]) / "checkpoint"
-    assert result == {"project_id": "project-1", "round": 0, "status": "starting", "pid": 43210}
+    assert result == {
+        "project_id": "project-1", "round": 0, "run_id": result["run_id"],
+        "status": "starting", "pid": 43210,
+    }
+    assert re.fullmatch(r"[0-9a-f]{32}", result["run_id"])
     assert captured["command"] == [str(python), str(launcher), "--config-file", str(round_dir / "config.json"), "--num_rounds", "1"]
     assert captured["kwargs"]["cwd"] == str(root)
     assert captured["kwargs"]["shell"] is False
@@ -191,6 +198,102 @@ def test_configured_backend_python_preserves_venv_symlink(monkeypatch, tmp_path,
     assert child_environment["VIRTUAL_ENV"] == str(backend_venv)
     assert child_environment["PATH"].split(os.pathsep)[0] == str(backend_bin)
     assert child_environment["PATH"].split(os.pathsep)[0] != str(base_bin)
+
+
+def test_configured_backend_python_is_absolute_without_resolving_dot_segments_symlink(
+    monkeypatch, tmp_path,
+):
+    home = tmp_path / "home"
+    backend_root = home / "install" / "application" / "backend"
+    launcher = backend_root / "scripts" / "run_hb_sherlock.py"
+    backend_python = backend_root / ".venv" / "bin" / "python"
+    base_python = home / "install" / "runtime" / "python" / "bin" / "python3.11"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("", encoding="utf-8")
+    backend_python.parent.mkdir(parents=True)
+    base_python.parent.mkdir(parents=True)
+    base_python.write_text("#!/bin/sh\n", encoding="utf-8")
+    base_python.chmod(0o755)
+    backend_python.symlink_to(base_python)
+    monkeypatch.setenv("HOME", str(home))
+    configured = "~/install/application/backend/scripts/../.venv/bin/python"
+
+    _root, selected, _launcher = runner.resolve_backend_runtime({
+        "DISCOVERYAGENT_BACKEND_ROOT": str(backend_root),
+        "DISCOVERYAGENT_BACKEND_PYTHON": configured,
+    })
+
+    assert selected == backend_python
+    assert selected.is_absolute()
+    assert ".." not in selected.parts
+    assert selected != base_python
+    assert selected.resolve() == base_python
+
+
+def test_resolve_backend_runtime_rejects_missing_configured_python(backend):
+    root, python, _launcher = backend
+    python.unlink()
+
+    with pytest.raises(runner.RoundLaunchError) as error:
+        runner.resolve_backend_runtime({
+            "DISCOVERYAGENT_BACKEND_ROOT": str(root),
+            "DISCOVERYAGENT_BACKEND_PYTHON": str(python),
+        })
+
+    assert error.value.code == "backend_python_missing"
+
+
+def test_resolve_backend_runtime_rejects_non_executable_configured_python(backend):
+    root, python, _launcher = backend
+    python.chmod(0o644)
+
+    with pytest.raises(runner.RoundLaunchError) as error:
+        runner.resolve_backend_runtime({
+            "DISCOVERYAGENT_BACKEND_ROOT": str(root),
+            "DISCOVERYAGENT_BACKEND_PYTHON": str(python),
+        })
+
+    assert error.value.code == "backend_python_not_executable"
+
+
+def test_backend_venv_imports_nbformat_and_reaches_safe_backend_initialization(tmp_path):
+    backend_root = Path(runner.__file__).resolve().parents[2] / "discoveryagent"
+    configured_python = backend_root / ".venv" / "bin" / "python"
+    _root, backend_python, _launcher = runner.resolve_backend_runtime({
+        "DISCOVERYAGENT_BACKEND_ROOT": str(backend_root),
+        "DISCOVERYAGENT_BACKEND_PYTHON": str(configured_python),
+    })
+    child_env = runner._child_environment(
+        backend_root,
+        backend_python,
+        tmp_path,
+        {"HOME": str(Path.home()), "PATH": os.environ.get("PATH", "")},
+    )
+
+    completed = subprocess.run(
+        [
+            str(backend_python),
+            "-c",
+            (
+                "import json, sys, nbformat; "
+                "from AIR.utils.arg_parsers import create_hb_sherlock_parser; "
+                "create_hb_sherlock_parser(); "
+                "print(json.dumps({'executable': sys.executable, 'prefix': sys.prefix, "
+                "'initialized': True}))"
+            ),
+        ],
+        cwd=backend_root,
+        env=child_env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(completed.stdout)
+    assert Path(payload["executable"]) == backend_python
+    assert Path(payload["prefix"]) == backend_python.parent.parent
+    assert payload["initialized"] is True
 
 
 def test_child_environment_localizes_runtime_without_mutating_parent(monkeypatch, project, backend):
@@ -464,25 +567,246 @@ def test_fresh_round_zero_uses_exploratory_query_budget(monkeypatch, project, ba
     assert config["num_queries"] == runner.EXPLORATORY_ROUND_QUERY_BUDGET
 
 
-def _install_test_skill(project):
-    skill = Path(project["code_dir"]) / ".claude" / "skills" / "test-skill"
+def test_fresh_round_snapshots_project_query_models_and_tool_toggles(monkeypatch, project, backend):
+    project.update({
+        "query_count": 23,
+        "deep_research": False,
+        "web_search": True,
+        "reasoning_model": "claude-sonnet-4-6",
+        "execution_model": "claude-haiku-4-5-20251001",
+    })
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess())
+    monkeypatch.setattr(runner.threading, "Thread", NoopThread)
+
+    runner.start_round(project, env=launch_env(backend))
+
+    config = json.loads((Path(project["checkpoint_dir"]) / "config.json").read_text())["config"]
+    assert config["num_queries"] == runner.EXPLORATORY_ROUND_QUERY_BUDGET
+    assert config["omit_deepresearch"] is True
+    assert config["omit_singlesearch"] is False
+    assert config["execution_model"] == project["execution_model"]
+    assert {config[field] for field in runner.model_catalog.REASONING_MODEL_CONFIG_FIELDS} == {
+        project["reasoning_model"]
+    }
+
+
+def test_round_options_override_the_preset_budget_and_agent_roster(monkeypatch, project, backend):
+    config_file = Path(project["checkpoint_dir"]) / "config.json"
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess())
+    monkeypatch.setattr(runner.threading, "Thread", NoopThread)
+
+    options = runner.normalize_round_options({
+        "num_queries": 17,
+        "deep_research": False,
+        "web_search": True,
+    })
+    runner.start_round(project, env=launch_env(backend), options=options)
+
+    config = json.loads(config_file.read_text(encoding="utf-8"))["config"]
+    assert config["num_queries"] == runner.EXPLORATORY_ROUND_QUERY_BUDGET
+    assert config["omit_deepresearch"] is True
+    assert config["omit_singlesearch"] is False
+
+
+def test_agents_needing_outside_authorization_cannot_be_switched_on(monkeypatch, project, backend):
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess())
+    monkeypatch.setattr(runner.threading, "Thread", NoopThread)
+
+    # Each of these needs an MCP server or a CENSUS_API_KEY plus optional
+    # Python extras the packaged backend does not install, so a round that
+    # enabled one would fail at launch.
+    options = runner.normalize_round_options({
+        "opentargets": True, "acs": True, "census": True,
+    })
+    assert options == {}
+
+    runner.start_round(project, env=launch_env(backend), options=options)
+
+    config = json.loads((Path(project["checkpoint_dir"]) / "config.json").read_text(encoding="utf-8"))["config"]
+    for key in ("use_opentargets_agent", "use_acs_agent", "use_census_agent"):
+        assert key not in config
+
+
+@pytest.mark.parametrize("attempt", [{}, {"sub_agents": False}, {"sub_agent_architecture": False}])
+def test_the_sub_agent_architecture_is_always_on_and_cannot_be_turned_off(
+    monkeypatch, project, backend, attempt,
+):
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess())
+    monkeypatch.setattr(runner.threading, "Thread", NoopThread)
+
+    runner.start_round(
+        project,
+        env=launch_env(backend),
+        options=runner.normalize_round_options(attempt),
+    )
+
+    config = json.loads((Path(project["checkpoint_dir"]) / "config.json").read_text(encoding="utf-8"))["config"]
+    assert config["sub_agent_architecture"] is True
+
+
+def test_a_continuation_round_also_runs_the_sub_agent_architecture(monkeypatch, project, backend):
+    source, _selection = make_continuation(project)
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess())
+    monkeypatch.setattr(runner.threading, "Thread", NoopThread)
+
+    runner.start_round(project, env=launch_env(backend), options={})
+
+    target = source.parent / "round_4" / "config.json"
+    config = json.loads(target.read_text(encoding="utf-8"))["config"]
+    assert config["sub_agent_architecture"] is True
+
+
+def test_separate_models_reach_their_backend_config_keys(monkeypatch, project, backend):
+    project["reasoning_model"] = "claude-sonnet-4-6"
+    project["execution_model"] = "claude-haiku-4-5-20251001"
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess())
+    monkeypatch.setattr(runner.threading, "Thread", NoopThread)
+
+    runner.start_round(project, env=launch_env(backend), options={})
+
+    config = json.loads((Path(project["checkpoint_dir"]) / "config.json").read_text(encoding="utf-8"))["config"]
+    assert {config[field] for field in runner.model_catalog.REASONING_MODEL_CONFIG_FIELDS} == {
+        project["reasoning_model"]
+    }
+    assert config["execution_model"] == project["execution_model"]
+    assert config["report_summarization_model"] == project["reasoning_model"]
+    assert "project_model" not in config
+
+
+def test_an_invalid_saved_project_model_is_refused_before_process_launch(monkeypatch, project, backend):
+    project["project_model"] = "gpt-4o"
+    monkeypatch.setattr(
+        runner.subprocess, "Popen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not launch")),
+    )
+
+    with pytest.raises(runner.RoundLaunchError) as refused:
+        runner.start_round(project, env=launch_env(backend))
+
+    assert refused.value.code == "unsupported_project_model"
+    assert "gpt-4o" in refused.value.message
+
+
+def test_hidden_round_model_overrides_are_ignored():
+    assert runner.normalize_round_options({
+        "reasoning_model": "gpt-4o",
+        "execution_model": "claude-retired-1",
+        "num_queries": 3,
+    }) == {"num_queries": 3}
+
+
+def test_round_option_defaults_have_no_model_override():
+    defaults = runner.round_option_defaults(0, {"project_model": "claude-sonnet-4-6"})
+    assert "reasoning_model" not in defaults
+    assert "execution_model" not in defaults
+
+
+@pytest.mark.parametrize("legacy_value", [None, "", "automatic"])
+def test_round_option_defaults_use_explicit_twelve_after_round_zero(legacy_value):
+    project = {} if legacy_value is None else {"query_count": legacy_value}
+
+    exploratory = runner.round_option_defaults(0, project)
+    research = runner.round_option_defaults(1, project)
+
+    assert exploratory["query_count"] == research["query_count"] == 12
+    assert exploratory["num_queries"] == 5
+    assert research["num_queries"] == 12
+
+
+def test_round_option_defaults_preserve_legacy_explicit_continuation_override():
+    project = {"num_queries": 17}
+
+    assert runner.round_option_defaults(0, project)["num_queries"] == 5
+    assert runner.round_option_defaults(1, project)["num_queries"] == 17
+
+
+def test_round_options_only_accept_known_switches_and_sane_counts():
+    assert runner.normalize_round_options(None) == {}
+    assert runner.normalize_round_options({"no_sandbox": True, "working_directory": "/etc"}) == {}
+    assert runner.normalize_round_options({"num_queries": "6"}) == {"num_queries": 6}
+
+    for rejected in (0, -1, runner.MAXIMUM_ROUND_QUERIES + 1, "many"):
+        with pytest.raises(runner.RoundLaunchError) as refused:
+            runner.normalize_round_options({"num_queries": rejected})
+        assert refused.value.code == "invalid_round_options"
+
+
+def test_a_chosen_data_folder_becomes_a_read_only_sandbox_exception(monkeypatch, project, backend, tmp_path):
+    chosen = tmp_path / "scientists data"
+    chosen.mkdir()
+    (chosen / "counts.csv").write_text("gene,count\n", encoding="utf-8")
+    link = Path(project["code_dir"]) / "data"
+    link.rmdir()
+    link.symlink_to(chosen, target_is_directory=True)
+    project = dict(project, external_data=True, data_dir=str(chosen))
+
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess())
+    monkeypatch.setattr(runner.threading, "Thread", NoopThread)
+    runner.start_round(project, env=launch_env(backend))
+
+    config = json.loads((Path(project["checkpoint_dir"]) / "config.json").read_text(encoding="utf-8"))["config"]
+    assert config["allowed_read_paths"] == str(chosen.resolve())
+    # Reads only: writes stay confined to the project's own working directory.
+    assert config["no_sandbox"] is False
+    assert (chosen / "counts.csv").read_text(encoding="utf-8") == "gene,count\n"
+
+
+def test_a_managed_project_grants_no_extra_read_paths(monkeypatch, project, backend):
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess())
+    monkeypatch.setattr(runner.threading, "Thread", NoopThread)
+
+    runner.start_round(project, env=launch_env(backend))
+
+    config = json.loads((Path(project["checkpoint_dir"]) / "config.json").read_text(encoding="utf-8"))["config"]
+    assert "allowed_read_paths" not in config
+
+
+def test_an_unavailable_chosen_folder_is_named_in_the_launch_error(project, backend, tmp_path):
+    chosen = tmp_path / "on a detached drive"
+    link = Path(project["code_dir"]) / "data"
+    link.rmdir()
+    link.symlink_to(chosen, target_is_directory=True)
+    project = dict(project, external_data=True, data_dir=str(chosen))
+
+    with pytest.raises(runner.RoundLaunchError) as unavailable:
+        runner.start_round(project, env=launch_env(backend))
+
+    assert unavailable.value.code == "data_folder_unavailable"
+    assert str(chosen) in unavailable.value.message
+
+
+
+def _install_test_skill(project, skill_id="test-skill", marker=None):
+    skill = Path(project["code_dir"]) / ".claude" / "skills" / skill_id
     skill.mkdir(parents=True)
     (skill / "SKILL.md").write_text(
-        "---\nname: test-skill\ndescription: Test instructions.\n---\n",
+        f"---\nname: {skill_id}\ndescription: Test instructions.\n---\n"
+        + (f"\n# Acceptance marker\n{marker}\n" if marker else ""),
         encoding="utf-8",
     )
     return skill.parent
 
 
-def test_round_zero_config_uses_current_project_skill_root(monkeypatch, project, backend):
-    expected = _install_test_skill(project)
+def _round_skill_snapshot(project, round_number=0):
+    return (
+        Path(project["project_root"])
+        / "checkpoint" / "checkpoints" / f"round_{round_number}"
+        / runner.ROUND_SKILLS_SNAPSHOT_DIRECTORY
+    )
+
+
+def test_round_zero_config_uses_immutable_skill_snapshot(monkeypatch, project, backend):
+    live_root = _install_test_skill(project)
     monkeypatch.setattr(runner.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess())
     monkeypatch.setattr(runner.threading, "Thread", NoopThread)
 
     runner.start_round(project, env=launch_env(backend))
 
     config = json.loads(Path(project["checkpoint_dir"]).joinpath("config.json").read_text())["config"]
+    expected = _round_skill_snapshot(project)
     assert config["execution_skills_path"] == str(expected)
+    assert expected != live_root
+    assert (expected / "test-skill" / "SKILL.md").is_file()
 
 
 def test_round_zero_without_skills_removes_stale_skill_path(monkeypatch, project, backend):
@@ -498,6 +822,7 @@ def test_round_zero_without_skills_removes_stale_skill_path(monkeypatch, project
 
     config = json.loads(config_file.read_text())["config"]
     assert "execution_skills_path" not in config
+    assert _round_skill_snapshot(project).is_dir()
 
 
 @pytest.mark.parametrize(
@@ -552,8 +877,48 @@ def test_continuation_uses_native_round_and_local_target_config(monkeypatch, pro
     assert "/lustre/" not in target_config.read_text()
 
 
-def test_continuation_recomputes_current_project_skill_root(monkeypatch, project, backend):
-    expected = _install_test_skill(project)
+def test_new_continuation_snapshots_the_projects_current_model(monkeypatch, project, backend):
+    source, _selection = make_continuation(project)
+    project["reasoning_model"] = "claude-sonnet-4-6"
+    project["execution_model"] = "claude-haiku-4-5-20251001"
+    project["query_count"] = 31
+    project["deep_research"] = True
+    project["web_search"] = False
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess())
+    monkeypatch.setattr(runner.threading, "Thread", NoopThread)
+
+    runner.start_round(project, env=launch_env(backend))
+
+    config = json.loads((source.parent / "round_4" / "config.json").read_text())["config"]
+    assert {config[field] for field in runner.model_catalog.REASONING_MODEL_CONFIG_FIELDS} == {
+        "claude-sonnet-4-6"
+    }
+    assert config["execution_model"] == "claude-haiku-4-5-20251001"
+    assert config["num_queries"] == 31
+    assert config["omit_deepresearch"] is False
+    assert config["omit_singlesearch"] is True
+
+
+def test_new_continuation_ignores_request_query_override_and_uses_project_snapshot(
+    monkeypatch, project, backend,
+):
+    source, _selection = make_continuation(project)
+    project["query_count"] = 19
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess())
+    monkeypatch.setattr(runner.threading, "Thread", NoopThread)
+
+    runner.start_round(
+        project,
+        env=launch_env(backend),
+        options=runner.normalize_round_options({"num_queries": 17}),
+    )
+
+    config = json.loads((source.parent / "round_4" / "config.json").read_text())["config"]
+    assert config["num_queries"] == 19
+
+
+def test_continuation_captures_current_project_skills_for_new_round(monkeypatch, project, backend):
+    live_root = _install_test_skill(project)
     source, _selection = make_continuation(project)
     payload = json.loads((source / "config.json").read_text())
     payload["config"]["execution_skills_path"] = "/stale/project/skills"
@@ -565,7 +930,35 @@ def test_continuation_recomputes_current_project_skill_root(monkeypatch, project
 
     target = source.parent / "round_4" / "config.json"
     config = json.loads(target.read_text())["config"]
+    expected = _round_skill_snapshot(project, 4)
     assert config["execution_skills_path"] == str(expected)
+    assert expected != live_root
+    assert (expected / "test-skill" / "SKILL.md").is_file()
+
+
+def test_skill_imported_after_one_round_capture_is_available_to_next_round(
+    monkeypatch, project, backend,
+):
+    marker = "ACCEPTANCE_SKILL_AVAILABLE_FROM_NEXT_ROUND"
+    _install_test_skill(project, "round-start-skill")
+    source, _selection = make_continuation(project)
+    previous_snapshot, has_skills = runner.capture_round_skills(project, source)
+    assert has_skills
+    _install_test_skill(project, "imported-mid-round", marker)
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess())
+    monkeypatch.setattr(runner.threading, "Thread", NoopThread)
+
+    runner.start_round(project, env=launch_env(backend))
+
+    next_snapshot = _round_skill_snapshot(project, 4)
+    config = json.loads((source.parent / "round_4" / "config.json").read_text())["config"]
+    assert config["execution_skills_path"] == str(next_snapshot)
+    assert (previous_snapshot / "round-start-skill" / "SKILL.md").is_file()
+    assert not (previous_snapshot / "imported-mid-round").exists()
+    assert (next_snapshot / "round-start-skill" / "SKILL.md").is_file()
+    next_skill = next_snapshot / "imported-mid-round" / "SKILL.md"
+    assert next_skill.is_file()
+    assert marker in next_skill.read_text(encoding="utf-8")
 
 
 def test_continuation_without_skills_drops_stale_inherited_path(monkeypatch, project, backend):
@@ -580,6 +973,7 @@ def test_continuation_without_skills_drops_stale_inherited_path(monkeypatch, pro
 
     target = source.parent / "round_4" / "config.json"
     assert "execution_skills_path" not in json.loads(target.read_text())["config"]
+    assert _round_skill_snapshot(project, 4).is_dir()
 
 
 def test_reselection_is_the_exact_hypothesis_read_at_launch(monkeypatch, project, backend):
@@ -716,6 +1110,55 @@ def test_read_only_status_inspector_matches_workspace_status(project):
     assert state_file.read_text(encoding="utf-8") == before
 
 
+@pytest.mark.parametrize("pid", [43210, None])
+def test_dead_or_missing_pid_cannot_remain_running_and_preserves_resume(
+    monkeypatch, project, pid,
+):
+    query = Path(project["checkpoint_dir"]) / "query_001"
+    query.mkdir()
+    (query / "checkpoint.json").write_text("{}", encoding="utf-8")
+    state_file = write_run_state(project, status="running", pid=pid)
+    monkeypatch.setattr(runner, "_pid_matches_state", lambda _state: False)
+
+    inspected = runner.inspect_round_status(project["checkpoint_dir"])
+    assert inspected["status"] == "failed"
+    assert inspected["pid"] is None
+    assert inspected["resumable"] is True
+    assert json.loads(state_file.read_text())["status"] == "running"
+
+    reconciled = runner.round_status(project)
+    assert reconciled["status"] == "failed"
+    assert reconciled["pid"] is None
+    assert reconciled["resumable"] is True
+    assert json.loads(state_file.read_text())["status"] == "failed"
+
+
+def test_monitor_preserves_user_interruption_but_records_unexpected_exit(project):
+    paths = runner._project_paths(project)
+    paths.update({
+        "round": 0,
+        "target_dir": Path(project["checkpoint_dir"]),
+        "lock_file": paths["log_dir"] / ".round_0.lock",
+    })
+
+    class Exited:
+        def __init__(self, code):
+            self.code = code
+
+        def wait(self):
+            return self.code
+
+    write_run_state(project, status="running")
+    runner._monitor_process(project, paths, Exited(7))
+    failed = json.loads(paths["state_file"].read_text())
+    assert failed["status"] == "failed" and failed["exit_code"] == 7
+
+    write_run_state(project, status="interrupted")
+    runner._monitor_process(project, paths, Exited(-15))
+    interrupted = json.loads(paths["state_file"].read_text())
+    assert interrupted["status"] == "interrupted" and interrupted["exit_code"] == -15
+
+
 def test_already_dead_recorded_process_becomes_interrupted(monkeypatch, project):
     class DeadProcess:
         def poll(self): return -15
@@ -744,6 +1187,10 @@ def test_completed_round_cannot_be_stopped(project):
 
 def test_resubmit_nonresumable_round_archives_attempt_and_restarts_same_round(monkeypatch, project, backend):
     round_dir = Path(project["checkpoint_dir"])
+    live_root = _install_test_skill(project, "round-start-skill")
+    snapshot, has_skills = runner.capture_round_skills(project, round_dir)
+    assert has_skills
+    _install_test_skill(project, "imported-after-start")
     (round_dir / "round_activity.jsonl").write_text('{"event":"round_started"}\n', encoding="utf-8")
     (round_dir / "partial.txt").write_text("preserved", encoding="utf-8")
     write_run_state(project, status="interrupted")
@@ -765,6 +1212,10 @@ def test_resubmit_nonresumable_round_archives_attempt_and_restarts_same_round(mo
     assert not (round_dir / "partial.txt").exists()
     config = json.loads((round_dir / "config.json").read_text(encoding="utf-8"))["config"]
     assert config["num_queries"] == 2
+    assert config["execution_skills_path"] == str(snapshot)
+    assert (snapshot / "round-start-skill" / "SKILL.md").is_file()
+    assert not (snapshot / "imported-after-start").exists()
+    assert (live_root / "imported-after-start" / "SKILL.md").is_file()
     assert captured["command"][-2:] == ["--num_rounds", "1"]
 
 
@@ -869,6 +1320,7 @@ def test_resume_reuses_same_round_config_and_contains_no_secret(monkeypatch, pro
     target_config.write_text(json.dumps(target_payload), encoding="utf-8")
     original_config = (target / "config.json").read_text()
     write_run_state(project, status="interrupted", round_number=4)
+    interrupted_run_id = runner.round_status(project)["run_id"]
     captured = {}
     monkeypatch.setattr(runner.threading, "Thread", NoopThread)
     monkeypatch.setattr(runner.subprocess, "Popen", lambda command, **kwargs: (captured.update(command=command, kwargs=kwargs) or FakeProcess()))
@@ -876,18 +1328,51 @@ def test_resume_reuses_same_round_config_and_contains_no_secret(monkeypatch, pro
     result = runner.resume_round(project, env=launch_env(backend))
 
     assert result["round"] == 4 and result["resumed"] is True
+    assert result["run_id"] != interrupted_run_id
     assert captured["command"] == [str(backend[1]), str(backend[2]), "--config-file", str(target / "config.json"), "--num_rounds", "1"]
     assert "test-secret-never-persist" not in " ".join(captured["command"])
     assert captured["kwargs"]["env"]["ANTHROPIC_API_KEY"] == "test-secret-never-persist"
-    assert (target / "config.json").read_text() == original_config
+    updated_config = json.loads((target / "config.json").read_text())["config"]
+    assert updated_config["working_directory"] == project["code_dir"]
+    assert updated_config["existing_codebase"] == project["code_dir"]
     assert json.loads(original_config)["config"]["selected_hypothesis_file"] == str(selection)
+    assert updated_config["selected_hypothesis_file"] == str(selection)
     assert not (source.parent / "round_5").exists()
 
 
-def test_resume_applies_skill_imported_after_interruption(monkeypatch, project, backend):
+def test_resume_retains_the_interrupted_round_model_snapshot(monkeypatch, project, backend):
     source, _selection = make_continuation(project, target_incomplete=True)
     target_config = source.parent / "round_4" / "config.json"
-    expected = _install_test_skill(project)
+    payload = json.loads(target_config.read_text(encoding="utf-8"))
+    interrupted_model = "claude-haiku-4-5-20251001"
+    payload["config"].update({
+        **{
+            field: interrupted_model
+            for field in runner.model_catalog.PROJECT_MODEL_CONFIG_FIELDS
+        },
+    })
+    target_config.write_text(json.dumps(payload), encoding="utf-8")
+    project["project_model"] = "claude-sonnet-4-6"
+    project["query_count"] = 49
+    project["deep_research"] = False
+    project["web_search"] = False
+    write_run_state(project, status="interrupted", round_number=4)
+    monkeypatch.setattr(runner.threading, "Thread", NoopThread)
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess())
+
+    runner.resume_round(project, env=launch_env(backend))
+
+    resumed = json.loads(target_config.read_text(encoding="utf-8"))["config"]
+    assert {resumed[field] for field in runner.model_catalog.PROJECT_MODEL_CONFIG_FIELDS} == {
+        interrupted_model
+    }
+    assert resumed["num_queries"] == 12
+
+
+def test_legacy_resume_without_snapshot_captures_current_skills_once(monkeypatch, project, backend):
+    source, _selection = make_continuation(project, target_incomplete=True)
+    target_config = source.parent / "round_4" / "config.json"
+    live_root = _install_test_skill(project)
     write_run_state(project, status="interrupted", round_number=4)
     monkeypatch.setattr(runner.threading, "Thread", NoopThread)
     monkeypatch.setattr(runner.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess())
@@ -895,17 +1380,25 @@ def test_resume_applies_skill_imported_after_interruption(monkeypatch, project, 
     runner.resume_round(project, env=launch_env(backend))
 
     config = json.loads(target_config.read_text(encoding="utf-8"))["config"]
+    expected = _round_skill_snapshot(project, 4)
     assert config["execution_skills_path"] == str(expected)
+    assert expected != live_root
+    assert (expected / "test-skill" / "SKILL.md").is_file()
     assert config["num_queries"] == 12
-    assert config["working_directory"] == "/lustre/old/code"
+    assert config["working_directory"] == project["code_dir"]
+    assert config["existing_codebase"] == project["code_dir"]
 
 
-def test_resume_drops_skill_path_removed_after_interruption(monkeypatch, project, backend):
+def test_resume_keeps_captured_skill_removed_from_live_project_after_interruption(
+    monkeypatch, project, backend,
+):
     source, _selection = make_continuation(project, target_incomplete=True)
     target_config = source.parent / "round_4" / "config.json"
     skill_root = _install_test_skill(project)
+    snapshot, has_skills = runner.capture_round_skills(project, target_config.parent)
+    assert has_skills
     payload = json.loads(target_config.read_text(encoding="utf-8"))
-    payload["config"]["execution_skills_path"] = str(skill_root)
+    payload["config"]["execution_skills_path"] = str(snapshot)
     target_config.write_text(json.dumps(payload), encoding="utf-8")
     shutil.rmtree(skill_root / "test-skill")
     write_run_state(project, status="interrupted", round_number=4)
@@ -915,26 +1408,92 @@ def test_resume_drops_skill_path_removed_after_interruption(monkeypatch, project
     runner.resume_round(project, env=launch_env(backend))
 
     config = json.loads(target_config.read_text(encoding="utf-8"))["config"]
-    assert "execution_skills_path" not in config
+    assert config["execution_skills_path"] == str(snapshot)
+    assert (snapshot / "test-skill" / "SKILL.md").is_file()
     assert config["num_queries"] == 12
-    assert config["working_directory"] == "/lustre/old/code"
+    assert config["working_directory"] == project["code_dir"]
+    assert config["existing_codebase"] == project["code_dir"]
 
 
-def test_resume_with_unchanged_skills_keeps_config_byte_identical(monkeypatch, project, backend):
+def test_resume_refreshes_only_runtime_locations_when_skills_are_unchanged(monkeypatch, project, backend):
     source, _selection = make_continuation(project, target_incomplete=True)
     target_config = source.parent / "round_4" / "config.json"
     skill_root = _install_test_skill(project)
+    snapshot, has_skills = runner.capture_round_skills(project, target_config.parent)
+    assert has_skills
     payload = json.loads(target_config.read_text(encoding="utf-8"))
-    payload["config"]["execution_skills_path"] = str(skill_root)
+    payload["config"]["execution_skills_path"] = str(snapshot)
+    payload["config"]["working_directory"] = project["code_dir"]
+    payload["config"]["existing_codebase"] = project["code_dir"]
     target_config.write_text(json.dumps(payload, indent=3), encoding="utf-8")
-    original = target_config.read_text(encoding="utf-8")
+    original = json.loads(target_config.read_text(encoding="utf-8"))["config"]
     write_run_state(project, status="interrupted", round_number=4)
     monkeypatch.setattr(runner.threading, "Thread", NoopThread)
     monkeypatch.setattr(runner.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess())
 
     runner.resume_round(project, env=launch_env(backend))
 
-    assert target_config.read_text(encoding="utf-8") == original
+    resumed = json.loads(target_config.read_text(encoding="utf-8"))["config"]
+    assert resumed["working_directory"] == project["code_dir"]
+    assert resumed["existing_codebase"] == project["code_dir"]
+    assert resumed["log_dir"] == str(Path(project["project_root"]) / "checkpoint")
+    assert resumed["checkpoint_base_dir"] == str(Path(project["project_root"]) / "checkpoint" / "checkpoints")
+    assert resumed["execution_skills_path"] == original["execution_skills_path"]
+    assert resumed["num_queries"] == original["num_queries"]
+
+
+def test_app_restart_and_resume_do_not_discover_skill_imported_after_round_capture(
+    monkeypatch, project, backend,
+):
+    marker = "ACCEPTANCE_SKILL_MUST_NOT_ENTER_RESUMED_ROUND"
+    source, _selection = make_continuation(project, target_incomplete=True)
+    target_config = source.parent / "round_4" / "config.json"
+    _install_test_skill(project, "round-start-skill")
+    snapshot, has_skills = runner.capture_round_skills(project, target_config.parent)
+    assert has_skills
+    payload = json.loads(target_config.read_text(encoding="utf-8"))
+    payload["config"]["execution_skills_path"] = str(snapshot)
+    target_config.write_text(json.dumps(payload), encoding="utf-8")
+
+    _install_test_skill(project, "imported-mid-round", marker)
+    write_run_state(project, status="interrupted", round_number=4)
+    runner._PROCESSES.clear()  # model a fresh frontend process after app restart
+    monkeypatch.setattr(runner.threading, "Thread", NoopThread)
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess())
+
+    runner.resume_round(project, env=launch_env(backend))
+
+    resumed = json.loads(target_config.read_text(encoding="utf-8"))["config"]
+    assert resumed["execution_skills_path"] == str(snapshot)
+    assert (snapshot / "round-start-skill" / "SKILL.md").is_file()
+    assert not (snapshot / "imported-mid-round").exists()
+    live_skill = (
+        Path(project["code_dir"]) / ".claude" / "skills"
+        / "imported-mid-round" / "SKILL.md"
+    )
+    assert live_skill.is_file()
+    assert marker in live_skill.read_text(encoding="utf-8")
+    assert all(
+        marker not in path.read_text(encoding="utf-8")
+        for path in snapshot.glob("*/SKILL.md")
+    )
+
+
+def test_resume_preserves_captured_empty_skill_set(monkeypatch, project, backend):
+    source, _selection = make_continuation(project, target_incomplete=True)
+    target_config = source.parent / "round_4" / "config.json"
+    snapshot, has_skills = runner.capture_round_skills(project, target_config.parent)
+    assert snapshot.is_dir() and not has_skills
+    _install_test_skill(project, "imported-mid-round")
+    write_run_state(project, status="interrupted", round_number=4)
+    monkeypatch.setattr(runner.threading, "Thread", NoopThread)
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess())
+
+    runner.resume_round(project, env=launch_env(backend))
+
+    resumed = json.loads(target_config.read_text(encoding="utf-8"))["config"]
+    assert "execution_skills_path" not in resumed
+    assert list(snapshot.iterdir()) == []
 
 
 @pytest.mark.parametrize("query_budget", [5, 12])
@@ -953,19 +1512,68 @@ def test_resume_preserves_existing_query_budget(monkeypatch, project, backend, q
     config = json.loads(target_config.read_text(encoding="utf-8"))["config"]
     assert result["round"] == 4 and result["resumed"] is True
     assert config["num_queries"] == query_budget
-    assert target_config.read_text(encoding="utf-8") == original_config
+    assert config["working_directory"] == project["code_dir"]
+    assert config["existing_codebase"] == project["code_dir"]
+    original = json.loads(original_config)["config"]
+    assert config["analysis_name"] == original["analysis_name"]
+    assert config["human_selection"] == original["human_selection"]
 
 
-def test_backend_cli_num_queries_default_remains_five():
-    parser_source = (
+def test_resume_round_zero_preserves_its_interrupted_query_snapshot(monkeypatch, project, backend):
+    round_dir = Path(project["checkpoint_dir"])
+    query = round_dir / "query_000"
+    query.mkdir()
+    (query / "checkpoint.json").write_text("{}", encoding="utf-8")
+    write_run_state(project, status="interrupted", round_number=0)
+    monkeypatch.setattr(runner.threading, "Thread", NoopThread)
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess())
+
+    result = runner.resume_round(project, env=launch_env(backend))
+
+    config = json.loads((round_dir / "config.json").read_text(encoding="utf-8"))["config"]
+    assert result["round"] == 0 and result["resumed"] is True
+    assert config["num_queries"] == 2
+
+
+def backend_arg_parser_source() -> str:
+    return (
         Path(runner.__file__).resolve().parents[2]
         / "discoveryagent" / "AIR" / "utils" / "arg_parsers.py"
     ).read_text(encoding="utf-8")
 
+
+def test_backend_cli_num_queries_default_remains_five():
     assert re.search(
         r'add_argument\("--num_queries",\s*type=int,\s*default=5,',
-        parser_source,
+        backend_arg_parser_source(),
     )
+
+
+def test_backend_cli_execution_agent_runs_until_it_finishes():
+    assert re.search(
+        r'add_argument\("--execution_max_turns",\s*type=int,\s*default=0,',
+        backend_arg_parser_source(),
+    )
+
+
+def test_backend_cli_model_defaults_share_the_project_default():
+    source = backend_arg_parser_source()
+    assert 'DEFAULT_ANTHROPIC_MODEL = "claude-opus-4-6"' in source
+    for field in runner.model_catalog.PROJECT_MODEL_CONFIG_FIELDS:
+        assert re.search(
+            rf'add_argument\("--{field}",\s*type=anthropic_model_id,\s*default=DEFAULT_ANTHROPIC_MODEL',
+            source,
+        ), field
+    assert runner.model_catalog.DEFAULT_PROJECT_MODEL == "claude-opus-4-6"
+
+
+def test_frontend_mapping_covers_every_backend_workflow_model_argument():
+    source = backend_arg_parser_source()
+    backend_model_fields = set(re.findall(
+        r'add_argument\("--([a-z_]*model)"', source,
+    )) - {"project_model"}
+
+    assert backend_model_fields == set(runner.model_catalog.PROJECT_MODEL_CONFIG_FIELDS)
 
 
 def test_latest_native_checkpoint_matches_backend_numeric_semantics(project):
@@ -994,3 +1602,24 @@ def test_resume_requires_checkpoint_and_rejects_completed_or_running(monkeypatch
     with pytest.raises(runner.RoundLaunchError) as running:
         runner.resume_round(project, env=launch_env(backend))
     assert running.value.code == "round_already_running"
+
+
+def test_double_resume_launches_only_one_process(monkeypatch, project, backend):
+    make_continuation(project, target_incomplete=True)
+    write_run_state(project, status="interrupted", round_number=4)
+    launches = []
+    monkeypatch.setattr(runner.threading, "Thread", NoopThread)
+    monkeypatch.setattr(
+        runner.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: launches.append(FakeProcess()) or launches[-1],
+    )
+
+    first = runner.resume_round(project, env=launch_env(backend))
+    monkeypatch.setattr(runner, "_pid_matches_state", lambda _state: True)
+    with pytest.raises(runner.RoundLaunchError) as duplicate:
+        runner.resume_round(project, env=launch_env(backend))
+
+    assert first["resumed"] is True
+    assert duplicate.value.code == "round_already_running"
+    assert len(launches) == 1

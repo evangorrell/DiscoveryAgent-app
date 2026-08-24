@@ -31,13 +31,8 @@ def _create(client, name="Optic Nerve Regeneration"):
 
 
 def _round_dir(tmp_path, project_id, round_number):
-    return (
-        tmp_path
-        / project_id
-        / "checkpoint"
-        / "checkpoints"
-        / f"round_{round_number}"
-    )
+    project_root = Path(app_module._v2_get_project(project_id)["project_root"])
+    return project_root / "checkpoint" / "checkpoints" / f"round_{round_number}"
 
 
 def _complete_round(tmp_path, project_id, round_number, marker, *, summary=True):
@@ -118,6 +113,34 @@ def test_round_workspace_summary_full_and_figures_are_exact_round(monkeypatch, t
     assert "round_2" not in one_summary["figures"][0]["url"]
 
 
+def test_round_report_pair_is_one_logical_entry_without_hiding_unrelated_summaries(
+    monkeypatch, tmp_path,
+):
+    client = _client(monkeypatch, tmp_path)
+    project_id, slug = _create(client)
+    round_dir = _complete_round(tmp_path, project_id, 1, "ROUND ONE")
+    (round_dir / "experiment_summary.md").write_text(
+        "# Independent summary\n", encoding="utf-8",
+    )
+    _activate(client, slug)
+
+    entry = next(
+        item for item in client.get("/api/round_workspace_tree").get_json()["rounds"]
+        if item["round_index"] == 1
+    )
+    names = [child["name"] for child in entry["tree"]["children"]]
+    report = next(
+        child for child in entry["tree"]["children"]
+        if child.get("report_kind") == "round"
+    )
+
+    assert names.count("round_report.md") == 1
+    assert "round_report_summary.md" not in names
+    assert "experiment_summary.md" in names
+    assert report["has_report_summary"] is True
+    assert report["has_report_full"] is True
+
+
 def test_missing_summary_is_not_substituted_from_another_round(monkeypatch, tmp_path):
     client = _client(monkeypatch, tmp_path)
     project_id, slug = _create(client)
@@ -145,12 +168,25 @@ def test_round_workspace_report_controls_preserve_round_and_current_view():
     assert "reportArtifactPath" in js
     assert "round_report_summary.md" in js
     assert "setReportView(file,view)" in js
-    assert "params.set('report_view','summary')" in js
+    assert "params.set('report_view','full')" in js
+    assert "params.delete('report_view')" in js
     assert "reportDownloadUrl({...file,reportView:current})" in js
     assert "file.round" in js
-    assert "file.hasReportSummary=Boolean(owner.has_round_report_summary)" in js
-    assert "owner.round_index===requestedRound&&requestedReportView==='summary'" in js
-    assert "if(report&&file.hasReportSummary)" in js
+    assert "file.hasReportSummary=item.has_report_summary" in js
+    assert "file.reportView=file.hasReportSummary?'summary':'full'" in js
+    assert "roundReportFile(reviewRound,requestedReportView)" in js
+    assert "file.hasReportSummary&&file.hasReportFull" in js
+    assert "['full','Full Report']" in js
+
+
+def test_report_workspace_urls_use_summary_as_default_and_encode_explicit_full():
+    with app_module.app.test_request_context("/"):
+        assert app_module._v2_round_workspace_report_url("project", 4) == (
+            "/rounds/?project=project&round=4&review=1"
+        )
+        assert app_module._v2_round_workspace_report_url(
+            "project", 4, view="full",
+        ) == "/rounds/?project=project&round=4&review=1&report_view=full"
 
 
 def _research_markdown_artifacts(round_dir, marker):
@@ -326,6 +362,7 @@ def test_markdown_artifact_controls_reuse_report_download_control_and_follow_tab
     assert "function artifactViewControls(file)" in js
     assert "const viewControls=artifactViewControls(file)" in js
     assert "download.innerHTML='<svg class=\"rw-report-download-icon\"" in js
+    assert js.index("download.innerHTML='<svg class=\"rw-report-download-icon\"") < js.index("<span>Download</span>'")
     assert "download.href=report?reportDownloadUrl" in js
     assert ":markdownArtifactDownloadUrl(file)" in js
 

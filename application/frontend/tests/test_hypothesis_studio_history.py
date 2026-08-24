@@ -788,6 +788,29 @@ def test_selection_review_uses_neutral_dialog_focus_treatment():
     assert "outline: 1px solid var(--v2-border);" in css
 
 
+def test_hypothesis_chat_markdown_has_scoped_reading_rhythm():
+    stylesheet = Path(app_module.app.static_folder) / "hypothesis_studio.css"
+    css = stylesheet.read_text(encoding="utf-8")
+
+    scope = ".hs-thread .hs-turn-assistant .hs-turn-body"
+    assert f"{scope} {{" in css
+    assert "line-height: 1.65;" in css
+    assert f"{scope} h1," in css
+    assert "margin: 1.5rem 0 0.5rem;" in css
+    assert f"{scope} p {{" in css
+    assert "margin: 0 0 0.75rem;" in css
+    assert f"{scope} .hs-markdown-section-label {{" in css
+    assert "margin-top: 1.15rem;" in css
+    assert f"{scope} ul," in css
+    assert f"{scope} blockquote {{" in css
+    assert f"{scope} table {{" in css
+    assert f"{scope} pre {{" in css
+
+    # The shared prose renderer remains untouched; this rhythm is chat-only.
+    shared = (Path(app_module.app.static_folder) / "style.css").read_text(encoding="utf-8")
+    assert scope not in shared
+
+
 def test_selection_api_accepts_optional_execution_guidance(monkeypatch, tmp_path):
     rd = _round_dir(tmp_path)
     gen = FakeGenerator(rd)
@@ -1169,14 +1192,17 @@ def test_round_launch_failure_after_selection_preserves_pending_selection(monkey
     assert selected.get_json()["success"] is True
     before_launch = rd.joinpath("selected_hypothesis.md").read_text(encoding="utf-8")
 
-    def fail_launch(_project):
+    def fail_launch(_project, options=None):
         raise app_module.local_round_runner.RoundLaunchError(
             "anthropic_api_key_missing",
             "Anthropic API key not detected. Set ANTHROPIC_API_KEY and try again.",
         )
 
     monkeypatch.setattr(app_module.local_round_runner, "start_round", fail_launch)
-    launch = client.post("/api/rounds/start")
+    launch = client.post(
+        "/api/rounds/start",
+        json={"project_id": app_module._v2_load_projects()[0]["id"]},
+    )
 
     assert launch.status_code == 400
     assert launch.get_json()["code"] == "anthropic_api_key_missing"
@@ -1759,9 +1785,9 @@ def test_studio_render_keeps_pristine_overlay_but_enables_eligible_generation(mo
     assert 'class="v2-modal-overlay v2-blocking-overlay"' in html
     assert 'class="v2-modal v2-blocking-box"' in html
     assert "hypothesis_studio.css') }}" not in html
-    assert "hypothesis_studio.css?v=20260817-review-simplification" in html
+    assert "hypothesis_studio.css?v=20260823-chat-markdown-rhythm" in html
     assert "hypothesis_layout.js?v=20260817-regeneration-independent-expansion" in html
-    assert "hypothesis_studio.js?v=20260817-version-scoped-operation-lanes" in html
+    assert "hypothesis_studio.js?v=20260823-markdown-ordered-lists" in html
     assert "hypothesis_events.js?v=20260808-selected-lineage-reindex" in html
     assert "hypothesis_activity.js?v=20260711-unseen-activity" in html
     assert 'Select <span class="v2-arrow" aria-hidden="true">&rarr;</span>' in html
@@ -2016,21 +2042,14 @@ def test_studio_routes_llm_edits_but_not_manual_edits_through_version_append():
     revise = js[js.index("async function sendRevise"):js.index("// ---- regenerate / manual edit / remove")]
     manual = js[js.index("async function runManualEdit"):js.index("async function runRemove")]
 
-    assert "source: 'regenerated'" in revise
-    assert "const createdResultEventId = data.result_event_id || nextEventId();" in revise
-    assert "id: createdResultEventId" in revise
-    assert "const durableSourceResultId = data.source_result_event_id || versionView.viewedResultEventId;" in revise
-    assert "sourceResultEventId: durableSourceResultId" in revise
-    assert "setViewedVersionResultId(responseIndex, createdResultEventId);" in revise
-    assert "await restoreCurrentCardsFromHistory();" not in revise
-    assert "role: 'assistant'" in revise
-    assert "content: data.version_created_message" in revise
-    assert "'Created Version ' +" in revise
-    assert "'I created Version '" not in revise
-    assert "resultEventId: durableSourceResultId" in revise
-    append_revision = revise.index("kind: 'revision'")
-    terminal_success = revise.index("finishLlmEditRequest(idx, started);", append_revision)
-    assert append_revision < terminal_success < revise.index("render();", terminal_success)
+    assert "authoritativeRevisionResponse(data, started, h)" in revise
+    assert "await restoreCurrentCardsFromHistory({" in revise
+    assert "authoritativeRevision: authoritativeRevision" in revise
+    assert "data.created_version_number ||" not in revise
+    assert "kind: 'revision'" not in revise
+    assert "state.events.push({" not in revise
+    terminal_success = revise.index("finishLlmEditRequest(idx, started);")
+    assert terminal_success < revise.index("render();", terminal_success)
     assert "source: editingHistorical ? 'historical-edit' : 'revised'" in manual
     assert "resultEventId: versionView.viewedResultEventId" in manual
     assert "data.result_event_id" not in manual
@@ -2255,13 +2274,12 @@ def test_hypothesis_chat_fifo_and_llm_edit_lock_advance_context_before_unlock():
     promote = discuss.index("promoteNextQueuedThreadMessage(idx);", discuss_finish)
     assert assistant_reply < discuss_finish < discuss.index("renderThread();", discuss_finish) < promote
 
-    # Version N+1 enters local state before edit ownership is released. The
-    # exact response event is authoritative, so no global history replacement
-    # can race a newly-started chat or overwrite visible navigation.
-    append_revision = revise.index("kind: 'revision'")
-    revise_finish = revise.index("finishLlmEditRequest(idx, started);", append_revision)
-    assert append_revision < revise_finish < revise.index("render();", revise_finish)
-    assert "restoreCurrentCardsFromHistory" not in revise
+    # The validated response triggers a targeted durable-history refresh before
+    # edit ownership is released and the card is repainted.
+    refresh_revision = revise.index("await restoreCurrentCardsFromHistory({")
+    revise_finish = revise.index("finishLlmEditRequest(idx, started);", refresh_revision)
+    assert refresh_revision < revise_finish < revise.index("render();", revise_finish)
+    assert "authoritativeRevision: authoritativeRevision" in revise
 
     # Every chat resolves the active card and its captured version. Historical
     # queued chat therefore keeps its durable result id even if the scientist
@@ -2344,7 +2362,7 @@ def test_llm_edit_terminal_paths_release_the_lock_and_reject_late_cancelled_resu
 
     # Success, removed-card reconciliation, API failure, and network failure
     # all finish the request and clear the scoped revise busy marker.
-    assert revise.count("finishLlmEditRequest(idx, started);") == 4
+    assert revise.count("finishLlmEditRequest(idx, started);") == 5
     assert "finishThreadRequest(idx, started.resultEventId, started.requestId);" in finish
     assert "state.busyIndex === idx && state.busyKind === 'revise'" in finish
     assert "state.composerMode = 'chat';" in finish
@@ -2475,8 +2493,10 @@ def test_request_provenance_never_reapplies_visible_version_ownership():
     assert "busyResultEventId = pending.resultEventId" in pending
     assert "const preservedViewedResultIds = viewedVersionResultIds();" in restore
     assert "restoreViewedVersionResultIds(preservedViewedResultIds);" in restore
-    assert "const sourceStillViewed = sameThreadResultEventId(" in revise
-    assert "state.focusIndex = responseIndex" not in revise
+    assert "authoritativeRevisionResponse(data, started, h)" in revise
+    assert "authoritativeRevision: authoritativeRevision" in revise
+    assert "setViewedVersionResultId(" in restore
+    assert "state.focusIndex = authoritativeRevision.index" not in revise
 
 
 def test_background_regeneration_completion_does_not_rerender_focused_transcript():
@@ -3225,11 +3245,14 @@ def test_historical_chat_uses_viewed_snapshot_and_thread_without_creating_versio
 def test_historical_llm_revision_from_v1_appends_global_v5_and_preserves_v2_through_v4(monkeypatch, tmp_path):
     rd, gen, client = _guided_client(monkeypatch, tmp_path)
     seeded = _seed_four_version_history(rd, gen)
+    with client.session_transaction() as session_state:
+        session_state["v2_active_project_slug"] = "isolated-project"
 
     response = client.post("/api/edit", json={
         "index": 1,
         "state_id": seeded["states"][3],
         "feedback": "Make this more mechanistic.",
+        "request_id": "client-revision-v5",
         "action": "edit_regeneration_version",
         "regeneration_position": 0,
         "regeneration_result_id": seeded["result_ids"][0],
@@ -3238,7 +3261,13 @@ def test_historical_llm_revision_from_v1_appends_global_v5_and_preserves_v2_thro
     body = response.get_json()
     assert response.status_code == 200 and body["success"] is True
     assert body["created_version_number"] == 5
+    assert body["authoritative_version_total"] == 5
     assert body["version_created_message"] == "Created Version 5."
+    assert body["project_slug"] == "isolated-project"
+    assert body["request_id"] == "client-revision-v5"
+    assert body["hypothesis_index"] == body["hypothesis"]["index"] == 1
+    assert body["source_state_id"] == seeded["states"][3]
+    assert body["source_result_event_id"] == seeded["result_ids"][0]
     assert seeded["texts"][0] in gen.edit_calls[-1]["feedback"]
     assert gen.used_thread_ids[-1] == seeded["threads"][0]
     history = _version_history(gen)

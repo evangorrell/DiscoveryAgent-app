@@ -33,6 +33,10 @@ const pendingRestoreSource = sourceBetween(
     '    function applyPendingThreadFromStorage(',
     '    async function pollPendingThreadCompletion('
 );
+const versionControlsSource = sourceBetween(
+    '    function regenerationVersionControls(',
+    '    function manualEditBlock('
+);
 
 function hypothesis(index, version) {
     return {
@@ -144,13 +148,19 @@ test('a delayed history reconciliation preserves the newest cross-card version c
         'state', 'apiJsonWithTimeout', 'applyHistoryList',
         'viewedVersionResultIds', 'deriveCards', 'regenerationViewFor',
         'HSE', 'nextEventId', 'restoreViewedVersionResultIds', 'hasHypotheses',
+        'setViewedVersionResultId',
         `${restoreCardsSource}
          return restoreCurrentCardsFromHistory;`
     )(
         harness.state,
         async () => {
             requestCount += 1;
-            if (requestCount === 1) return { resp: { ok: true }, data: { success: true } };
+            if (requestCount === 1) {
+                return {
+                    resp: { ok: true },
+                    data: { success: true, current_round_index: 0 },
+                };
+            }
             return detail.promise;
         },
         () => {},
@@ -160,7 +170,8 @@ test('a delayed history reconciliation preserves the newest cross-card version c
         harness.HSE,
         () => 'unused',
         harness.restoreViewedVersionResultIds,
-        () => true
+        () => true,
+        harness.setViewedVersionResultId
     );
 
     const pendingRestore = restore();
@@ -195,8 +206,16 @@ test('a delayed history reconciliation preserves the newest cross-card version c
     assert.equal(regenerationViewFor(harness.state, hypothesis(2, 3)).viewedResultEventId, 'set-v1');
 });
 
-function makeEditHarness({ succeeds = true } = {}) {
+function makeEditHarness({
+    succeeds = true,
+    createdVersion = 5,
+    initialEvents = versionEvents(),
+    refreshedEvents = versionEvents({ includeH1V5: true }),
+    responseOverrides = {},
+    restoreSucceeds = true,
+} = {}) {
     const versions = makeVersionHarness();
+    versions.state.events = initialEvents;
     const state = Object.assign(versions.state, {
         composerMode: 'edit',
         busyIndex: null,
@@ -213,7 +232,8 @@ function makeEditHarness({ succeeds = true } = {}) {
     let requestSequence = 50;
     const errors = [];
     const renderCalls = [];
-    const els = { input: { value: 'Create Version 5' } };
+    const restoreCalls = [];
+    const els = { input: { value: 'Create Version ' + createdVersion } };
 
     function currentThreadResultEventId(index) {
         const active = HSEvents.activeHypothesis(state.events, index);
@@ -237,7 +257,7 @@ function makeEditHarness({ succeeds = true } = {}) {
         return true;
     }
     const sendRevise = new Function(
-        'state', 'isPendingSelectedCard', 'selectedCardLockMessage', 'setComposerError',
+        'state', 'CFG', 'isPendingSelectedCard', 'selectedCardLockMessage', 'setComposerError',
         'hasAnyLlmEditActive', 'refreshSendEnabled', 'els', 'autoGrow',
         'activeMutationHypothesis', 'regenerationViewFor', 'hypothesisMarkdown',
         'hypothesisBodyMarkdown', 'beginThreadRequest', 'renderCards', 'renderThread',
@@ -249,6 +269,7 @@ function makeEditHarness({ succeeds = true } = {}) {
          return sendRevise;`
     )(
         state,
+        { projectSlug: 'project-a' },
         () => false,
         () => '',
         (message) => { if (message) errors.push(message); },
@@ -275,23 +296,40 @@ function makeEditHarness({ succeeds = true } = {}) {
         () => `local-${requestSequence}`,
         versions.setViewedVersionResultId,
         () => true,
-        async () => true,
+        async (options) => {
+            restoreCalls.push(options);
+            if (!restoreSucceeds) return false;
+            if (options.shouldApply && !options.shouldApply()) return false;
+            state.events = refreshedEvents;
+            return versions.setViewedVersionResultId(
+                options.authoritativeRevision.index,
+                options.authoritativeRevision.resultEventId
+            );
+        },
         () => renderCalls.push('render'),
         false
     );
     return {
-        ...versions, state, activeThreadRequests, errors, renderCalls,
+        ...versions, state, activeThreadRequests, errors, renderCalls, restoreCalls,
         editResponse, sendRevise,
         resolveEdit() {
+            const source = HSEvents.activeHypothesis(state.events, 1);
+            const responseData = {
+                success: true,
+                project_slug: 'project-a',
+                request_id: 'request-' + requestSequence,
+                hypothesis_index: 1,
+                source_state_id: source && source.state_id,
+                hypothesis: hypothesis(1, createdVersion),
+                result_event_id: 'h1-v' + createdVersion,
+                source_result_event_id: 'h1-v2',
+                created_version_number: createdVersion,
+                authoritative_version_total: createdVersion,
+                version_created_message: 'Created Version ' + createdVersion + '.',
+            };
             editResponse.resolve(succeeds ? {
                 resp: { ok: true },
-                data: {
-                    success: true,
-                    hypothesis: hypothesis(1, 5),
-                    result_event_id: 'h1-v5',
-                    source_result_event_id: 'h1-v2',
-                    created_version_number: 5,
-                },
+                data: Object.assign(responseData, responseOverrides),
             } : { resp: { ok: false }, data: { error: 'Edit failed.' } });
         },
     };
@@ -314,6 +352,14 @@ test('Edit provenance stays on H1 V2 while H2 navigation remains mutable and the
     assert.equal(regenerationViewFor(harness.state, hypothesis(1, 5)).viewedResultEventId, 'h1-v5');
     assert.equal(regenerationViewFor(harness.state, hypothesis(2, 3)).viewedResultEventId, 'h2-v3');
     assert.equal(harness.state.focusIndex, 2);
+    assert.equal(harness.restoreCalls.length, 1);
+    assert.deepEqual(harness.restoreCalls[0].authoritativeRevision, {
+        index: 1,
+        resultEventId: 'h1-v5',
+        createdStateId: 'h1-state-v5',
+        versionNumber: 5,
+        versionTotal: 5,
+    });
     assert.ok(harness.activeThreadRequests['1:h1-v4']);
     assert.equal(harness.activeThreadRequests['1:h1-v2'], undefined);
 
@@ -326,6 +372,45 @@ test('Edit provenance stays on H1 V2 while H2 navigation remains mutable and the
     });
     delete harness.activeThreadRequests['1:h1-v4'];
     assert.deepEqual(harness.state.viewedRegenerationPositions, beforeLateChat);
+});
+
+test('Version 2 of 3 becomes authoritative Version 4 of 4 immediately after Edit', async () => {
+    const initialEvents = versionEvents().filter((event) => event.id !== 'h1-v4');
+    const refreshedEvents = versionEvents();
+    const harness = makeEditHarness({
+        createdVersion: 4,
+        initialEvents,
+        refreshedEvents,
+    });
+    assert.equal(
+        regenerationViewFor(harness.state, hypothesis(1, 3)).viewedPosition + 1,
+        2
+    );
+    assert.equal(regenerationViewFor(harness.state, hypothesis(1, 3)).results.length, 3);
+    const priorVersions = regenerationViewFor(harness.state, hypothesis(1, 3)).results
+        .map((result) => result.hypothesis.full_text);
+    const otherCardBefore = regenerationViewFor(harness.state, hypothesis(2, 3));
+
+    const editing = harness.sendRevise('Make this more novel', 1);
+    harness.resolveEdit();
+    await editing;
+
+    const updated = regenerationViewFor(harness.state, hypothesis(1, 4));
+    assert.equal(updated.viewedPosition + 1, 4);
+    assert.equal(updated.results.length, 4);
+    assert.equal(updated.viewedSnapshot.full_text, 'Hypothesis 1 Version 4');
+    assert.deepEqual(
+        updated.results.slice(0, 3).map((result) => result.hypothesis.full_text),
+        priorVersions
+    );
+    assert.equal(
+        regenerationViewFor(harness.state, hypothesis(2, 3)).viewedResultEventId,
+        otherCardBefore.viewedResultEventId
+    );
+    assert.match(
+        refreshedEvents.find((event) => event.id === 'h1-v4').hypothesis.full_text,
+        /Version 4/
+    );
 });
 
 test('failed Edit clears operation ownership without moving either card version', async () => {
@@ -341,6 +426,66 @@ test('failed Edit clears operation ownership without moving either card version'
     assert.equal(harness.activeThreadRequests['1:h1-v2'], undefined);
     assert.deepEqual(harness.state.viewedRegenerationPositions, before);
     assert.deepEqual(harness.errors, ['Edit failed.']);
+});
+
+test('mismatched project, request, hypothesis, or source responses cannot update a card', async (t) => {
+    const cases = {
+        project: { project_slug: 'other-project' },
+        request: { request_id: 'other-request' },
+        hypothesis: { hypothesis_index: 2 },
+        source: { source_result_event_id: 'h1-v3' },
+    };
+    for (const [name, responseOverrides] of Object.entries(cases)) {
+        await t.test(name, async () => {
+            const harness = makeEditHarness({ responseOverrides });
+            const before = JSON.stringify(harness.state.events);
+            const editing = harness.sendRevise('Do not misroute', 1);
+            harness.resolveEdit();
+            await editing;
+            assert.equal(harness.restoreCalls.length, 0);
+            assert.equal(JSON.stringify(harness.state.events), before);
+            assert.deepEqual(harness.errors, ['Could not revise that hypothesis.']);
+        });
+    }
+});
+
+test('a failed authoritative refresh leaves all visible versions unchanged', async () => {
+    const harness = makeEditHarness({ restoreSucceeds: false });
+    const beforePositions = Object.assign({}, harness.state.viewedRegenerationPositions);
+    const beforeEvents = JSON.stringify(harness.state.events);
+    const editing = harness.sendRevise('Persist but fail refresh', 1);
+    harness.resolveEdit();
+    await editing;
+
+    assert.equal(harness.restoreCalls.length, 1);
+    assert.equal(JSON.stringify(harness.state.events), beforeEvents);
+    assert.deepEqual(harness.state.viewedRegenerationPositions, beforePositions);
+    assert.deepEqual(harness.errors, [
+        'The revision was saved, but its version history could not be refreshed. Reload to try again.',
+    ]);
+});
+
+test('authoritative refresh selects the returned version without duplicating a concurrent later version', async () => {
+    const initialEvents = versionEvents().filter((event) => event.id !== 'h1-v4');
+    const refreshedEvents = versionEvents({ includeH1V5: true });
+    const harness = makeEditHarness({
+        createdVersion: 4,
+        initialEvents,
+        refreshedEvents,
+        responseOverrides: { authoritative_version_total: 4 },
+    });
+    const editing = harness.sendRevise('Create Version 4', 1);
+    harness.resolveEdit();
+    await editing;
+
+    const view = regenerationViewFor(harness.state, hypothesis(1, 5));
+    assert.equal(view.results.length, 5);
+    assert.equal(view.viewedResultEventId, 'h1-v4');
+    assert.equal(view.viewedPosition + 1, 4);
+    assert.equal(
+        view.results.filter((result) => result.eventId === 'h1-v4').length,
+        1
+    );
 });
 
 test('version navigation remains enabled on the regenerating card and every other card', () => {
@@ -359,4 +504,36 @@ test('pending request restoration never owns focus or viewed-version navigation'
     assert.doesNotMatch(pendingRestoreSource, /state\.viewedRegenerationPositions\s*\[/);
     assert.match(pendingRestoreSource, /resultEventId: pending\.resultEventId/);
     assert.match(pendingRestoreSource, /busyResultEventId = pending\.resultEventId/);
+});
+
+test('version navigation DOM labels expose the authoritative current version and total', () => {
+    function fakeElement(tag, className, text) {
+        return {
+            tag, className, textContent: text || '', children: [], attributes: {},
+            disabled: false,
+            appendChild(child) { this.children.push(child); return child; },
+            setAttribute(name, value) { this.attributes[name] = String(value); },
+            addEventListener() {},
+        };
+    }
+    const controls = new Function(
+        'el', 'state', 'isManualEditSaving', 'navigateRegenerationVersion',
+        versionControlsSource + '\nreturn regenerationVersionControls;'
+    )(
+        fakeElement,
+        { manualEditIndex: null },
+        () => false,
+        () => {}
+    );
+    const nav = controls(
+        { index: 1 },
+        { viewedPosition: 3, results: [{}, {}, {}, {}] }
+    );
+    const [previous, count, next] = nav.children;
+
+    assert.equal(count.textContent, 'Version 4 of 4');
+    assert.equal(previous.attributes['aria-label'], 'View Version 3 of 4');
+    assert.equal(next.attributes['aria-label'], 'No later version after Version 4 of 4');
+    assert.equal(previous.disabled, false);
+    assert.equal(next.disabled, true);
 });

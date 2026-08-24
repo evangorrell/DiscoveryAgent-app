@@ -8,47 +8,6 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
     <script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js"></script>
     <script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-    <style>
-        #audit-guide-modal .modal-content {
-            max-width: 920px;
-            border: 1px solid rgba(14, 116, 144, 0.18);
-            box-shadow: 0 28px 70px rgba(15, 23, 42, 0.24);
-        }
-
-        #audit-guide-modal .modal-header {
-            position: relative;
-            background: linear-gradient(120deg, rgba(6, 95, 70, 0.1), rgba(14, 116, 144, 0.14));
-            border-bottom-color: rgba(14, 116, 144, 0.2);
-        }
-
-        #audit-guide-modal .modal-header h3 {
-            width: 100%;
-            margin: 0;
-            text-align: center;
-            color: #0f766e;
-            letter-spacing: 0.01em;
-        }
-
-        #audit-guide-modal .modal-close {
-            position: absolute;
-            right: 26px;
-        }
-
-        #audit-guide-modal .modal-body {
-            background: linear-gradient(180deg, #f8fffd 0%, #f7fafc 100%);
-        }
-
-        #audit-guide-modal .markdown-body h1 {
-            text-align: center;
-            color: #0e7490;
-        }
-
-        #audit-guide-modal .markdown-body h2 {
-            color: #0f766e;
-            border-bottom: 1px solid rgba(15, 118, 110, 0.2);
-            padding-bottom: 6px;
-        }
-    </style>
 </head>
 <body class="audit-only">
     <!-- Slim top bar -->
@@ -68,29 +27,9 @@
             </div>
         </div>
         <div style="display:flex;align-items:center;gap:8px;">
-            {% if audit_guide_html %}
-            <button id="audit-guide-btn" class="audit-topbar-btn" type="button">Guide</button>
-            {% endif %}
             <button id="audit-logout-btn" class="audit-topbar-btn" type="button">Log out</button>
         </div>
     </div>
-
-    {% if audit_guide_html %}
-    <div id="audit-guide-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="audit-guide-title">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h3 id="audit-guide-title">Audit UI Guide</h3>
-                <button class="modal-close" id="audit-guide-close" type="button" aria-label="Close audit guide">&times;</button>
-            </div>
-            <div class="modal-body markdown-body">
-                {{ audit_guide_html }}
-            </div>
-            <div class="modal-footer">
-                <button id="audit-guide-dismiss" class="btn btn-secondary" type="button">Close</button>
-            </div>
-        </div>
-    </div>
-    {% endif %}
 
     <!-- Main container -->
     <div class="container">
@@ -147,10 +86,6 @@
             const bootSpinnerEl = document.getElementById('audit-loading-spinner');
             const bootMessageEl = document.getElementById('audit-loading-message');
             const bootRetryBtn = document.getElementById('audit-loading-retry-btn');
-            const guideBtn = document.getElementById('audit-guide-btn');
-            const guideModal = document.getElementById('audit-guide-modal');
-            const guideCloseBtn = document.getElementById('audit-guide-close');
-            const guideDismissBtn = document.getElementById('audit-guide-dismiss');
 
             let sending = false;
             let sessionReady = false;
@@ -430,30 +365,6 @@
                 } catch (_) {
                     return true; // not configured or network error — let initialize try
                 }
-            }
-
-            // ── Guide modal ───────────────────────────────────────────────────
-            function openGuide() {
-                if (!guideModal) return;
-                guideModal.classList.remove('hidden');
-            }
-
-            function closeGuide() {
-                if (!guideModal) return;
-                guideModal.classList.add('hidden');
-            }
-
-            if (guideBtn && guideModal) {
-                guideBtn.addEventListener('click', function() { openGuide(); });
-                guideCloseBtn && guideCloseBtn.addEventListener('click', closeGuide);
-                guideDismissBtn && guideDismissBtn.addEventListener('click', closeGuide);
-                guideModal.addEventListener('click', function (e) {
-                    if (e.target === guideModal) closeGuide();
-                });
-                document.addEventListener('keydown', function (e) {
-                    if (e.key === 'Escape' && !guideModal.classList.contains('hidden')) closeGuide();
-                });
-                openGuide();
             }
 
             // ── Session initialization ────────────────────────────────────────

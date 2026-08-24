@@ -1,70 +1,76 @@
 {% extends "base.html" %}
 
+{% macro new_project_button(label='New Project') -%}
+<button type="button" class="v2-btn v2-btn-primary v2-new-project-btn" id="open-new-project"
+        aria-label="{{ label }}">
+    <span class="v2-plus" aria-hidden="true">+</span> {{ label }}
+</button>
+{%- endmacro %}
+
 {% block title %}Projects &middot; DiscoveryAgent{% endblock %}
 
 {% block content %}
-<div class="v2-projects" id="projects-root">
-
-    <!-- Populated-mode header (title + subtitle + New Project). Hidden entirely
-         in zero-project onboarding mode; shown once one or more projects exist. -->
-    <header class="v2-projects-header" id="pj-header" hidden>
-        <div class="v2-projects-heading">
-            <h1 class="v2-title">DiscoveryAgent Projects</h1>
-        </div>
-        <button type="button" class="v2-btn v2-btn-primary v2-new-project-btn" id="open-new-project">
-            <span class="v2-plus" aria-hidden="true">+</span> New Project
-        </button>
+<div class="v2-projects v2-app-page{% if projects_empty %} v2-projects-empty{% endif %}"
+     id="projects-root" data-page-scroll-root data-projects-empty="{{ 'true' if projects_empty else 'false' }}">
+    {% if not projects_empty %}
+    <header class="v2-app-page-header v2-projects-header" id="pj-header">
+        <h1 class="v2-title v2-app-page-title">Projects</h1>
+        <p class="v2-app-page-description v2-projects-description">Start new investigations or continue work across your existing research projects.</p>
     </header>
+    {% endif %}
 
-    <!-- Loading -->
-    <div class="v2-home-status" id="pj-loading">
-        <div class="v2-spinner" aria-hidden="true"></div>
-        <p class="v2-muted">Loading projects&hellip;</p>
-    </div>
-
-    <!-- Error -->
-    <div class="v2-home-status" id="pj-error" hidden>
-        <p class="v2-error-title">We couldn&rsquo;t load your projects.</p>
-        <p class="v2-muted" id="pj-error-detail"></p>
-        <button type="button" class="v2-btn v2-btn-primary" id="pj-retry">Try again</button>
-    </div>
-
-    <!-- Zero-project onboarding mode: centered ~52rem composition that the shell
-         transitions into directly from the top bar (no Projects title/subtitle). -->
-    <div class="v2-onboarding" id="pj-empty" hidden>
-        <div class="v2-onboarding-intro">
-            <h1 class="v2-onboarding-headline">Turn a dataset into an evolving research program.</h1>
-            <p class="v2-onboarding-support">Give DiscoveryAgent your data and scientific context. Develop hypotheses 
-                with the agent system. Then let DiscoveryAgent autonomously perform the research and present the evidence to you.</p>
-            <button type="button" class="v2-btn v2-btn-primary v2-onboarding-cta" id="open-new-project-empty">
-                Create your first DiscoveryAgent project <span class="v2-arrow" aria-hidden="true">&rarr;</span>
-            </button>
+    <div class="v2-app-page-content v2-projects-content" id="projects-content">
+        <div class="v2-home-status" id="pj-loading"{% if projects_empty %} hidden{% endif %}>
+            <div class="v2-spinner" aria-hidden="true"></div>
+            <p class="v2-muted">Loading projects&hellip;</p>
         </div>
 
-        <div class="v2-onboarding-how">
-            <p class="v2-section-label v2-onboarding-howlabel">How It Works</p>
-            <ol class="v2-steps">
-                <li class="v2-step">
-                    <span class="v2-step-num">01</span>
-                    <p class="v2-step-title">Add context</p>
-                    <p class="v2-step-text">Files + scientific context</p>
-                </li>
-                <li class="v2-step">
-                    <span class="v2-step-num">02</span>
-                    <p class="v2-step-title">Choose a direction</p>
-                    <p class="v2-step-text">Generate and compare hypotheses</p>
-                </li>
-                <li class="v2-step">
-                    <span class="v2-step-num">03</span>
-                    <p class="v2-step-title">Run autonomous research</p>
-                    <p class="v2-step-text">DiscoveryAgent performs research and presents the evidence to you</p>
-                </li>
-            </ol>
+        <div class="v2-home-status" id="pj-error" hidden>
+            <p class="v2-error-title">We couldn&rsquo;t load your projects.</p>
+            <p class="v2-muted" id="pj-error-detail"></p>
+            <button type="button" class="v2-btn v2-btn-primary" id="pj-retry">Try again</button>
         </div>
+
+        {% if projects_empty %}
+        <div class="v2-onboarding" id="pj-empty">
+            <div class="v2-onboarding-intro">
+                <h1 class="v2-title v2-app-page-title v2-onboarding-title">Welcome to DiscoveryAgent!</h1>
+                <p class="v2-onboarding-support">Give DiscoveryAgent your data and scientific context. Develop hypotheses
+                    with the agent system. Then let DiscoveryAgent autonomously perform the research and present the evidence to you.</p>
+                <div class="v2-onboarding-cta">{{ new_project_button('Create Your First Project') }}</div>
+            </div>
+
+            <div class="v2-onboarding-how">
+                <p class="v2-section-label v2-onboarding-howlabel">How It Works</p>
+                <ol class="v2-steps">
+                    <li class="v2-step">
+                        <span class="v2-step-num">01</span>
+                        <p class="v2-step-title">Add context</p>
+                        <p class="v2-step-text">Files + scientific context</p>
+                    </li>
+                    <li class="v2-step">
+                        <span class="v2-step-num">02</span>
+                        <p class="v2-step-title">Choose a direction</p>
+                        <p class="v2-step-text">Generate and compare hypotheses</p>
+                    </li>
+                    <li class="v2-step">
+                        <span class="v2-step-num">03</span>
+                        <p class="v2-step-title">Run autonomous research</p>
+                        <p class="v2-step-text">DiscoveryAgent performs research and presents the evidence to you</p>
+                    </li>
+                </ol>
+            </div>
+        </div>
+        {% endif %}
+
+        <div class="v2-project-list" id="pj-list" hidden></div>
     </div>
 
-    <!-- List -->
-    <div class="v2-project-list" id="pj-list" hidden></div>
+    {% if not projects_empty %}
+    <div class="v2-app-page-action v2-sticky-action-tray" id="projects-primary-action" hidden>
+        {{ new_project_button() }}
+    </div>
+    {% endif %}
 </div>
 
 <!-- Delete Project confirmation -->
@@ -72,12 +78,14 @@
     <div class="v2-modal v2-modal-compact v2-confirm-modal" role="alertdialog" aria-modal="true"
          aria-labelledby="delete-project-title" aria-describedby="delete-project-description">
         <div class="v2-modal-head">
-            <h2 class="v2-modal-title" id="delete-project-title">Remove this project?</h2>
+            <h2 class="v2-modal-title" id="delete-project-title">Delete this project?</h2>
         </div>
         <div class="v2-modal-body">
             <p class="v2-confirm-copy" id="delete-project-description">
-                <strong id="delete-project-name"></strong> and its complete local DiscoveryAgent folder,
-                including project data, will be moved to Trash.
+                <span id="delete-project-normal-copy"><strong id="delete-project-name"></strong> and its complete DiscoveryAgent project workspace
+                    will be moved to Trash. External DiscoveryAgent Data sources will remain in their original locations.</span>
+                <span id="delete-project-unavailable-copy" hidden>DiscoveryAgent cannot find this project&rsquo;s folder.
+                    Removing it will remove the project from DiscoveryAgent, but it will not delete files that may exist at another location.</span>
             </p>
             <p class="v2-modal-form-error v2-confirm-error" id="delete-project-error" role="alert" hidden></p>
         </div>
@@ -100,9 +108,10 @@
 
         <div class="v2-modal-body" id="np-modal-body">
             <div id="np-project-state">
-                <p class="v2-modal-step" id="np-step-one-indicator">Step 1 of 2</p>
 
-            <form class="v2-modal-form" id="np-form" novalidate>
+            <form class="v2-modal-form" id="np-form" novalidate
+                  data-pending-project-id="{{ pending_project_id }}"
+                  data-default-project-parent="{{ default_project_parent }}">
             <div class="v2-field">
                 <label class="v2-field-label" for="np-name">PROJECT NAME<span class="v2-required" aria-hidden="true">*</span></label>
                 <p class="v2-field-help">Create a unique name to identify this project later.</p>
@@ -133,46 +142,102 @@
                 <p class="v2-field-note">DiscoveryAgent will save this as the project&rsquo;s README.md and use it as persistent context during research.</p>
             </div>
 
-            <div class="v2-field" id="np-edit-data-field" hidden>
-                <h3 class="v2-section-label v2-modal-section-label">DATA</h3>
-                <p class="v2-field-help">Add any files or folders DiscoveryAgent should use for this project. Changes to the Data Folder appear here automatically.</p>
-                <div class="v2-data-scan" aria-live="polite">
-                    <div class="v2-data-scan-head">
-                        <span>DATA FOLDER</span>
-                        <button type="button" class="v2-data-folder-action" id="np-edit-open-data-folder">
-                            Open Data Folder <span aria-hidden="true">&#8599;</span>
-                        </button>
-                    </div>
-                    <p class="v2-data-empty" id="np-edit-data-empty" hidden>No dataset files yet. Add files to the folder and they will appear here automatically.</p>
-                    <ul class="v2-file-list" id="np-file-list"></ul>
-                    <p class="v2-modal-form-error" id="np-edit-data-error" hidden></p>
+            <div class="v2-field" id="np-data-field">
+                <h3 class="v2-section-label v2-modal-section-label">PROJECT DATA</h3>
+                <div class="v2-data-description-action-row v2-project-data-header-row">
+                    <p class="v2-field-help v2-data-description-action-copy">Select the data this project will have access to.</p>
+                    <button type="button" class="v2-data-action v2-project-data-action" id="np-select-data" hidden>
+                        <span class="v2-data-action-label">Select Data</span>
+                        <span class="v2-data-action-arrow" aria-hidden="true">&#8599;</span>
+                    </button>
                 </div>
-                <p class="v2-field-note">Paths below are relative to <code>code/data/</code>. Project Context is stored in the root <code>README.md</code>; nested README files are treated as data.</p>
+                <button type="button" class="v2-dropzone v2-data-empty-state v2-data-surface-project"
+                        id="np-selected-data-empty-select"
+                        aria-label="No data selected. Click to select data.">
+                    <svg class="v2-dropzone-icon" viewBox="0 0 24 24" width="24" height="24" aria-hidden="true">
+                        <path d="M2.5 6.5h7l2 2h10v9H2.5z" fill="none" stroke="currentColor"
+                              stroke-width="1.5" stroke-linejoin="round"/>
+                    </svg>
+                    <span class="v2-dropzone-text">No data selected</span>
+                    <span class="v2-dropzone-action">Click to select data</span>
+                </button>
+                <div class="v2-project-data-card v2-data-tree-container v2-data-surface-project" id="np-project-data-card" hidden>
+                    <ul class="v2-selected-data-tree v2-data-source-list" id="np-selected-data-tree" role="tree"
+                        aria-label="Selected project data" hidden></ul>
+                </div>
+                <p class="v2-project-data-status" id="np-project-data-status" role="status"
+                   aria-live="polite" aria-atomic="true"></p>
             </div>
 
-                <p class="v2-modal-form-error" id="np-form-error" hidden></p>
+            <div class="v2-advanced-settings" id="np-advanced-settings">
+                <button type="button" class="v2-advanced-settings-toggle" id="np-advanced-settings-toggle"
+                        aria-expanded="false" aria-controls="np-advanced-settings-panel">
+                    <span>ADVANCED SETTINGS</span>
+                    <span class="v2-advanced-settings-chevron" aria-hidden="true">
+                        <svg viewBox="0 0 12 12" width="12" height="12" focusable="false">
+                            <path d="M4 2.5 7.5 6 4 9.5" fill="none" stroke="currentColor"
+                                  stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                    </span>
+                </button>
+                <div class="v2-advanced-settings-panel" id="np-advanced-settings-panel" hidden>
+                    <div class="v2-advanced-setting-section v2-advanced-query-field">
+                        <h3 class="v2-field-label">QUERY COUNT</h3>
+                        <p class="v2-field-help">Choose the maximum number of research queries DiscoveryAgent can run per round.</p>
+                        <input class="v2-input v2-advanced-control" id="np-query-count" name="query_count" type="number"
+                               min="1" max="50" step="1" inputmode="numeric" autocomplete="off" required
+                               aria-label="Query Count" value="{{ default_query_count }}"
+                               data-default-query-count="{{ default_query_count }}">
+                    </div>
+                    <div class="v2-advanced-setting-section">
+                        <h3 class="v2-field-label">RESEARCH TOOLS</h3>
+                        <label class="v2-checkbox-row" for="np-deep-research">
+                            <input type="checkbox" id="np-deep-research" checked>
+                            <span class="v2-checkbox-label">Deep Research</span>
+                            <span class="v2-checkbox-hint">Allow DiscoveryAgent to use its configured deep-research provider.</span>
+                        </label>
+                        <label class="v2-checkbox-row" for="np-web-search">
+                            <input type="checkbox" id="np-web-search" checked>
+                            <span class="v2-checkbox-label">Web Search</span>
+                            <span class="v2-checkbox-hint">Allow DiscoveryAgent to search the web during research.</span>
+                        </label>
+                    </div>
+                    <div class="v2-advanced-setting-section v2-advanced-model-field">
+                        <h3 class="v2-field-label v2-advanced-model-title">MODEL SELECTION</h3>
+                        <p class="v2-field-help">Choose the Anthropic models DiscoveryAgent will use for reasoning and execution in this project.</p>
+                        <label class="v2-advanced-control-label" for="np-reasoning-model">Reasoning Model</label>
+                        <select class="v2-input v2-advanced-control v2-select" id="np-reasoning-model" name="reasoning_model"
+                                data-default-model="{{ default_reasoning_model }}">
+                            {% for model in project_models %}
+                            <option value="{{ model.id }}"{% if model.default %} selected{% endif %}>{{ model.label }}</option>
+                            {% endfor %}
+                        </select>
+                        <label class="v2-advanced-control-label" for="np-execution-model">Execution Model</label>
+                        <select class="v2-input v2-advanced-control v2-select" id="np-execution-model" name="execution_model"
+                                data-default-model="{{ default_execution_model }}">
+                            {% for model in project_models %}
+                            <option value="{{ model.id }}"{% if model.id == default_execution_model %} selected{% endif %}>{{ model.label }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="v2-advanced-setting-section v2-project-location-field">
+                        <h3 class="v2-field-label">PROJECT LOCATION</h3>
+                        <p class="v2-field-help">Choose where DiscoveryAgent stores this project&rsquo;s rounds, code, reports, memory, and generated files.</p>
+                        <code class="v2-project-location-path" id="np-project-location-path"></code>
+                        <p class="v2-field-help v2-project-location-status" id="np-project-location-status" role="status" aria-live="polite" aria-atomic="true"></p>
+                        <div class="v2-project-location-actions">
+                            <button type="button" class="v2-btn v2-btn-secondary v2-compact-secondary" id="np-locate-project" hidden>Locate Project</button>
+                            <button type="button" class="v2-btn v2-btn-secondary v2-compact-secondary" id="np-choose-location">Choose Location</button>
+                            <button type="button" class="v2-btn v2-btn-secondary v2-compact-secondary" id="np-use-default-location">Use Default</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+                <p class="v2-modal-form-error" id="np-form-error" role="alert" hidden></p>
             </form>
             </div>
 
-            <section class="v2-add-data" id="np-add-data-state" aria-labelledby="np-title" hidden>
-                <p class="v2-modal-step">Step 2 of 2</p>
-                <h3 class="v2-section-label v2-modal-section-label">ADD DATA</h3>
-                <p class="v2-field-help v2-add-data-description">
-                    Add any files or folders DiscoveryAgent should use for this project. Changes to the Data Folder appear here automatically.
-                </p>
-                <div class="v2-data-scan" aria-live="polite">
-                    <div class="v2-data-scan-head">
-                        <span>DATA FOLDER</span>
-                        <button type="button" class="v2-data-folder-action" id="np-open-data-folder">
-                            Open Data Folder <span aria-hidden="true">&#8599;</span>
-                        </button>
-                    </div>
-                    <p class="v2-data-empty" id="np-data-empty" hidden>No dataset files yet. Add files to the folder and they will appear here automatically.</p>
-                    <ul class="v2-file-list" id="np-data-file-list"></ul>
-                </div>
-                <p class="v2-field-note">The root <code>README.md</code> is managed by DiscoveryAgent. Nested README files are treated as data.</p>
-                <p class="v2-modal-form-error" id="np-data-error" hidden></p>
-            </section>
         </div>
 
         <div class="v2-modal-footer" id="np-project-footer">
@@ -181,16 +246,132 @@
                 Create project <span class="v2-arrow" aria-hidden="true">&rarr;</span>
             </button>
         </div>
-        <div class="v2-modal-footer" id="np-data-footer" hidden>
-            <button type="button" class="v2-btn v2-btn-secondary" id="np-data-back">Back</button>
-            <button type="button" class="v2-btn v2-btn-primary" id="np-continue-project">
-                Continue <span class="v2-arrow" aria-hidden="true">&rarr;</span>
-            </button>
+    </div>
+</div>
+
+<!-- Project-scoped selector for app-wide, read-only input references. -->
+<div class="v2-modal-overlay v2-data-selector-overlay" id="np-data-library-overlay" hidden>
+    <div class="v2-modal v2-data-selector-modal" role="dialog" aria-modal="true" aria-labelledby="np-data-library-title">
+        <div class="v2-modal-head v2-data-selector-head">
+            <div class="v2-modal-head-main">
+                <h2 class="v2-modal-title" id="np-data-library-title">Select data</h2>
+                <p class="v2-field-help">Choose registered sources, folders, or files for this project.</p>
+            </div>
+        </div>
+        <div class="v2-modal-body v2-data-selector-body">
+            <div class="v2-data-action-row v2-data-selector-action-row">
+                <a class="v2-data-action" id="np-data-library-add-data"
+                   href="{{ url_for('discoveryagent_data', open_data_picker='1') }}">
+                    <span class="v2-data-action-label">Add Data</span>
+                    <span class="v2-data-action-arrow" aria-hidden="true">&#8599;</span>
+                </a>
+            </div>
+            <div class="v2-data-selector-browser v2-data-tree-container v2-data-surface-project" id="np-data-library-browser">
+                <div class="v2-home-status v2-data-selector-loading" id="np-data-library-loading" hidden><div class="v2-spinner" aria-hidden="true"></div><p class="v2-muted">Loading data sources&hellip;</p></div>
+                <div class="v2-data-selector-empty" id="np-data-library-empty" hidden>
+                    <p class="v2-data-selector-empty-title">No data sources are registered.</p>
+                </div>
+                <ul class="v2-data-selector-sources v2-data-source-list" id="np-data-library-sources" role="tree" aria-label="Available project data"></ul>
+            </div>
+            <p class="v2-modal-form-error" id="np-data-library-error" role="alert" hidden></p>
+        </div>
+        <div class="v2-modal-footer v2-data-selector-footer">
+            <button type="button" class="v2-btn v2-btn-secondary" id="np-data-library-cancel">Cancel</button>
+            <button type="button" class="v2-btn v2-btn-primary" id="np-data-library-save">Save</button>
+        </div>
+    </div>
+</div>
+
+<!-- Missing project-location recovery. This is shared by Continue, direct-route
+     recovery, and Edit Project so all paths use one validated native picker. -->
+<div class="v2-modal-overlay v2-confirm-overlay v2-project-recovery-overlay"
+     id="project-recovery-overlay" hidden>
+    <div class="v2-modal v2-modal-compact v2-confirm-modal v2-project-recovery-modal"
+         id="project-recovery-dialog"
+         role="alertdialog" aria-modal="true"
+         aria-labelledby="project-recovery-title"
+         aria-describedby="project-recovery-description project-recovery-path">
+        <div class="v2-modal-head">
+            <h2 class="v2-modal-title" id="project-recovery-title">Project location unavailable</h2>
+        </div>
+        <div class="v2-modal-body">
+            <p class="v2-confirm-copy" id="project-recovery-description">
+                DiscoveryAgent could not find this project at its saved location. Locate the project folder to continue.
+            </p>
+            <code class="v2-project-location-path v2-confirm-path"
+                  id="project-recovery-path"></code>
+            <p class="v2-modal-form-error v2-confirm-error v2-project-recovery-error"
+               id="project-recovery-error" role="alert" hidden></p>
+        </div>
+        <div class="v2-modal-footer v2-confirm-actions">
+            <button type="button" class="v2-btn v2-btn-secondary v2-confirm-cancel"
+                    id="project-recovery-cancel">Cancel</button>
+            <button type="button" class="v2-btn v2-btn-primary"
+                    id="project-recovery-locate">Locate Project</button>
+        </div>
+    </div>
+</div>
+
+<!-- Edit Project unsaved-changes confirmation. The Edit modal remains mounted
+     and inert beneath this dialog so dismissal can restore the exact draft. -->
+<div class="v2-modal-overlay v2-confirm-overlay v2-unsaved-changes-overlay"
+     id="project-unsaved-overlay" hidden>
+    <div class="v2-modal v2-modal-compact v2-confirm-modal v2-unsaved-changes-modal"
+         id="project-unsaved-dialog"
+         role="alertdialog" aria-modal="true"
+         aria-labelledby="project-unsaved-title"
+         aria-describedby="project-unsaved-description">
+        <div class="v2-modal-head">
+            <h2 class="v2-modal-title" id="project-unsaved-title">Save changes before closing?</h2>
+        </div>
+        <div class="v2-modal-body">
+            <p class="v2-confirm-copy" id="project-unsaved-description">
+                You have unsaved changes to this project.
+            </p>
+        </div>
+        <div class="v2-modal-footer v2-confirm-actions v2-unsaved-changes-actions">
+            <button type="button" class="v2-btn v2-btn-danger"
+                    id="project-unsaved-discard">Discard Changes</button>
+            <button type="button" class="v2-btn v2-btn-primary"
+                    id="project-unsaved-save">Save Changes</button>
+        </div>
+    </div>
+</div>
+
+<!-- Edit Project relocation confirmation. The Edit modal stays mounted beneath
+     this dialog so cancelling never discards pending form state. -->
+<div class="v2-modal-overlay v2-confirm-overlay v2-relocation-overlay"
+     id="project-relocation-overlay" hidden>
+    <div class="v2-modal v2-modal-compact v2-confirm-modal v2-relocation-modal"
+         id="project-relocation-dialog"
+         role="alertdialog" aria-modal="true"
+         aria-labelledby="project-relocation-title"
+         aria-describedby="project-relocation-description project-relocation-support">
+        <div class="v2-modal-head">
+            <h2 class="v2-modal-title" id="project-relocation-title">Move project?</h2>
+        </div>
+        <div class="v2-modal-body">
+            <p class="v2-confirm-copy" id="project-relocation-description">
+                DiscoveryAgent will move this project and all of its files to:
+            </p>
+            <code class="v2-project-location-path v2-confirm-path"
+                  id="project-relocation-destination"></code>
+            <p class="v2-confirm-support" id="project-relocation-support">
+                Your DiscoveryAgent Data sources will remain in their original locations.
+            </p>
+        </div>
+        <div class="v2-modal-footer v2-confirm-actions">
+            <button type="button" class="v2-btn v2-btn-secondary v2-confirm-cancel"
+                    id="project-relocation-cancel">Cancel</button>
+            <button type="button" class="v2-btn v2-btn-primary"
+                    id="project-relocation-confirm">Move Project</button>
         </div>
     </div>
 </div>
 {% endblock %}
 
 {% block scripts %}
-<script src="{{ url_for('static', filename='projects.js') }}?v=20260808-edit-scroll-top-1"></script>
+<script src="{{ url_for('static', filename='data_tree.js') }}?v=20260822-data-tree-row-geometry-1"></script>
+<script src="{{ url_for('static', filename='app_page_action.js') }}?v=20260822-sticky-action-tray-1"></script>
+<script src="{{ url_for('static', filename='projects.js') }}?v=20260823-first-run-welcome-1"></script>
 {% endblock %}

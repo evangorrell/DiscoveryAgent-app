@@ -12,10 +12,6 @@
         </div>
     </header>
 
-    <div class="v2-skills-running-note" id="skills-running-note" role="status" hidden>
-        Skills cannot be changed while a research round is running.
-    </div>
-
     <div class="v2-skills-status" id="skills-loading">
         <div class="v2-spinner" aria-hidden="true"></div>
         <p class="v2-muted">Loading skills&hellip;</p>
@@ -49,10 +45,10 @@
                         <path d="M12 15V4m0 0L8 8m4-4 4 4M5 13v5.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V13"
                               fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
                     </svg>
-                    <p class="v2-dropzone-text" id="skill-dropzone-primary">Drop a skill package here</p>
+                    <p class="v2-dropzone-text" id="skill-dropzone-primary">Drop a .skill, .zip, or SKILL.md file</p>
                     <p class="v2-dropzone-action" id="skill-dropzone-secondary">or click to browse</p>
-                    <p class="v2-dropzone-note">Skill packages must be .zip files containing SKILL.md.</p>
-                    <input id="skill-import-file" type="file" accept=".zip,application/zip" hidden>
+                    <p class="v2-dropzone-note">Archive packages may include supporting resources.</p>
+                    <input id="skill-import-file" type="file" accept=".skill,.zip,.md" hidden>
                 </div>
             </div>
             <div class="v2-skill-preview" id="skill-import-preview" hidden>
@@ -78,5 +74,5 @@ window.projectSkillsConfig = {
 {% endblock %}
 
 {% block scripts %}
-<script src="{{ url_for('static', filename='project_skills.js', v='20260816-skills-polish-1') }}"></script>
+<script src="{{ url_for('static', filename='project_skills.js', v='20260823-active-round-skill-import-1') }}"></script>
 {% endblock %}

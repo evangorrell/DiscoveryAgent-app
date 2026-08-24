@@ -7,6 +7,7 @@ reconcile status after a browser refresh or frontend restart.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -15,17 +16,30 @@ import shutil
 import subprocess
 import threading
 import time
+import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .project_skills import SkillImportError, has_project_skills, skills_root
+from . import data_library, model_catalog
+from .project_skills import (
+    ROUND_SKILLS_SNAPSHOT_DIRECTORY,
+    SkillImportError,
+    capture_round_skills,
+)
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 EXPLORATORY_ROUND_QUERY_BUDGET = 5
 HYPOTHESIS_ROUND_QUERY_BUDGET = 12
+MINIMUM_ROUND_QUERIES = 1
+MAXIMUM_ROUND_QUERIES = 50
+DIRECTOR_AGENT_SWITCHES: dict[str, tuple[str, bool]] = {
+    "deep_research": ("omit_deepresearch", True),
+    "web_search": ("omit_singlesearch", True),
+}
+SUB_AGENT_ARCHITECTURE = True
 MISSING_KEY_MESSAGE = (
     "Anthropic API key not detected\n\n"
     "Set ANTHROPIC_API_KEY in your environment and restart DiscoveryAgent before "
@@ -45,6 +59,8 @@ class RoundLaunchError(RuntimeError):
 
 _RUNNER_LOCK = threading.RLock()
 _PROCESSES: dict[str, subprocess.Popen] = {}
+_PROCESS_RUN_IDS: dict[str, str] = {}
+_RUN_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 
 
 @contextmanager
@@ -52,6 +68,17 @@ def round_state_guard():
     """Serialize external project mutations with round launch transitions."""
     with _RUNNER_LOCK:
         yield
+
+
+def project_has_tracked_process(project: dict[str, Any]) -> bool:
+    """Check a launched process without requiring its project root to exist."""
+    raw = project.get("project_root") if isinstance(project, dict) else None
+    if not raw:
+        return False
+    key = str(Path(raw).expanduser().absolute())
+    with _RUNNER_LOCK:
+        process = _PROCESSES.get(key)
+        return bool(process is not None and process.poll() is None)
 
 
 def _anthropic_key_is_present(env: dict[str, str]) -> bool:
@@ -76,6 +103,109 @@ def _safe_analysis_name(project: dict[str, Any]) -> str:
     return normalized or "local_project"
 
 
+def normalize_round_options(raw: Any) -> dict[str, Any]:
+    """Validate browser-supplied round choices and map them to backend keys."""
+    if not isinstance(raw, dict):
+        return {}
+    config: dict[str, Any] = {}
+    if "num_queries" in raw and raw["num_queries"] not in (None, ""):
+        value = raw["num_queries"]
+        if isinstance(value, bool) or not re.fullmatch(r"\d+", str(value).strip()):
+            raise RoundLaunchError(
+                "invalid_round_options", "Enter a whole number of queries for this round."
+            )
+        requested = int(value)
+        if not MINIMUM_ROUND_QUERIES <= requested <= MAXIMUM_ROUND_QUERIES:
+            raise RoundLaunchError(
+                "invalid_round_options",
+                f"Choose between {MINIMUM_ROUND_QUERIES} and {MAXIMUM_ROUND_QUERIES} queries for this round.",
+            )
+        config["num_queries"] = requested
+
+    for switch, (config_key, negated) in DIRECTOR_AGENT_SWITCHES.items():
+        if switch in raw:
+            enabled = bool(raw[switch])
+            config[config_key] = (not enabled) if negated else enabled
+
+    return config
+
+
+def next_round_number(project: dict[str, Any]) -> int:
+    paths = _project_paths(project)
+    completed = [
+        index for index, directory in _native_round_dirs(paths["checkpoints_dir"])
+        if (directory / "memory_report.md").is_file()
+    ]
+    return (completed[-1] + 1) if completed else 0
+
+
+def round_option_defaults(
+    round_number: int, project: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    saved_queries = (project or {}).get("query_count")
+    if saved_queries is None:
+        saved_queries = (project or {}).get("num_queries")
+    normalized_queries = str(saved_queries).strip().lower() if saved_queries is not None else ""
+    if normalized_queries in {"", "automatic"}:
+        saved_queries = HYPOTHESIS_ROUND_QUERY_BUDGET
+    else:
+        if isinstance(saved_queries, bool) or not re.fullmatch(r"\d+", str(saved_queries).strip()):
+            raise RoundLaunchError("invalid_project_settings", "The saved project Query Count is invalid.")
+        saved_queries = int(saved_queries)
+        if not MINIMUM_ROUND_QUERIES <= saved_queries <= MAXIMUM_ROUND_QUERIES:
+            raise RoundLaunchError("invalid_project_settings", "The saved project Query Count is invalid.")
+
+    def enabled(name: str) -> bool:
+        value = (project or {}).get(name)
+        if value is None:
+            return True
+        if isinstance(value, bool):
+            return value
+        normalized = str(value).strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+        raise RoundLaunchError("invalid_project_settings", f"The saved {name.replace('_', ' ')} setting is invalid.")
+    return {
+        "num_queries": EXPLORATORY_ROUND_QUERY_BUDGET if round_number == 0 else saved_queries,
+        "query_count": saved_queries,
+        "minimum_queries": MINIMUM_ROUND_QUERIES,
+        "maximum_queries": MAXIMUM_ROUND_QUERIES,
+        "deep_research": enabled("deep_research"),
+        "web_search": enabled("web_search"),
+    }
+
+
+def _project_model_config(project: dict[str, Any]) -> dict[str, str]:
+    """Validate and expand the project-owned Anthropic model roles."""
+    try:
+        selected = model_catalog.resolve_project_models(project)
+        return model_catalog.project_model_role_config(
+            selected["reasoning_model"], selected["execution_model"]
+        )
+    except model_catalog.UnsupportedProjectModel as exc:
+        raise RoundLaunchError("unsupported_project_model", str(exc)) from exc
+
+
+def _project_round_config(project: dict[str, Any], round_number: int) -> dict[str, Any]:
+    """Return the project settings to snapshot into one fresh round."""
+    defaults = round_option_defaults(round_number, project)
+    return {
+        "num_queries": defaults["num_queries"],
+        "omit_deepresearch": not defaults["deep_research"],
+        "omit_singlesearch": not defaults["web_search"],
+        **_project_model_config(project),
+    }
+
+
+def external_data_read_paths(project: dict[str, Any]) -> list[str]:
+    if not project.get("external_data"):
+        return []
+    raw = project.get("data_dir")
+    return [str(Path(raw).expanduser().resolve())] if raw else []
+
+
 def resolve_backend_runtime(env: dict[str, str] | None = None) -> tuple[Path, Path, Path]:
     """Resolve and validate backend root, interpreter, and existing launcher."""
     current_env = os.environ if env is None else env
@@ -92,7 +222,7 @@ def resolve_backend_runtime(env: dict[str, str] | None = None) -> tuple[Path, Pa
     if configured_python:
         # Preserve a configured venv interpreter path: resolving its final
         # symlink would bypass that environment and its site-packages.
-        backend_python = Path(configured_python).expanduser().absolute()
+        backend_python = Path(os.path.abspath(Path(configured_python).expanduser()))
     else:
         posix_python = backend_root / ".venv" / "bin" / "python"
         windows_python = backend_root / ".venv" / "Scripts" / "python.exe"
@@ -101,6 +231,12 @@ def resolve_backend_runtime(env: dict[str, str] | None = None) -> tuple[Path, Pa
         raise RoundLaunchError(
             "backend_python_missing",
             "The DiscoveryAgent backend Python environment could not be found. Set DISCOVERYAGENT_BACKEND_PYTHON and restart DiscoveryAgent.",
+            503,
+        )
+    if not os.access(backend_python, os.X_OK):
+        raise RoundLaunchError(
+            "backend_python_not_executable",
+            "The DiscoveryAgent backend Python environment is not executable. Repair the installation and restart DiscoveryAgent.",
             503,
         )
 
@@ -125,7 +261,20 @@ def _project_paths(project: dict[str, Any]) -> dict[str, Path]:
             "The active project does not contain the local paths required to start a round.",
         )
 
-    project_root = Path(root_raw).expanduser().resolve()
+    registered_root = Path(root_raw).expanduser().absolute()
+    if not registered_root.is_dir():
+        raise RoundLaunchError(
+            "project_location_unavailable",
+            "DiscoveryAgent could not find this project at its saved location.",
+            409,
+        )
+    project_root = registered_root.resolve()
+    if project_root != registered_root:
+        raise RoundLaunchError(
+            "project_location_unavailable",
+            "The saved project location is not a canonical project folder.",
+            409,
+        )
     code_dir = Path(code_raw).expanduser().resolve()
     configured_round = Path(checkpoint_raw).expanduser().resolve()
     try:
@@ -137,6 +286,13 @@ def _project_paths(project: dict[str, Any]) -> dict[str, Path]:
             "The active project's code or checkpoint path is outside its local project directory.",
         ) from exc
     if not code_dir.is_dir() or not (code_dir / "data").is_dir():
+        if project.get("external_data"):
+            raise RoundLaunchError(
+                "data_folder_unavailable",
+                "The data folder chosen for this project is no longer available at "
+                f"{project.get('data_dir')}. Reconnect the drive or restore the folder, then try again.",
+                503,
+            )
         raise RoundLaunchError(
             "invalid_local_configuration",
             "The active project's local code/data directory is missing.",
@@ -341,6 +497,48 @@ def _read_state(path: Path) -> dict[str, Any] | None:
         return None
 
 
+def _state_run_id(state: dict[str, Any] | None) -> str | None:
+    """Return a stable identity for both current and pre-run-ID state files."""
+    if not isinstance(state, dict):
+        return None
+    explicit = str(state.get("run_id") or "").strip().lower()
+    if _RUN_ID_PATTERN.fullmatch(explicit):
+        return explicit
+    if not state.get("project_id") or not isinstance(state.get("round"), int):
+        return None
+    seed = "\0".join(str(state.get(key) or "") for key in (
+        "project_id", "round", "pid", "started_at", "config_file",
+    ))
+    return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:32]
+
+
+def _validate_run_identity(
+    state: dict[str, Any], *, project_id: str,
+    expected_round: int | None = None, expected_run_id: str | None = None,
+) -> str | None:
+    """Reject an operation aimed at a different project, round, or run."""
+    if state.get("project_id") != project_id:
+        raise RoundLaunchError(
+            "project_identity_mismatch",
+            "The requested research run does not belong to this project.",
+            409,
+        )
+    if expected_round is not None and state.get("round") != expected_round:
+        raise RoundLaunchError(
+            "round_identity_mismatch",
+            "The requested research round is no longer the active round.",
+            409,
+        )
+    run_id = _state_run_id(state)
+    if expected_run_id is not None and run_id != expected_run_id:
+        raise RoundLaunchError(
+            "run_identity_mismatch",
+            "The requested research run is no longer active.",
+            409,
+        )
+    return run_id
+
+
 def _pid_matches_state(state: dict[str, Any]) -> bool:
     pid = state.get("pid")
     if not isinstance(pid, int) or pid <= 0:
@@ -362,12 +560,15 @@ def _pid_matches_state(state: dict[str, Any]) -> bool:
 def _state_payload(
     project: dict[str, Any], paths: dict[str, Path], backend_root: Path, backend_python: Path,
     *, status: str, pid: int | None = None, exit_code: int | None = None, started_at: str | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     now = _utc_now()
+    run_id = run_id or uuid.uuid4().hex
     return {
         "schema_version": SCHEMA_VERSION,
         "project_id": str(project["id"]),
         "round": int(paths["round"]),
+        "run_id": run_id,
         "status": status,
         "pid": pid,
         "started_at": started_at or now,
@@ -380,7 +581,13 @@ def _state_payload(
     }
 
 
-def _hydrate_round_zero_config(project: dict[str, Any], paths: dict[str, Path]) -> dict[str, Any]:
+def _hydrate_round_zero_config(
+    project: dict[str, Any],
+    paths: dict[str, Path],
+    options: dict[str, Any] | None = None,
+    *,
+    snapshot_project_model: bool = True,
+) -> dict[str, Any]:
     existing: dict[str, Any] = {}
     try:
         loaded = json.loads(paths["config_file"].read_text(encoding="utf-8"))
@@ -427,12 +634,103 @@ def _hydrate_round_zero_config(project: dict[str, Any], paths: dict[str, Path]) 
         "no_sandbox": False,
         "deep_research_provider": existing.get("deep_research_provider") or "paperclip",
     })
-    _overlay_project_skills(config, project)
+    if snapshot_project_model:
+        snapshot_options = dict(options or {})
+        snapshot_options.pop("num_queries", None)
+        config.update(_project_round_config(project, 0))
+        # Kept for direct runner callers during migration; the public start
+        # route no longer accepts per-round browser overrides.
+        config.update(snapshot_options)
+    config["sub_agent_architecture"] = SUB_AGENT_ARCHITECTURE
+    _apply_external_data_access(project, config)
+    _apply_data_library_access(project, config, manifest_path=paths["target_dir"] / ".discoveryagent_input_data_manifest.md")
+    _overlay_project_skills(config, project, paths["target_dir"])
     _atomic_write_json(paths["config_file"], {"config": config})
     return config
 
 
-def _hydrate_continuation_config(project: dict[str, Any], paths: dict[str, Path]) -> None:
+def _apply_external_data_access(project: dict[str, Any], config: dict[str, Any]) -> None:
+    """Allow sandbox reads through the external data symlink without widening writes."""
+    read_paths = external_data_read_paths(project)
+    if not read_paths:
+        return
+    configured = str(config.get("allowed_read_paths") or "").strip()
+    existing = [entry.strip() for entry in configured.split(",") if entry.strip()]
+    for path in read_paths:
+        if path not in existing:
+            existing.append(path)
+    config["allowed_read_paths"] = ",".join(existing)
+
+
+def _apply_data_library_access(
+    project: dict[str, Any], config: dict[str, Any], *, selection: Any = None,
+    manifest_path: Path | None = None,
+) -> None:
+    """Resolve stable library references as extra read-only sandbox roots."""
+    selected = project.get("data_sources") if selection is None else selection
+    try:
+        normalized = data_library.normalize_selection(selected)
+        read_paths, manifest = data_library.resolve_selection(normalized)
+    except data_library.DataLibraryError as exc:
+        raise RoundLaunchError(exc.code, exc.message, exc.status) from exc
+
+    data_keys = {
+        "data_library_selection", "data_library_resolved_paths",
+        "data_library_manifest", "data_library_manifest_paths",
+    }
+    if not normalized and not any(key in config for key in data_keys):
+        return
+
+    configured = str(config.get("allowed_read_paths") or "").strip()
+    existing = [entry.strip() for entry in configured.split(",") if entry.strip()]
+    previous = {
+        entry for entry in (config.get("data_library_resolved_paths") or [])
+        if isinstance(entry, str)
+    }
+    existing = [entry for entry in existing if entry not in previous]
+    for path in read_paths:
+        if path not in existing:
+            existing.append(path)
+    if existing:
+        config["allowed_read_paths"] = ",".join(existing)
+    else:
+        config.pop("allowed_read_paths", None)
+    config["data_library_selection"] = normalized
+    config["data_library_resolved_paths"] = read_paths
+    config["data_library_manifest"] = manifest
+    if manifest and manifest_path is not None:
+        lines = [
+            "# External read-only input data",
+            "",
+            f"Writable project workspace: `{config.get('working_directory') or project.get('code_dir')}`",
+            "",
+            "The paths below are user-supplied inputs. Read them in place, but write all code, derived data, figures, and analyses only in the project workspace.",
+        ]
+        for source in manifest:
+            lines.extend(["", f"## {source['display_name']}"])
+            lines.extend(f"- Read-only path: `{path}`" for path in source["resolved_read_paths"])
+            if source["excluded_paths"]:
+                lines.append("- Project exclusions (manifest intent; descendants of an allowed parent cannot be hard-denied by the current sandbox): " + ", ".join(source["excluded_paths"]))
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = manifest_path.with_name(f".{manifest_path.name}.tmp-{os.getpid()}-{threading.get_ident()}")
+        temporary.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        os.replace(temporary, manifest_path)
+        config["hint_txt_path"] = str(manifest_path)
+    else:
+        previous_manifests = config.get("data_library_manifest_paths")
+        previous_manifests = previous_manifests if isinstance(previous_manifests, list) else []
+        if config.get("hint_txt_path") in {
+            path for path in previous_manifests if isinstance(path, str)
+        }:
+            config.pop("hint_txt_path", None)
+    config["data_library_manifest_paths"] = [str(manifest_path)] if manifest and manifest_path is not None else []
+
+
+def _hydrate_continuation_config(
+    project: dict[str, Any],
+    paths: dict[str, Path],
+    options: dict[str, Any] | None = None,
+) -> None:
     """Create the target round's local config from its native predecessor."""
     source_file = paths["config_file"]
     target_config = paths["target_dir"] / "config.json"
@@ -480,16 +778,31 @@ def _hydrate_continuation_config(project: dict[str, Any], paths: dict[str, Path]
         "generate_plan": True,
         "no_sandbox": False,
     })
-    _overlay_project_skills(local_config, project)
+    if is_new_hypothesis_round:
+        snapshot_options = dict(options or {})
+        snapshot_options.pop("num_queries", None)
+        round_number = paths.get("round")
+        if not isinstance(round_number, int):
+            match = re.fullmatch(r"round_(\d+)", paths["target_dir"].name)
+            round_number = int(match.group(1)) if match else 1
+        local_config.update(_project_round_config(project, round_number))
+        local_config.update(snapshot_options)
+    local_config["sub_agent_architecture"] = SUB_AGENT_ARCHITECTURE
+    _apply_external_data_access(project, local_config)
+    _apply_data_library_access(project, local_config, manifest_path=paths["target_dir"] / ".discoveryagent_input_data_manifest.md")
+    _overlay_project_skills(local_config, project, paths["target_dir"])
     _atomic_write_json(target_config, {"config": local_config})
     paths["config_file"] = target_config
 
 
-def _overlay_project_skills(config: dict[str, Any], project: dict[str, Any]) -> None:
-    """Use only the current project's trusted skill root for a new round config."""
+def _overlay_project_skills(
+    config: dict[str, Any], project: dict[str, Any], round_dir: Path,
+) -> None:
+    """Pin a round to its immutable capture of the project's installed skills."""
     try:
-        if has_project_skills(project):
-            config["execution_skills_path"] = str(skills_root(project))
+        snapshot, has_skills = capture_round_skills(project, round_dir)
+        if has_skills:
+            config["execution_skills_path"] = str(snapshot)
         else:
             config.pop("execution_skills_path", None)
     except SkillImportError as exc:
@@ -497,7 +810,13 @@ def _overlay_project_skills(config: dict[str, Any], project: dict[str, Any]) -> 
 
 
 def _refresh_resume_project_skills(project: dict[str, Any], config_file: Path) -> None:
-    """Overlay only live project skills onto an interrupted round's config."""
+    """Refresh safe live references while preserving interrupted-round choices.
+
+    Code-location fields are runtime provenance, not scientific choices. A
+    moved/migrated project must resume in its currently registered code root so
+    the backend tool cwd, Round Workspace tree, and external-IDE path cannot
+    diverge.
+    """
     try:
         payload = json.loads(config_file.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
@@ -516,7 +835,41 @@ def _refresh_resume_project_skills(project: dict[str, Any], config_file: Path) -
         )
     config = dict(nested) if isinstance(nested, dict) else dict(payload)
     original = dict(config)
-    _overlay_project_skills(config, project)
+    code_raw = project.get("code_dir")
+    if not isinstance(code_raw, str) or not code_raw.strip():
+        raise RoundLaunchError(
+            "invalid_local_configuration",
+            "The active project does not contain its registered code workspace.",
+        )
+    code_root = str(Path(code_raw).expanduser().resolve())
+    config["working_directory"] = code_root
+    config["existing_codebase"] = code_root
+    checkpoint_raw = project.get("checkpoint_dir")
+    if not isinstance(checkpoint_raw, str) or not checkpoint_raw.strip():
+        raise RoundLaunchError(
+            "invalid_local_configuration",
+            "The active project does not contain its registered checkpoint workspace.",
+        )
+    configured_round = Path(checkpoint_raw).expanduser().resolve()
+    checkpoints_root = configured_round.parent
+    if "checkpoint_base_dir" in config:
+        config["checkpoint_base_dir"] = str(checkpoints_root)
+    if "log_dir" in config:
+        config["log_dir"] = str(checkpoints_root.parent)
+    readme_raw = project.get("readme_path")
+    if "readme_path" in config and isinstance(readme_raw, str) and readme_raw.strip():
+        config["readme_path"] = str(Path(readme_raw).expanduser().resolve())
+    saved_selection = (
+        config.get("data_library_selection")
+        if "data_library_selection" in config
+        else project.get("data_sources")
+    )
+    _apply_external_data_access(project, config)
+    _apply_data_library_access(
+        project, config, selection=saved_selection,
+        manifest_path=config_file.parent / ".discoveryagent_input_data_manifest.md",
+    )
+    _overlay_project_skills(config, project, config_file.parent)
     if config == original:
         return
     if isinstance(nested, dict):
@@ -616,11 +969,27 @@ def _child_environment(
     return child_env
 
 
-def _monitor_process(project: dict[str, Any], paths: dict[str, Path], process: subprocess.Popen) -> None:
+def _monitor_process(
+    project: dict[str, Any], paths: dict[str, Path], process: subprocess.Popen,
+    run_id: str | None = None,
+) -> None:
     exit_code = process.wait()
     with _RUNNER_LOCK:
-        _PROCESSES.pop(str(paths["project_root"]), None)
+        key = str(paths["project_root"])
+        current_process = _PROCESSES.get(key)
+        if current_process is process:
+            _PROCESSES.pop(key, None)
+        tracked_run_id = _PROCESS_RUN_IDS.get(key)
+        if run_id is not None and tracked_run_id == run_id:
+            _PROCESS_RUN_IDS.pop(key, None)
         current = _read_state(paths["state_file"]) or {}
+        current_run_id = _state_run_id(current)
+        if (
+            current.get("project_id") != str(project["id"])
+            or current.get("round") != int(paths["round"])
+            or (run_id is not None and current_run_id != run_id)
+        ):
+            return
         status = "completed" if (paths["target_dir"] / "memory_report.md").exists() else "failed"
         payload = dict(current)
         if current.get("status") == "interrupted" and status != "completed":
@@ -634,7 +1003,14 @@ def _monitor_process(project: dict[str, Any], paths: dict[str, Path], process: s
 
 
 def _launch_round(
-    project: dict[str, Any], *, env: dict[str, str] | None = None, resume_only: bool = False,
+    project: dict[str, Any],
+    *,
+    env: dict[str, str] | None = None,
+    resume_only: bool = False,
+    options: dict[str, Any] | None = None,
+    preserve_existing_snapshot: bool = False,
+    expected_round: int | None = None,
+    expected_run_id: str | None = None,
 ) -> dict[str, Any]:
     source_env = os.environ if env is None else env
     if not _anthropic_key_is_present(source_env):
@@ -647,10 +1023,26 @@ def _launch_round(
     paths["lock_file"] = paths["log_dir"] / f".round_{paths['round']}.lock"
     key = str(paths["project_root"])
     with _RUNNER_LOCK:
+        tracked_process = _PROCESSES.get(key)
+        if tracked_process is not None and tracked_process.poll() is None:
+            raise RoundLaunchError(
+                "round_already_running",
+                "A native round is already running for this project.",
+                409,
+            )
         if (paths["target_dir"] / "memory_report.md").exists():
             raise RoundLaunchError("round_already_completed", f"Native round {paths['round']} has already completed for this project.", 409)
 
         existing_state = _read_state(paths["state_file"])
+        if expected_round is not None or expected_run_id is not None:
+            if not existing_state:
+                raise RoundLaunchError(
+                    "round_not_running", "No recorded research run can be resumed.", 409,
+                )
+            _validate_run_identity(
+                existing_state, project_id=str(project["id"]),
+                expected_round=expected_round, expected_run_id=expected_run_id,
+            )
         if existing_state and existing_state.get("status") in {"starting", "running"} and _pid_matches_state(existing_state):
             raise RoundLaunchError("round_already_running", f"Native round {paths['round']} is already running for this project.", 409)
         if _round_has_activity(paths["target_dir"]) and not paths["resume"]:
@@ -681,13 +1073,17 @@ def _launch_round(
             raise RoundLaunchError("round_already_running", f"Native round {paths['round']} is already starting or running for this project.", 409) from exc
 
         diagnostic_handle = None
+        run_id = uuid.uuid4().hex
         try:
             if resume_only:
                 _refresh_resume_project_skills(project, paths["config_file"])
             elif paths["round"] == 0:
-                _hydrate_round_zero_config(project, paths)
+                _hydrate_round_zero_config(
+                    project, paths, options,
+                    snapshot_project_model=not bool(paths["resume"]) and not preserve_existing_snapshot,
+                )
             else:
-                _hydrate_continuation_config(project, paths)
+                _hydrate_continuation_config(project, paths, options)
             command = _build_command(
                 backend_python, launcher, paths["config_file"], paths["selected_hypothesis_file"]
             )
@@ -695,7 +1091,8 @@ def _launch_round(
                 backend_root, backend_python, paths["project_root"], source_env
             )
             initial_state = _state_payload(
-                project, paths, backend_root, backend_python, status="starting"
+                project, paths, backend_root, backend_python,
+                status="starting", run_id=run_id,
             )
             _atomic_write_json(paths["state_file"], initial_state)
             diagnostic_handle = paths["diagnostic_log"].open("a", encoding="utf-8")
@@ -713,17 +1110,19 @@ def _launch_round(
             started = _state_payload(
                 project, paths, backend_root, backend_python,
                 status="starting", pid=process.pid, started_at=initial_state["started_at"],
+                run_id=run_id,
             )
             _atomic_write_json(paths["state_file"], started)
             _PROCESSES[key] = process
+            _PROCESS_RUN_IDS[key] = run_id
             thread = threading.Thread(
-                target=_monitor_process, args=(project, paths, process), daemon=True,
+                target=_monitor_process, args=(project, paths, process, run_id), daemon=True,
                 name=f"round-{paths['round']}-monitor-{project['id']}",
             )
             thread.start()
             result = {
                 "project_id": str(project["id"]), "round": paths["round"],
-                "status": "starting", "pid": process.pid,
+                "run_id": run_id, "status": "starting", "pid": process.pid,
             }
             if resume_only:
                 result["resumed"] = True
@@ -732,7 +1131,8 @@ def _launch_round(
             raise
         except Exception as exc:
             failure = _state_payload(
-                project, paths, backend_root, backend_python, status="failed"
+                project, paths, backend_root, backend_python,
+                status="failed", run_id=run_id,
             )
             failure["message"] = "The local backend process could not be started."
             _atomic_write_json(paths["state_file"], failure)
@@ -745,19 +1145,32 @@ def _launch_round(
             if diagnostic_handle is not None:
                 diagnostic_handle.close()
             if key not in _PROCESSES:
+                if _PROCESS_RUN_IDS.get(key) == run_id:
+                    _PROCESS_RUN_IDS.pop(key, None)
                 try:
                     paths["lock_file"].unlink()
                 except FileNotFoundError:
                     pass
 
 
-def start_round(project: dict[str, Any], *, env: dict[str, str] | None = None) -> dict[str, Any]:
-    return _launch_round(project, env=env, resume_only=False)
+def start_round(
+    project: dict[str, Any],
+    *,
+    env: dict[str, str] | None = None,
+    options: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return _launch_round(project, env=env, resume_only=False, options=options)
 
 
-def resume_round(project: dict[str, Any], *, env: dict[str, str] | None = None) -> dict[str, Any]:
+def resume_round(
+    project: dict[str, Any], *, env: dict[str, str] | None = None,
+    expected_round: int | None = None, expected_run_id: str | None = None,
+) -> dict[str, Any]:
     """Relaunch the recorded native round; the backend restores its latest checkpoint."""
-    return _launch_round(project, env=env, resume_only=True)
+    return _launch_round(
+        project, env=env, resume_only=True,
+        expected_round=expected_round, expected_run_id=expected_run_id,
+    )
 
 
 def _terminate_process_group(pid: int, process: subprocess.Popen | None, timeout: float = 3.0) -> int | None:
@@ -785,14 +1198,21 @@ def _terminate_process_group(pid: int, process: subprocess.Popen | None, timeout
     return None
 
 
-def stop_round(project: dict[str, Any]) -> dict[str, Any]:
+def stop_round(
+    project: dict[str, Any], *, expected_round: int | None = None,
+    expected_run_id: str | None = None,
+) -> dict[str, Any]:
     """Stop the active verified DiscoveryAgent process group and preserve artifacts."""
     paths = _project_paths(project)
     key = str(paths["project_root"])
     with _RUNNER_LOCK:
         state = _read_state(paths["state_file"])
-        if not state or state.get("project_id") != str(project["id"]):
+        if not state:
             raise RoundLaunchError("round_not_running", "No active local round is recorded.", 409)
+        run_id = _validate_run_identity(
+            state, project_id=str(project["id"]),
+            expected_round=expected_round, expected_run_id=expected_run_id,
+        )
         round_number = state.get("round")
         target_dir = paths["checkpoints_dir"] / f"round_{round_number}"
         if (target_dir / "memory_report.md").is_file() or state.get("status") == "completed":
@@ -803,6 +1223,13 @@ def stop_round(project: dict[str, Any]) -> dict[str, Any]:
             raise RoundLaunchError("round_not_running", "This round is not currently running.", 409)
 
         process = _PROCESSES.get(key)
+        tracked_run_id = _PROCESS_RUN_IDS.get(key)
+        if process is not None and tracked_run_id is not None and tracked_run_id != run_id:
+            raise RoundLaunchError(
+                "run_identity_mismatch",
+                "The active process belongs to a different research run and was not stopped.",
+                409,
+            )
         if not _pid_matches_state(state):
             if process is not None and process.poll() is None:
                 raise RoundLaunchError("process_identity_mismatch", "The recorded process could not be verified and was not stopped.", 409)
@@ -836,7 +1263,10 @@ def _archive_round_directory(paths: dict[str, Path], round_number: int) -> Path:
     return archived_dir
 
 
-def resubmit_round(project: dict[str, Any], *, env: dict[str, str] | None = None) -> dict[str, Any]:
+def resubmit_round(
+    project: dict[str, Any], *, env: dict[str, str] | None = None,
+    expected_round: int | None = None, expected_run_id: str | None = None,
+) -> dict[str, Any]:
     """Archive a non-resumable attempt and relaunch the same round from scratch."""
     source_env = os.environ if env is None else env
     if not _anthropic_key_is_present(source_env):
@@ -848,8 +1278,12 @@ def resubmit_round(project: dict[str, Any], *, env: dict[str, str] | None = None
     key = str(paths["project_root"])
     with _RUNNER_LOCK:
         state = _read_state(paths["state_file"])
-        if not state or state.get("project_id") != str(project["id"]):
+        if not state:
             raise RoundLaunchError("round_not_resubmittable", "No interrupted round is recorded for this project.", 409)
+        _validate_run_identity(
+            state, project_id=str(project["id"]),
+            expected_round=expected_round, expected_run_id=expected_run_id,
+        )
         status = round_status(project)["status"]
         process = _PROCESSES.get(key)
         if status in {"starting", "running"} or (process is not None and process.poll() is None):
@@ -871,6 +1305,13 @@ def resubmit_round(project: dict[str, Any], *, env: dict[str, str] | None = None
         archived_config = archived_dir / "config.json"
         if archived_config.is_file():
             shutil.copy2(archived_config, target_dir / "config.json")
+        archived_skills = archived_dir / ROUND_SKILLS_SNAPSHOT_DIRECTORY
+        if archived_skills.is_dir() and not archived_skills.is_symlink():
+            shutil.copytree(
+                archived_skills,
+                target_dir / ROUND_SKILLS_SNAPSHOT_DIRECTORY,
+                symlinks=False,
+            )
         payload = dict(state)
         payload.update({
             "status": "not_started", "pid": None, "updated_at": _utc_now(),
@@ -882,7 +1323,10 @@ def resubmit_round(project: dict[str, Any], *, env: dict[str, str] | None = None
         except FileNotFoundError:
             pass
 
-    result = _launch_round(project, env=source_env, resume_only=False)
+    result = _launch_round(
+        project, env=source_env, resume_only=False,
+        preserve_existing_snapshot=True,
+    )
     result["resubmitted"] = True
     return result
 
@@ -902,11 +1346,38 @@ def _round_status_from_paths(
     reads remain side-effect free.
     """
     state = _read_state(paths["state_file"])
+    if state and project_id and state.get("project_id") not in {None, "", project_id}:
+        raise RoundLaunchError(
+            "project_identity_mismatch",
+            "The recorded research state belongs to a different project.",
+            409,
+        )
+    if state and project_id and not state.get("project_id"):
+        # Pre-v2 lifecycle records are safely attributable here because the
+        # caller supplied the registered project's already-contained state path.
+        state = dict(state)
+        state["project_id"] = project_id
     round_number = int(state.get("round", 0)) if state else 0
     target_dir = paths["checkpoints_dir"] / f"round_{round_number}"
+    tracked_running = False
+    if state:
+        project_root = paths.get("project_root") or Path(paths["state_file"]).parent.parent
+        key = str(Path(project_root).expanduser().absolute())
+        with _RUNNER_LOCK:
+            tracked = _PROCESSES.get(key)
+            tracked_run_id = _PROCESS_RUN_IDS.get(key)
+            tracked_running = bool(
+                tracked is not None
+                and tracked.poll() is None
+                and tracked_run_id in {None, _state_run_id(state)}
+            )
     if (target_dir / "memory_report.md").exists():
         status = "completed"
-    elif state and state.get("status") in {"starting", "running"} and _pid_matches_state(state):
+    elif (
+        state
+        and state.get("status") in {"starting", "running"}
+        and (tracked_running or _pid_matches_state(state))
+    ):
         status = "running"
     elif state and state.get("status") in {"starting", "running"}:
         status = "failed"
@@ -924,13 +1395,16 @@ def _round_status_from_paths(
     return {
         "project_id": project_id,
         "round": round_number,
+        "run_id": _state_run_id(state),
         "status": status,
         "pid": state.get("pid") if state and status == "running" else None,
         "resumable": status in {"interrupted", "failed"} and _latest_native_checkpoint(target_dir) is not None and not (target_dir / "memory_report.md").is_file(),
     }
 
 
-def inspect_round_status(checkpoint_dir: str | Path) -> dict[str, Any]:
+def inspect_round_status(
+    checkpoint_dir: str | Path, *, project_id: str | None = None,
+) -> dict[str, Any]:
     """Read the same lifecycle state as :func:`round_status` without writing.
 
     ``checkpoint_dir`` is the registered V2 ``.../checkpoints/round_N`` path.
@@ -952,7 +1426,7 @@ def inspect_round_status(checkpoint_dir: str | Path) -> dict[str, Any]:
     state = _read_state(state_file)
     result = _round_status_from_paths(
         {"checkpoints_dir": checkpoints_dir, "state_file": state_file},
-        project_id=str((state or {}).get("project_id") or ""),
+        project_id=str(project_id or (state or {}).get("project_id") or ""),
         persist_reconciled_state=False,
     )
     # Project-facing consumers with an existing filesystem fallback need to

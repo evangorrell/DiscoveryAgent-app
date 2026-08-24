@@ -30,14 +30,17 @@ def _client(monkeypatch, tmp_path):
     return client
 
 
-def _create(client, name="Optic Nerve Regeneration", context="Some dataset context."):
+def _create(client, name="Optic Nerve Regeneration", context="Some dataset context.", parent=None):
+    data = {
+        "project_name": name,
+        "task_description": "Identify testable regeneration hypotheses.",
+        "dataset_context": context,
+    }
+    if parent is not None:
+        data["project_parent_dir"] = str(parent)
     resp = client.post(
         "/api/projects",
-        data={
-            "project_name": name,
-            "task_description": "Identify testable regeneration hypotheses.",
-            "dataset_context": context,
-        },
+        data=data,
         content_type="multipart/form-data",
     )
     return resp.get_json()
@@ -48,7 +51,7 @@ def _registry(tmp_path):
 
 
 def _round_dir(tmp_path, pid, n):
-    return tmp_path / pid / "checkpoint" / "checkpoints" / f"round_{n}"
+    return Path(app_module._v2_get_project(pid)["project_root"]) / "checkpoint" / "checkpoints" / f"round_{n}"
 
 
 # --- (1-4) slug normalization -------------------------------------------------
@@ -85,14 +88,17 @@ def test_punctuation_normalized_safely(monkeypatch, tmp_path):
 
 def test_duplicate_names_get_numeric_suffixes(monkeypatch, tmp_path):
     client = _client(monkeypatch, tmp_path)
-    b1 = _create(client, name="Optic Nerve Regeneration")
-    b2 = _create(client, name="Optic Nerve Regeneration")
-    b3 = _create(client, name="Optic Nerve Regeneration")
+    parents = [tmp_path / f"parent-{index}" for index in range(3)]
+    for parent in parents:
+        parent.mkdir()
+    b1 = _create(client, name="Optic / Nerve", parent=parents[0])
+    b2 = _create(client, name="Optic - Nerve", parent=parents[1])
+    b3 = _create(client, name="Optic _ Nerve", parent=parents[2])
     registry = _registry(tmp_path)
     slugs = {p["id"]: p["url_slug"] for p in registry}
-    assert slugs[b1["project_id"]] == "optic-nerve-regeneration"
-    assert slugs[b2["project_id"]] == "optic-nerve-regeneration-2"
-    assert slugs[b3["project_id"]] == "optic-nerve-regeneration-3"
+    assert slugs[b1["project_id"]] == "optic-nerve"
+    assert slugs[b2["project_id"]] == "optic-nerve-2"
+    assert slugs[b3["project_id"]] == "optic-nerve-3"
 
 
 # --- (6,7,8,9,10) backfill for legacy records ---------------------------------
@@ -210,17 +216,11 @@ def test_projects_js_uses_home_url_not_internal_id():
     js = (app_module.app.static_folder and
           __import__("pathlib").Path(app_module.app.static_folder) / "projects.js").read_text(encoding="utf-8")
     assert "p.home_url" in js
-    # Scoped to the projects-LIST row renderer (existing projects): title and
-    # Continue there are plain slug-based <a href> navigations, no POST/fetch
-    # dance and no client-side id-based function call. This is distinct from
-    # the *create-project modal's* "Continue" button (`els.continueProject`),
-    # which legitimately POSTs to /api/projects/<id>/continue to activate a
-    # just-created project's session before its first navigation -- see
-    # api_projects_continue in app.py and test_local_first_project_data.py.
-    # A whole-file substring check would false-positive on that unrelated,
-    # intentional identifier, so this is scoped to just the row renderer.
+    # The title remains the canonical slug link. Continue intentionally calls
+    # the internal-id API first so a missing/moved root can be revalidated and
+    # recovered before the canonical navigation occurs.
     render_row = js[js.index("function renderRow("):js.index("function renderList(")]
-    assert "continueProject" not in render_row
+    assert "continueProject(p, cont)" in render_row
     assert "p.home_url" in render_row
 
 
@@ -477,12 +477,14 @@ def test_project_storage_paths_unchanged_by_slug(monkeypatch, tmp_path):
     pid = _create(client, name="Optic Nerve Regeneration")["project_id"]
     raw_record = next(p for p in _registry(tmp_path) if p["id"] == pid)
     record = app_module._v2_get_project(pid)
-    # storage lives under the internal id, never the slug
-    assert raw_record["project_root"] == "."
-    assert Path(record["project_root"]) == tmp_path / pid
-    assert Path(record["checkpoint_dir"]).is_relative_to(tmp_path / pid)
-    assert (tmp_path / pid).exists()
-    assert not (tmp_path / "optic-nerve-regeneration").exists()
+    # The immutable ID remains metadata identity while the registered root
+    # uses only the readable filesystem slug.
+    project_root = Path(record["project_root"])
+    assert raw_record["project_root"] == str(project_root)
+    assert project_root.name == "optic-nerve-regeneration"
+    assert Path(record["checkpoint_dir"]).is_relative_to(project_root)
+    assert project_root.exists()
+    assert (tmp_path / "optic-nerve-regeneration").is_dir()
 
 
 # --- (28) routes registered; endpoint names intact ---------------------------

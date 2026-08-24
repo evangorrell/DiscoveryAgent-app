@@ -1124,33 +1124,247 @@
         return parts.join('');
     }
     function renderMarkdownText(text) {
-        const blocks = text.split(/\n\s*\n/).map((b) => b.trim()).filter(Boolean);
-        return blocks.map((block) => {
-            const lines = block.split('\n');
-            if (lines.length === 1) {
-                const heading = lines[0].match(/^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$/);
-                if (heading) {
-                    const level = Math.min(6, heading[1].length);
-                    return '<h' + level + '>' + inline(heading[2]) + '</h' + level + '>';
+        const lines = String(text || '').split('\n');
+        const rendered = [];
+        let paragraph = [];
+        function flushParagraph() {
+            if (!paragraph.length) return;
+            const body = paragraph.join('\n').trim();
+            paragraph = [];
+            if (!body) return;
+            const sectionLabel = /^\*\*[^*\n]+:\*\*$/.test(body);
+            rendered.push(
+                '<p' + (sectionLabel ? ' class="hs-markdown-section-label"' : '') + '>' +
+                inline(body).replace(/\n/g, '<br>') +
+                '</p>'
+            );
+        }
+        for (let i = 0; i < lines.length;) {
+            const line = lines[i];
+            if (!line.trim()) {
+                flushParagraph();
+                i += 1;
+                continue;
+            }
+            const heading = line.match(/^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$/);
+            if (heading) {
+                flushParagraph();
+                const level = Math.min(6, heading[1].length);
+                rendered.push('<h' + level + '>' + inline(heading[2]) + '</h' + level + '>');
+                i += 1;
+                continue;
+            }
+            if (/^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/.test(line)) {
+                flushParagraph();
+                rendered.push('<hr>');
+                i += 1;
+                continue;
+            }
+            if (/^\s{0,3}>/.test(line)) {
+                flushParagraph();
+                const quote = [];
+                while (i < lines.length && /^\s{0,3}>/.test(lines[i])) {
+                    quote.push(lines[i].replace(/^\s{0,3}>\s?/, ''));
+                    i += 1;
                 }
-                if (/^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/.test(lines[0])) return '<hr>';
+                rendered.push('<blockquote>' + renderMarkdownText(quote.join('\n')) + '</blockquote>');
+                continue;
             }
-            if (lines.every((l) => /^\s*[-*]\s+/.test(l))) {
-                return '<ul>' + lines.map((l) => '<li>' + inline(l.replace(/^\s*[-*]\s+/, '')) + '</li>').join('') + '</ul>';
+            if (
+                i + 1 < lines.length &&
+                markdownTableCells(line).length > 1 &&
+                markdownTableSeparator(lines[i + 1])
+            ) {
+                flushParagraph();
+                const headers = markdownTableCells(line);
+                i += 2;
+                const rows = [];
+                while (i < lines.length && lines[i].trim() && markdownTableCells(lines[i]).length > 1) {
+                    rows.push(markdownTableCells(lines[i]));
+                    i += 1;
+                }
+                rendered.push(
+                    '<table><thead><tr>' +
+                    headers.map((cell) => '<th>' + inline(cell) + '</th>').join('') +
+                    '</tr></thead><tbody>' +
+                    rows.map((row) => (
+                        '<tr>' + headers.map((_, cellIndex) =>
+                            '<td>' + inline(row[cellIndex] || '') + '</td>'
+                        ).join('') + '</tr>'
+                    )).join('') +
+                    '</tbody></table>'
+                );
+                continue;
             }
-            if (lines.every((l) => /^\s*\d+[.)]\s+/.test(l))) {
-                return '<ol>' + lines.map((l) => '<li>' + inline(l.replace(/^\s*\d+[.)]\s+/, '')) + '</li>').join('') + '</ol>';
+            const listMatch = markdownListMatch(line);
+            if (listMatch) {
+                flushParagraph();
+                const list = renderMarkdownList(lines, i, listMatch.indent, listMatch.ordered);
+                rendered.push(list.html);
+                i = list.next;
+                continue;
             }
-            return '<p>' + inline(block).replace(/\n/g, '<br>') + '</p>';
-        }).join('');
+            paragraph.push(line);
+            i += 1;
+        }
+        flushParagraph();
+        return rendered.join('');
+    }
+    function markdownListMatch(line) {
+        const match = String(line || '').match(/^(\s*)([-+*]|\d+[.)])\s+(.+)$/);
+        if (!match) return null;
+        const ordered = /^\d/.test(match[2]);
+        return {
+            indent: match[1].replace(/\t/g, '    ').length,
+            ordered: ordered,
+            start: ordered ? Number.parseInt(match[2], 10) : null,
+            content: match[3],
+        };
+    }
+    function renderMarkdownList(lines, start, indent, ordered) {
+        const items = [];
+        let i = start;
+        let loose = false;
+        const firstItem = markdownListMatch(lines[start]);
+        while (i < lines.length) {
+            const item = markdownListMatch(lines[i]);
+            if (!item || item.indent < indent) break;
+            if (item.indent > indent) {
+                if (!items.length) break;
+                const child = renderMarkdownList(lines, i, item.indent, item.ordered);
+                items[items.length - 1].children += child.html;
+                i = child.next;
+                continue;
+            }
+            if (item.ordered !== ordered) break;
+            const current = { lines: [item.content], children: '' };
+            items.push(current);
+            i += 1;
+            while (i < lines.length) {
+                const nextItem = markdownListMatch(lines[i]);
+                if (nextItem) {
+                    if (nextItem.indent === indent) break;
+                    if (nextItem.indent < indent) return markdownListResult(
+                        items, i, ordered, firstItem && firstItem.start, loose
+                    );
+                    const child = renderMarkdownList(
+                        lines, i, nextItem.indent, nextItem.ordered
+                    );
+                    current.children += child.html;
+                    i = child.next;
+                    continue;
+                }
+                if (!lines[i].trim()) {
+                    let lookahead = i;
+                    while (lookahead < lines.length && !lines[lookahead].trim()) lookahead += 1;
+                    const followingItem = markdownListMatch(lines[lookahead]);
+                    if (
+                        followingItem && followingItem.indent === indent &&
+                        followingItem.ordered === ordered
+                    ) {
+                        loose = true;
+                        i = lookahead;
+                        break;
+                    }
+                    if (followingItem && followingItem.indent > indent) {
+                        loose = true;
+                        const child = renderMarkdownList(
+                            lines, lookahead, followingItem.indent, followingItem.ordered
+                        );
+                        current.children += child.html;
+                        i = child.next;
+                        continue;
+                    }
+                    const followingLine = lines[lookahead] || '';
+                    const followingIndent = markdownIndent(followingLine);
+                    if (followingLine.trim() && followingIndent > indent) {
+                        loose = true;
+                        current.lines.push('');
+                        current.lines.push(stripMarkdownIndent(followingLine, indent));
+                        i = lookahead + 1;
+                        continue;
+                    }
+                    return markdownListResult(
+                        items, i, ordered, firstItem && firstItem.start, loose
+                    );
+                }
+                const continuationIndent = markdownIndent(lines[i]);
+                if (continuationIndent <= indent) {
+                    return markdownListResult(
+                        items, i, ordered, firstItem && firstItem.start, loose
+                    );
+                }
+                current.lines.push(stripMarkdownIndent(lines[i], indent));
+                i += 1;
+            }
+        }
+        return markdownListResult(items, i, ordered, firstItem && firstItem.start, loose);
+    }
+    function markdownIndent(line) {
+        const match = String(line || '').match(/^(\s*)/);
+        return (match ? match[1] : '').replace(/\t/g, '    ').length;
+    }
+    function stripMarkdownIndent(line, parentIndent) {
+        const width = Math.max(1, Number(parentIndent || 0) + 2);
+        return String(line || '').replace(new RegExp('^\\s{1,' + width + '}'), '');
+    }
+    function markdownListResult(items, next, ordered, authoredStart, loose) {
+        const tag = ordered ? 'ol' : 'ul';
+        const startAttribute = ordered && authoredStart !== 1
+            ? ' start="' + authoredStart + '"'
+            : '';
+        return {
+            html: '<' + tag + startAttribute + '>' + items.map((item) => {
+                const content = item.lines.join('\n');
+                const body = loose || item.lines.includes('')
+                    ? renderMarkdownText(content)
+                    : inline(content).replace(/\n/g, '<br>');
+                return '<li>' + body + item.children + '</li>';
+            }).join('') + '</' + tag + '>',
+            next: next,
+        };
+    }
+    function markdownTableCells(line) {
+        let value = String(line || '').trim();
+        if (value.startsWith('|')) value = value.slice(1);
+        if (value.endsWith('|')) value = value.slice(0, -1);
+        return value.split('|').map((cell) => cell.trim());
+    }
+    function markdownTableSeparator(line) {
+        const cells = markdownTableCells(line);
+        return cells.length > 1 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+    }
+    function safeMarkdownHref(value) {
+        const href = String(value || '').trim();
+        if (/^(https?:|mailto:)/i.test(href) || href.startsWith('/') || href.startsWith('#')) {
+            return href;
+        }
+        return null;
     }
     function inline(text) {
         const codeTokens = [];
-        let h = esc(text);
-        h = h.replace(/`([^`]+)`/g, (_, code) => { codeTokens.push('<code>' + code + '</code>'); return '@@HS_CODE_' + (codeTokens.length - 1) + '@@'; });
+        const linkTokens = [];
+        let source = String(text == null ? '' : text);
+        source = source.replace(/`([^`]+)`/g, (_, code) => {
+            codeTokens.push('<code>' + esc(code) + '</code>');
+            return '@@HS_CODE_' + (codeTokens.length - 1) + '@@';
+        });
+        source = source.replace(/\[([^\]\n]+)\]\(([^)\s]+)\)/g, (_, label, href) => {
+            const safeHref = safeMarkdownHref(href);
+            if (!safeHref) return label + ' (' + href + ')';
+            let labelHtml = esc(label);
+            labelHtml = labelHtml.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+            labelHtml = labelHtml.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+            linkTokens.push(
+                '<a href="' + esc(safeHref) + '" rel="noopener noreferrer">' + labelHtml + '</a>'
+            );
+            return '@@HS_LINK_' + (linkTokens.length - 1) + '@@';
+        });
+        let h = esc(source);
         h = h.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
         h = h.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
         h = h.replace(/@@HS_CODE_(\d+)@@/g, (_, idx) => codeTokens[Number(idx)] || '');
+        h = h.replace(/@@HS_LINK_(\d+)@@/g, (_, idx) => linkTokens[Number(idx)] || '');
         return h;
     }
 
@@ -1846,7 +2060,12 @@
 
         const previous = el('button', 'hs-regeneration-arrow', '‹');
         previous.type = 'button';
-        previous.setAttribute('aria-label', 'Earlier result');
+        previous.setAttribute(
+            'aria-label',
+            view.viewedPosition > 0
+                ? 'View Version ' + view.viewedPosition + ' of ' + view.results.length
+                : 'No earlier version before Version 1 of ' + view.results.length
+        );
         previous.disabled = blocked || view.viewedPosition <= 0;
         previous.addEventListener('click', (e) => {
             e.stopPropagation();
@@ -1857,7 +2076,13 @@
             'Version ' + (view.viewedPosition + 1) + ' of ' + view.results.length));
         const next = el('button', 'hs-regeneration-arrow', '›');
         next.type = 'button';
-        next.setAttribute('aria-label', 'Later result');
+        next.setAttribute(
+            'aria-label',
+            view.viewedPosition < view.results.length - 1
+                ? 'View Version ' + (view.viewedPosition + 2) + ' of ' + view.results.length
+                : 'No later version after Version ' + (view.viewedPosition + 1) +
+                    ' of ' + view.results.length
+        );
         next.disabled = blocked || view.viewedPosition >= view.results.length - 1;
         next.addEventListener('click', (e) => {
             e.stopPropagation();
@@ -2787,14 +3012,39 @@
         try {
             const list = await apiJsonWithTimeout('/api/hypothesis_history', 'GET', undefined, 2500);
             if (!list.resp.ok || !list.data || list.data.success === false) return false;
-            applyHistoryList(list.data);
-            if (state.currentRoundIndex == null) return false;
-            const detail = await apiJsonWithTimeout('/api/hypothesis_history/' + state.currentRoundIndex, 'GET', undefined, 3500);
+            const currentRoundIndex = list.data.current_round_index;
+            if (currentRoundIndex == null) return false;
+            const detail = await apiJsonWithTimeout('/api/hypothesis_history/' + currentRoundIndex, 'GET', undefined, 3500);
             if (!detail.resp.ok || !detail.data || detail.data.success === false) return false;
+            if (typeof options.shouldApply === 'function' && !options.shouldApply()) return false;
             // Capture visible history choices immediately before replacing the
             // event log. Requests own immutable source identities; they never
             // own what the scientist is currently inspecting on any card.
             const preservedViewedResultIds = viewedVersionResultIds();
+            const authoritativeEvents = HSE.normalizeHistoryEvents(detail.data, nextEventId);
+            const authoritativeRevision = options.authoritativeRevision || null;
+            if (authoritativeRevision) {
+                const authoritativeHistory = HSE.regenerationHistory(
+                    authoritativeEvents, authoritativeRevision.index
+                );
+                const createdPosition = authoritativeHistory.results.findIndex((result) =>
+                    result && String(result.eventId || '') ===
+                        String(authoritativeRevision.resultEventId || '')
+                );
+                const createdResult = authoritativeHistory.results[createdPosition];
+                const createdSnapshot = createdResult && createdResult.hypothesis;
+                if (
+                    createdPosition < 0 ||
+                    createdPosition + 1 !== authoritativeRevision.versionNumber ||
+                    authoritativeHistory.results.length < authoritativeRevision.versionTotal ||
+                    !createdSnapshot ||
+                    String(createdSnapshot.state_id || '') !==
+                        String(authoritativeRevision.createdStateId || '')
+                ) {
+                    return false;
+                }
+            }
+            applyHistoryList(list.data);
             let followNewCurrent = false;
             const followIndex = Number(options.followNewCurrentIndex);
             if (followIndex) {
@@ -2804,9 +3054,14 @@
             state.viewRoundIndex = detail.data.storage_round_index != null ? detail.data.storage_round_index : detail.data.round_index;
             state.viewRoundLabel = detail.data.label || state.currentRoundLabel;
             state.partialHistory = !!detail.data.partial_history;
-            state.events = HSE.normalizeHistoryEvents(detail.data, nextEventId);
+            state.events = authoritativeEvents;
             restoreViewedVersionResultIds(preservedViewedResultIds);
             if (followNewCurrent) delete state.viewedRegenerationPositions[followIndex];
+            if (authoritativeRevision) {
+                setViewedVersionResultId(
+                    authoritativeRevision.index, authoritativeRevision.resultEventId
+                );
+            }
             state.readOnly = !!detail.data.read_only;
             if (state.readOnly) state.focusIndex = null;
             return hasHypotheses();
@@ -3416,6 +3671,41 @@
         return finished;
     }
 
+    function authoritativeRevisionResponse(data, started, sourceHypothesis) {
+        if (!data || !data.success || !data.hypothesis) return null;
+        const responseIndex = Number(data.hypothesis_index);
+        const hypothesisIndex = Number(data.hypothesis.index);
+        const versionNumber = Number(data.created_version_number);
+        const versionTotal = Number(data.authoritative_version_total);
+        const expectedProject = String(CFG.projectSlug || '');
+        const expectedRequest = String(started.clientRequestId || '');
+        const expectedState = String(sourceHypothesis.state_id || '');
+        const expectedSourceResult = String(started.resultEventId || '');
+        const resultEventId = String(data.result_event_id || '');
+        const createdStateId = String(data.hypothesis.state_id || '');
+        if (
+            String(data.project_slug || '') !== expectedProject ||
+            !expectedRequest || String(data.request_id || '') !== expectedRequest ||
+            !expectedState || String(data.source_state_id || '') !== expectedState ||
+            !responseIndex || responseIndex !== hypothesisIndex ||
+            String(data.source_result_event_id || '') !== expectedSourceResult ||
+            !resultEventId || resultEventId === expectedSourceResult ||
+            !createdStateId ||
+            !Number.isInteger(versionNumber) || versionNumber < 1 ||
+            !Number.isInteger(versionTotal) || versionTotal < versionNumber ||
+            data.version_created_message !== 'Created Version ' + versionNumber + '.'
+        ) {
+            return null;
+        }
+        return {
+            index: responseIndex,
+            resultEventId: resultEventId,
+            createdStateId: createdStateId,
+            versionNumber: versionNumber,
+            versionTotal: versionTotal,
+        };
+    }
+
     async function sendRevise(request, forcedIndex) {
         const idx = Number(forcedIndex || state.focusIndex);
         if (isPendingSelectedCard(idx)) {
@@ -3478,11 +3768,10 @@
                 render();
                 return;
             }
-            if (resp.ok && data && data.success && data.hypothesis) {
-                const responseIndex = Number(data.hypothesis.index) || idx;
-                const sourceStillViewed = sameThreadResultEventId(
-                    currentThreadResultEventId(responseIndex), started.resultEventId
-                );
+            const authoritativeRevision = resp.ok
+                ? authoritativeRevisionResponse(data, started, h)
+                : null;
+            if (authoritativeRevision) {
                 // Completing an LLM edit must not close or discard a manual
                 // editor that the scientist opened on another hypothesis while
                 // this request was in flight.
@@ -3490,38 +3779,33 @@
                     state.manualEditIndex = null;
                     state.manualEditDraft = '';
                 }
-                const durableSourceResultId = data.source_result_event_id || versionView.viewedResultEventId;
-                const createdResultEventId = data.result_event_id || nextEventId();
-                optimisticRequestEvent.resultEventId = durableSourceResultId;
-                state.events.push({
-                    kind: 'revision', id: createdResultEventId, index: responseIndex,
-                    source: 'regenerated',
-                    before: versionView.viewedSnapshot || h,
-                    sourceResultEventId: durableSourceResultId,
-                    resultEventId: createdResultEventId,
-                    hypothesis: data.hypothesis,
-                });
-                state.events.push({
-                    kind: 'message', role: 'assistant', hypothesisIndex: responseIndex,
-                    resultEventId: durableSourceResultId,
-                    content: data.version_created_message || (
-                        'Created Version ' + (data.created_version_number || (versionView.results.length + 1)) + '.'
+                const restored = await restoreCurrentCardsFromHistory({
+                    authoritativeRevision: authoritativeRevision,
+                    shouldApply: () => (
+                        !started.active.stopped &&
+                        activeThreadRequests[started.laneKey] === started.active &&
+                        !removedHypothesisStateIds.has(h.state_id) &&
+                        String(CFG.projectSlug || '') === String(data.project_slug || '')
                     ),
                 });
-                // The durable result belongs to the immutable captured source,
-                // not to whatever card/version the scientist is inspecting at
-                // completion. If the source version is still selected, advance
-                // that card to the exact created version; otherwise preserve
-                // the user's newer read-only navigation choice.
-                if (sourceStillViewed) {
-                    setViewedVersionResultId(responseIndex, createdResultEventId);
+                if (
+                    !restored ||
+                    started.active.stopped ||
+                    activeThreadRequests[started.laneKey] !== started.active
+                ) {
+                    const optimisticPosition = state.events.indexOf(optimisticRequestEvent);
+                    if (optimisticPosition >= 0) state.events.splice(optimisticPosition, 1);
+                    if (!started.active.stopped) {
+                        setComposerError(
+                            'The revision was saved, but its version history could not be refreshed. Reload to try again.'
+                        );
+                        finishLlmEditRequest(idx, started);
+                        renderCards();
+                        renderThread();
+                        applyComposer();
+                    }
+                    return;
                 }
-                // The request is terminal as soon as its durable result is in
-                // local state. The response already supplies the durable event
-                // identity, so this append is the affected card's complete
-                // local history refresh. Do not replace the global event log:
-                // that could overwrite navigation or a new chat started while
-                // a redundant history request was in flight.
                 finishLlmEditRequest(idx, started);
                 render();
             } else {

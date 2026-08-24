@@ -1,4 +1,5 @@
 """Exact-round compatibility routing regressions for V2 Round Workspace."""
+from pathlib import Path
 from da_selection_ui import app as app_module
 
 
@@ -24,7 +25,7 @@ def _create(client, name="Optic Nerve Regeneration"):
 
 
 def _rounds_root(tmp_path, pid):
-    return tmp_path / pid / "checkpoint" / "checkpoints"
+    return Path(app_module._v2_get_project(pid)["project_root"]) / "checkpoint" / "checkpoints"
 
 
 def _write_completed_round(tmp_path, pid, n, finding):

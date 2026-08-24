@@ -264,6 +264,108 @@
     line-height: 1.62;
     color: var(--v2-ink);
 }
+/* Markdown rhythm belongs to assistant chat replies only. Keeping these rules
+   under the Studio transcript prevents cards, review dialogs, reports, and
+   other shared .v2-prose surfaces from inheriting the chat spacing. */
+.hs-thread .hs-turn-assistant .hs-turn-body {
+    line-height: 1.65;
+}
+.hs-thread .hs-turn-assistant .hs-turn-body h1,
+.hs-thread .hs-turn-assistant .hs-turn-body h2,
+.hs-thread .hs-turn-assistant .hs-turn-body h3,
+.hs-thread .hs-turn-assistant .hs-turn-body h4,
+.hs-thread .hs-turn-assistant .hs-turn-body h5,
+.hs-thread .hs-turn-assistant .hs-turn-body h6 {
+    margin: 1.5rem 0 0.5rem;
+    line-height: 1.3;
+}
+.hs-thread .hs-turn-assistant .hs-turn-body h1:first-child,
+.hs-thread .hs-turn-assistant .hs-turn-body h2:first-child,
+.hs-thread .hs-turn-assistant .hs-turn-body h3:first-child,
+.hs-thread .hs-turn-assistant .hs-turn-body h4:first-child,
+.hs-thread .hs-turn-assistant .hs-turn-body h5:first-child,
+.hs-thread .hs-turn-assistant .hs-turn-body h6:first-child {
+    margin-top: 0;
+}
+.hs-thread .hs-turn-assistant .hs-turn-body p {
+    margin: 0 0 0.75rem;
+}
+.hs-thread .hs-turn-assistant .hs-turn-body .hs-markdown-section-label {
+    margin-top: 1.15rem;
+}
+.hs-thread .hs-turn-assistant .hs-turn-body > p:first-child,
+.hs-thread .hs-turn-assistant .hs-turn-body > p:last-child {
+    margin-top: 0;
+}
+.hs-thread .hs-turn-assistant .hs-turn-body > p:last-child {
+    margin-bottom: 0;
+}
+.hs-thread .hs-turn-assistant .hs-turn-body ul,
+.hs-thread .hs-turn-assistant .hs-turn-body ol {
+    margin: 0.75rem 0 0.9rem;
+    padding-left: 1.5rem;
+}
+.hs-thread .hs-turn-assistant .hs-turn-body li + li {
+    margin-top: 0.35rem;
+}
+.hs-thread .hs-turn-assistant .hs-turn-body li > p {
+    margin: 0.35rem 0;
+}
+.hs-thread .hs-turn-assistant .hs-turn-body li > ul,
+.hs-thread .hs-turn-assistant .hs-turn-body li > ol {
+    margin: 0.4rem 0 0.25rem;
+}
+.hs-thread .hs-turn-assistant .hs-turn-body blockquote {
+    margin: 1rem 0;
+    padding: 0.2rem 0 0.2rem 1rem;
+    border-left: 3px solid var(--v2-accent-ring);
+    color: var(--v2-ink-soft);
+}
+.hs-thread .hs-turn-assistant .hs-turn-body blockquote > :last-child {
+    margin-bottom: 0;
+}
+.hs-thread .hs-turn-assistant .hs-turn-body table {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    margin: 1rem 0 1.1rem;
+    overflow-x: auto;
+    border-collapse: collapse;
+    font-size: 0.94em;
+}
+.hs-thread .hs-turn-assistant .hs-turn-body th,
+.hs-thread .hs-turn-assistant .hs-turn-body td {
+    padding: 0.55rem 0.7rem;
+    border: 1px solid var(--v2-border-soft);
+    text-align: left;
+    vertical-align: top;
+}
+.hs-thread .hs-turn-assistant .hs-turn-body th {
+    background: var(--v2-bg);
+    font-weight: 650;
+}
+.hs-thread .hs-turn-assistant .hs-turn-body pre {
+    max-width: 100%;
+    margin: 1rem 0 1.1rem;
+    padding: 0.8rem 0.95rem;
+    overflow-x: auto;
+    border: 1px solid var(--v2-border-soft);
+    border-radius: 8px;
+    background: var(--v2-bg);
+    line-height: 1.5;
+}
+.hs-thread .hs-turn-assistant .hs-turn-body pre code {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    white-space: pre;
+}
+.hs-thread .hs-turn-assistant .hs-turn-body > :first-child {
+    margin-top: 0;
+}
+.hs-thread .hs-turn-assistant .hs-turn-body > :last-child {
+    margin-bottom: 0;
+}
 .hs-turn-user .hs-turn-body {
     /* Scientist messages are compact and right-aligned; scientific objects stay
        full-width via .hs-event below. */

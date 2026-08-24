@@ -191,9 +191,7 @@ Your analysis should be comprehensive and include:
 5. Key insights and pattern discovery
 6. Final conclusions and recommendations
 
-⏱️ BUDGET:
-You are only allowed to take a total of {budget_steps} steps to complete this task. Please be efficient and mindful of this budget. Plan your approach carefully to maximize the value of each step.
-
+{budget_section}
 CRITICAL: At the end of your analysis, you MUST include a section titled "## Generated Files" that lists ALL files you created, with their full paths. Format it like this:
 
 ## Generated Files

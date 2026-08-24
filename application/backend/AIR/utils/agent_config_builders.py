@@ -216,9 +216,8 @@ def set_execution_agent_config(
 ):
     llm_config = LLMConfig(model_name=args.execution_model, max_tokens=16384)
 
-    execution_max_turns = (
-        args.execution_max_turns if args.execution_max_turns is not None else 10
-    )
+    # 0 / None means no step cap: the agent runs until it finishes the task.
+    execution_max_turns = getattr(args, "execution_max_turns", None) or None
 
     opentargets_mcp_servers = None
     if (

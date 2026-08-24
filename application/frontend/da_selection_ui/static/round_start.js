@@ -65,10 +65,17 @@
     }
 
     async function performLaunch(btn) {
+        var projectId = String(
+            window.discoveryProjectContext && window.discoveryProjectContext.projectId || ''
+        ).trim();
         var response = await fetch('/api/rounds/start', {
             method: 'POST',
             credentials: 'include',
-            headers: { 'Accept': 'application/json' }
+            headers: {
+                'Accept': 'application/json',
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ project_id: projectId }),
         });
         var result = await readJson(response, btn);
         if (!result.redirect_url) throw new Error('The Round Workspace address was missing from the response.');
@@ -83,11 +90,11 @@
         btn.disabled = true;
         btn.setAttribute('aria-busy', 'true');
         setDismissDisabled(btn, true);
-        if (note) {
-            note.textContent = startingNote(btn);
-            note.hidden = false;
-        }
         try {
+            if (note) {
+                note.textContent = startingNote(btn);
+                note.hidden = false;
+            }
             await performLaunch(btn);
         } catch (error) {
             pending = false;

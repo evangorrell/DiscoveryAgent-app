@@ -127,6 +127,7 @@ def test_manager_storage_and_backend_environment_values_are_honored(tmp_path):
     backend_python.parent.mkdir(parents=True)
     launcher.parent.mkdir(parents=True)
     backend_python.write_text("", encoding="utf-8")
+    backend_python.chmod(0o755)
     launcher.write_text("", encoding="utf-8")
     environment = {
         "DISCOVERYAGENT_DATA_DIR": str(data_root),

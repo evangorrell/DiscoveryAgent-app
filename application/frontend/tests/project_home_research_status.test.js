@@ -15,6 +15,14 @@ test('Project Home renders only the canonical Research Status payload', () => {
   assert.match(client, /label\('Research Status'\)/);
 });
 
+test('Project Home omits all data presentation while retaining research evolution', () => {
+  assert.doesNotMatch(client, /buildInputData|state\.input_data|Input data|Entire source|Data Folder|v2-input-data/i);
+  assert.doesNotMatch(sharedCss, /\.v2-input-data|\.v2-path-row|\.v2-path\s*\{/);
+  assert.match(client, /function buildEvolution\(evolution\)/);
+  assert.match(client, /label\('How the Research Evolved'\)/);
+  assert.match(client, /buildEvolution\(state\.evolution\)/);
+});
+
 test('Research Status uses one exact action for start, resume, or resubmit', () => {
   assert.match(client, /data-start-round-number/);
   assert.match(client, /cta_action === 'resume_round'/);

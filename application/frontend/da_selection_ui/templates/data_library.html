@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+
+{% block title %}Data &middot; DiscoveryAgent{% endblock %}
+
+{% block content %}
+<section class="v2-data-page v2-data-library v2-app-page" aria-labelledby="data-library-title"
+         id="data-library-root" data-page-scroll-root>
+    <header class="v2-app-page-header v2-data-library-header">
+        <h1 class="v2-title v2-app-page-title" id="data-library-title">Data</h1>
+        <p class="v2-app-page-description v2-data-library-description">Add folders once, then choose which projects can access them. Files stay in their original locations.</p>
+    </header>
+
+    <div class="v2-app-page-content v2-data-library-content" id="data-library-content">
+        <button type="button" class="v2-dropzone v2-data-empty-state v2-data-library-empty"
+                id="data-library-empty" aria-label="No data added. Click to add data." hidden>
+            <svg class="v2-dropzone-icon" viewBox="0 0 24 24" width="26" height="26" aria-hidden="true">
+                <path d="M2.5 6.5h7l2 2h10v9H2.5z" fill="none" stroke="currentColor"
+                      stroke-width="1.5" stroke-linejoin="round"/>
+            </svg>
+            <span class="v2-dropzone-text">No data added</span>
+            <span class="v2-dropzone-action">Click to add data</span>
+        </button>
+
+        <div class="v2-data-library-box v2-data-tree-container" id="data-library-box">
+            <div class="v2-home-status v2-data-library-loading" id="data-library-loading">
+                <div class="v2-spinner" aria-hidden="true"></div>
+                <p class="v2-muted">Loading data sources&hellip;</p>
+            </div>
+
+            <div class="v2-home-status v2-data-library-error" id="data-library-error" role="alert" hidden>
+                <p class="v2-error-title">We couldn&rsquo;t load DiscoveryAgent Data.</p>
+                <p class="v2-muted" id="data-library-error-detail"></p>
+                <button type="button" class="v2-btn v2-btn-secondary" id="data-library-retry">Try again</button>
+            </div>
+
+            <ul class="v2-data-source-list" id="data-library-list" role="tree"
+                aria-label="Registered data folders" hidden></ul>
+        </div>
+        <p class="v2-data-library-feedback" id="data-library-feedback" role="status"
+           aria-live="polite" aria-atomic="true" hidden></p>
+    </div>
+
+    <div class="v2-app-page-action v2-sticky-action-tray" id="data-library-primary-action" hidden>
+        <button type="button" class="v2-btn v2-btn-primary v2-data-library-add-btn" id="data-library-add">
+            <span class="v2-plus" aria-hidden="true">+</span> Add Data
+        </button>
+    </div>
+</section>
+
+<div class="v2-modal-overlay v2-confirm-overlay" id="data-library-remove-overlay" hidden>
+    <div class="v2-modal v2-modal-compact v2-confirm-modal" role="alertdialog" aria-modal="true"
+         aria-labelledby="data-library-remove-title" aria-describedby="data-library-remove-copy">
+        <div class="v2-modal-head"><h2 class="v2-modal-title" id="data-library-remove-title">Remove data source?</h2></div>
+        <div class="v2-modal-body">
+            <p class="v2-confirm-copy" id="data-library-remove-copy"></p>
+            <div id="data-library-remove-projects"></div>
+            <p class="v2-modal-form-error" id="data-library-remove-error" role="alert" hidden></p>
+        </div>
+        <div class="v2-modal-footer v2-confirm-actions">
+            <button type="button" class="v2-btn v2-btn-secondary" id="data-library-remove-cancel">Cancel</button>
+            <button type="button" class="v2-btn v2-btn-danger" id="data-library-remove-confirm">Remove reference</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='data_tree.js') }}?v=20260822-data-tree-row-geometry-1"></script>
+<script src="{{ url_for('static', filename='app_page_action.js') }}?v=20260822-sticky-action-tray-1"></script>
+<script src="{{ url_for('static', filename='data_library.js') }}?v=20260822-unsaved-size-1"></script>
+{% endblock %}

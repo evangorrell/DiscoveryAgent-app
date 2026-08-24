@@ -28,9 +28,9 @@
 <!-- Shared, single-seam round-start action (all three V2 screens' Start round
      buttons route through it). Loaded before project_home.js so its delegated
      [data-start-round] handler is active for the rendered Start round CTA. -->
-<script src="{{ url_for('static', filename='round_start.js') }}"></script>
+<script src="{{ url_for('static', filename='round_start.js', v='20260823-round-run-identity-1') }}"></script>
 <script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
-<script src="{{ url_for('static', filename='report_figures.js', v='20260817-markdown-lists') }}"></script>
-<script src="{{ url_for('static', filename='project_home.js', v='20260817-markdown-lists') }}"></script>
+<script src="{{ url_for('static', filename='report_figures.js', v='20260823-standalone-image-resize-1') }}"></script>
+<script src="{{ url_for('static', filename='project_home.js', v='20260823-round-run-identity-1') }}"></script>
 {% endblock %}

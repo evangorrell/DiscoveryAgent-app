@@ -174,7 +174,7 @@ def test_current_v2_project_routes_and_exact_round_navigation_remain_healthy(
     assert client.get(f"/projects/{slug}").status_code == 200
     assert client.get(f"/projects/{slug}/hypotheses").status_code == 200
     assert client.get(f"/projects/{slug}/skills").status_code == 200
-    assert client.get(f"/projects/{slug}/audit").status_code == 200
+    assert client.get(f"/projects/{slug}/audit").status_code == 404
     assert client.get(f"/rounds/?project={slug}&round=0").status_code == 200
     exact = client.get(f"/projects/{slug}/rounds/0")
     assert exact.status_code == 302

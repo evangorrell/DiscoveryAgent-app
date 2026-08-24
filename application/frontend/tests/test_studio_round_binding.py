@@ -96,12 +96,34 @@ def test_initialize_binds_generator_to_active_studio_round(monkeypatch, tmp_path
 
     def fake_create_generator(checkpoint_dir, *a, **k):
         captured["checkpoint_dir"] = checkpoint_dir
+        captured["model"] = a[0] if a else k.get("hypothesis_model")
         raise RuntimeError("stop after capture")
 
     monkeypatch.setattr(app_module, "create_generator", fake_create_generator)
-    client.post("/api/initialize", json={})
+    client.post("/api/initialize", json={"hypothesis_model": "gpt-4o"})
     # The registry checkpoint_dir is round_0, but generation must bind to round_3.
     assert Path(captured["checkpoint_dir"]).name == "round_3"
+    # A browser cannot reinstate a second model selector for V2 Studio.
+    assert captured["model"] == app_module.model_catalog.DEFAULT_PROJECT_MODEL
+
+
+def test_initialize_refuses_a_retired_v2_project_model_before_agent_creation(monkeypatch, tmp_path):
+    client, reg, _root = _make_multi_round_project(tmp_path, monkeypatch, completed=0)
+    projects = app_module._v2_load_projects()
+    projects[0].pop("reasoning_model", None)
+    projects[0].pop("execution_model", None)
+    projects[0]["project_model"] = "claude-retired-1"
+    app_module._v2_save_projects(projects)
+    client.get(f"/projects/{reg['url_slug']}/hypotheses")
+    monkeypatch.setattr(
+        app_module, "create_generator",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not create an agent")),
+    )
+
+    response = client.post("/api/initialize", json={})
+
+    assert response.status_code == 400
+    assert response.get_json()["code"] == "unsupported_project_model"
 
 
 # ---------------------------------------------------------------------------

@@ -98,3 +98,38 @@ def write_project_metadata(project_root: Path, project_id: str, display_name: st
     temporary.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     temporary.replace(metadata_path)
     return metadata_path
+
+
+def write_project_metadata_if_absent(
+    project_root: Path, project_id: str, display_name: str,
+) -> Path:
+    """Atomically create identity metadata without replacing any existing entry."""
+    metadata_path = Path(project_root) / ".discoveryagent" / "project.json"
+    metadata_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    payload = json.dumps(
+        {"project_id": project_id, "display_name": display_name},
+        indent=2,
+        ensure_ascii=False,
+    ).encode("utf-8")
+    temporary = metadata_path.with_name(
+        f"{metadata_path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex[:8]}"
+    )
+    descriptor = None
+    try:
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "wb", closefd=True) as handle:
+            descriptor = None
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        # A same-directory hard link publishes the complete file atomically and
+        # fails rather than replacing an entry created by another process.
+        os.link(temporary, metadata_path)
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+    return metadata_path

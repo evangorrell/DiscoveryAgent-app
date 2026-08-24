@@ -1,10 +1,11 @@
-// Browser-free contract tests for the shared round-start client.
-// Run with: node --test tests/round_start.test.js
+// Browser-free contract tests for the shared project-configured round start.
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 const path = require('node:path');
 
 const CLIENT = path.resolve(__dirname, '../da_selection_ui/static/round_start.js');
+const SOURCE = fs.readFileSync(CLIENT, 'utf8');
 
 function deferred() {
     let resolve;
@@ -13,11 +14,7 @@ function deferred() {
 }
 
 function response(ok, data) {
-    return {
-        ok,
-        headers: { get: () => 'application/json' },
-        json: async () => data,
-    };
+    return { ok, headers: { get: () => 'application/json' }, json: async () => data };
 }
 
 function loadClient(fetchImpl, round = 4) {
@@ -30,15 +27,11 @@ function loadClient(fetchImpl, round = 4) {
         querySelector: (selector) => selector === '[data-start-round-note]' ? note : null,
         querySelectorAll: (selector) => selector === '[data-start-round-dismiss]' ? [dismiss] : [],
     };
-    const footer = {
-        querySelector: () => null,
-        appendChild: () => {},
-    };
     const attributes = new Map([['data-start-round-number', String(round)]]);
     const button = {
         textContent: 'Start Round ' + round,
         disabled: false,
-        parentNode: footer,
+        parentNode: { querySelector: () => null, appendChild() {} },
         getAttribute: (name) => attributes.has(name) ? attributes.get(name) : null,
         setAttribute: (name, value) => attributes.set(name, String(value)),
         removeAttribute: (name) => attributes.delete(name),
@@ -48,24 +41,19 @@ function loadClient(fetchImpl, round = 4) {
             return null;
         },
     };
-    const document = {
+    global.document = {
         addEventListener(type, handler) { if (type === 'click') clickHandler = handler; },
-        createElement() { throw new Error('The provided modal note should be reused.'); },
     };
-    global.document = document;
-    global.window = { location: { assign: (url) => assigned.push(url) } };
+    global.window = {
+        discoveryProjectContext: { projectId: 'project-1' },
+        location: { assign: (url) => assigned.push(url) },
+    };
     global.fetch = fetchImpl;
     delete require.cache[CLIENT];
     require(CLIENT);
-
     return {
-        button, dismiss, note, surface, assigned,
-        click() {
-            clickHandler({
-                target: button,
-                preventDefault() {},
-            });
-        },
+        assigned, button, dismiss, note, surface,
+        click() { clickHandler({ target: button, preventDefault() {} }); },
     };
 }
 
@@ -75,36 +63,46 @@ async function flush() {
 }
 
 test('one pending shared launch blocks duplicate clicks and uses the server workspace URL', async () => {
-    const pendingFetch = deferred();
-    let fetchCount = 0;
-    const ui = loadClient(() => {
-        fetchCount += 1;
-        return pendingFetch.promise;
-    });
+    const pending = deferred();
+    const calls = [];
+    const ui = loadClient((url, init) => { calls.push({ url, init }); return pending.promise; });
 
     ui.click();
     ui.click();
-    assert.equal(fetchCount, 1);
+    await flush();
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, '/api/rounds/start');
     assert.equal(ui.button.disabled, true);
     assert.equal(ui.dismiss.disabled, true);
     assert.equal(ui.note.textContent, 'Starting Round 4…');
 
-    pendingFetch.resolve(response(true, {
-        ok: true,
-        redirect_url: '/rounds/?project=example&round=4&started=1',
-    }));
+    pending.resolve(response(true, { ok: true, redirect_url: '/rounds/?project=example&round=4&started=1' }));
     await flush();
-
     assert.deepEqual(ui.assigned, ['/rounds/?project=example&round=4&started=1']);
 });
 
-test('launch failure stays on the current surface and restores both modal actions', async () => {
+test('Round Start sends no parallel query, model, or research-tool settings', async () => {
+    const calls = [];
+    const ui = loadClient((url, init) => {
+        calls.push({ url, init });
+        return Promise.resolve(response(true, { ok: true, redirect_url: '/rounds/?round=4' }));
+    });
+    ui.click();
+    await flush();
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, '/api/rounds/start');
+    assert.deepEqual(JSON.parse(calls[0].init.body), { project_id: 'project-1' });
+    assert.equal(calls[0].init.headers['Content-Type'], 'application/json');
+    assert.doesNotMatch(SOURCE, /rounds\/options|num_queries|reasoning_model|execution_model|deep_research|web_search/);
+});
+
+test('launch failure stays on the current surface and restores its actions', async () => {
     const ui = loadClient(async () => response(false, {
         ok: false,
         code: 'anthropic_api_key_missing',
         message: 'Anthropic API key not detected. Set ANTHROPIC_API_KEY and try again.',
     }));
-
     ui.click();
     await flush();
 

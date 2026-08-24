@@ -118,7 +118,8 @@ def _find_memory_report(checkpoint_dir: str, latest_round: int):
 
 _CONFIG_DEFAULTS = {
     "execution_model": "claude-3-5-sonnet-latest",
-    "execution_max_turns": 10,
+    # 0 = run until the task is finished; spend is bounded by the query budget.
+    "execution_max_turns": 0,
     "hypothesis_model": "claude-3-5-sonnet-latest",
     "memory_llm_model": "claude-sonnet-4-5-20250929",
     "single_search_model": "claude-opus-4-6",

@@ -34,7 +34,7 @@ def test_creation_endpoint_creates_managed_macos_parent_directories(monkeypatch,
     assert response.status_code == 200
     project_id = response.get_json()['project_id']
     assert project_id.startswith('prj_')
-    project_root = projects_root / project_id
+    project_root = Path(app_module._v2_get_project(project_id)['project_root'])
     assert project_root.is_dir()
     assert projects_root.is_dir()
     assert not legacy_root.exists()
@@ -49,7 +49,7 @@ def test_creation_endpoint_creates_managed_macos_parent_directories(monkeypatch,
     registry = json.loads((data_root / 'v2_projects.json').read_text(encoding='utf-8'))
     record = registry['projects'][0]
     assert record['id'] == project_id
-    assert record['project_root'] == '.'
+    assert record['project_root'] == str(project_root)
     assert record['code_dir'] == 'code'
     assert str(tmp_path / 'source-checkout') not in json.dumps(record)
 
@@ -65,5 +65,6 @@ def test_project_endpoint_uses_autouse_temporary_storage(tmp_path):
 
     assert response.status_code == 200
     project_id = response.get_json()['project_id']
-    assert (tmp_path / project_id / '.discoveryagent' / 'project.json').is_file()
+    project_root = Path(app_module._v2_get_project(project_id)['project_root'])
+    assert (project_root / '.discoveryagent' / 'project.json').is_file()
     assert (tmp_path / 'v2_projects.json').is_file()

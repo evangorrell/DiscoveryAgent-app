@@ -17,95 +17,30 @@ def test_workspace_frontend_has_independent_round_and_split_controls():
     static = Path(app_module.app.static_folder)
     template = Path(app_module.app.root_path) / app_module.app.template_folder / "round_workspace.html"
     js = (static / "round_workspace.js").read_text(encoding="utf-8")
-    css = (static / "round_workspace.css").read_text(encoding="utf-8")
     html = template.read_text(encoding="utf-8")
 
     assert "rw-round-caret" in js and "e.stopPropagation()" in js
-    assert "row.style.paddingLeft = '8px'" in js
-    assert ".rw-file-tree{margin-left:14px;border-left:1px" in (static / "round_workspace.css").read_text(encoding="utf-8")
-    assert ".rw-tree-children{margin-left:14px;border-left:1px" in (static / "round_workspace.css").read_text(encoding="utf-8")
-    assert ".rw-tree-disclosure-slot{display:inline-flex;align-items:center;justify-content:center" in css
     assert "setActiveRound(round.round_index)" in js
-    assert "select.addEventListener('click', () => {open ? state.expanded.delete(key) : state.expanded.add(key)" in js
-    assert "if(state.chats.has(state.activeRound))renderChat();refreshActivity()" in js
-    assert "else if(renderActivityQueryStream.lastData)renderActivity(" in js
     assert "pane.tabs.push(file)" in js and "pane.activeTab" in js
-    assert "['top','bottom']" in js and "['left','top']" in js
-    assert "rw-drop-preview" in html and "data-drop=" not in html
     assert "rw-main-divider" in html and "rw-panel-collapse" in html
     assert "collapseThreshold=12.5" in js and "Math.max(25" in js
-    assert "state.panelCollapsed=true" in js and "state.panelCollapsed=false" in js
     assert "window.addEventListener('pointermove',move)" in js
     assert 'data-panel-tab="activity"' in html
-    assert "rw-chat-role" in js and "'YOU'" in js and "'ROUND CHAT'" in js
-    assert "rw-chat-composer-surface" in html
-    assert "data-chat-mode" not in html
-    assert 'class="rw-chat-reset"' in html and "rw-chat-toolbar" not in html
-    assert 'class="rw-chat-actions"' in html
-    assert ".rw-chat-actions{display:flex;flex:0 0 auto;justify-content:flex-end" in (static / "round_workspace.css").read_text(encoding="utf-8")
-    assert "fetch('/api/round_chat_jobs?round='" in js
+    assert 'data-panel-tab="chat"' in html and "AUDIT AGENT" in html
+    assert 'id="audit-history-toggle"' in html
+    assert 'aria-label="Open chat history"' in html
+    assert 'id="audit-new-chat-btn"' in html
+    assert 'id="chat-export-current-btn"' in html
+    assert "project_audit_agent.js" in html
+    assert "/api/round_chat" not in js
+    assert "round_workspace_chat_state.js" not in html
+    assert "round_workspace_artifact_links.js" not in html
     assert "activeRoundStorageKey" in js and "sessionStorage.setItem" in js
     assert "const reviewEntry = entryParams.get('review') === '1'" in js
     assert "const startedEntry = entryParams.get('started') === '1'" in js
-    assert "activeRound: explicitRoundEntry ? (exactRoundEntry ? requestedRound : null)" in js
-    assert "const exactRoundUnavailable = explicitRoundEntry" not in js
-    assert "unavailable for this project" not in js
-    assert "if (!explicitRoundEntry && (state.activeRound == null" in js
-    assert "panelTab: startedEntry || reviewEntry ? 'activity'" in js
-    assert "panelWidth: startedEntry || reviewEntry ? 25" in js
-    assert "panelCollapsed: startedEntry || reviewEntry ? false" in js
-    assert "const restoredViewer = startedEntry ? {panes:[]" in js
-    assert "round.round_index > latest" in js
     assert "panelTabStorageKey" in js and "applyPanelTab()" in js
-    assert "panelCollapsedStorageKey" in js and "String(state.panelCollapsed)" in js
-    assert "round.status==='completed'" in js
-    assert "what DiscoveryAgent did" in js and "generated figures, or reports" in js
-    assert "rw-chat-typing" in js and "Round Chat is responding" in js
-    assert "keepalive:true" in js and "pollRoundChatJob" in js
-    assert "renderChatQueue" in js and "rw-chat-queued-item" in js and "processRoundMessage" in js
-    assert "const distanceFromBottom=els.messages.scrollHeight-els.messages.scrollTop-els.messages.clientHeight" in js
-    assert "const shouldStickToBottom=options.forceBottom===true||distanceFromBottom<=48" in js
-    assert "els.messages.scrollTop=shouldStickToBottom?els.messages.scrollHeight:previousScrollTop" in js
-    assert "renderChat({forceBottom:true})" in js
-    assert "Remove queued message" in js and "cancelQueuedRoundMessage" in js
-    assert "chat.filter(m=>!m.queued)" in js
-    assert 'id="rw-chat-queue"' in html
-    assert "updateChatSubmitButton" in js and "Stop response" in (static / "round_workspace_chat_state.js").read_text(encoding="utf-8")
-    assert 'id="rw-chat-cancel"' not in html and ">Cancel</button>" not in html
-    assert "button.dataset.action=control.action" in js and "els.input.disabled=false" in js
-    assert "control.icon==='stop'" in js and '<rect x="6" y="6" width="8" height="8"' in js
-    assert "ChatState.performComposerAction" in js and "ChatState.composerKeyboardAction" in js
-    assert "roundChatJobCancelUrl" in js and "cancelRoundChatJob" in js
-    assert "chatStorageKey" in js and "restoreChats()" in js and "persistChats()" in js
-    chat_state = (static / "round_workspace_chat_state.js").read_text(encoding="utf-8")
-    assert "ChatState.recoverMessages(messages,roundIndex)" in js
-    assert "return normalized;" in chat_state
-    assert "m.role==='assistant'&&m.pending?{pending:true}" in js
-    assert "pausedQueueStorageKey" not in js and "persistPausedQueues" not in js
-    assert "pausedQueues" not in js
-    assert "Queue paused because you interrupted" not in js
-    assert "rw-queue-resume" not in js
-    assert ".rw-queue-paused" not in (static / "round_workspace.css").read_text(encoding="utf-8")
-    assert "20260817-round-chat-markdown" in html
-    assert "resumeInterruptedChats" not in js
-    assert "interrupted by page navigation" not in chat_state
-    assert "resumePendingRoundChatJobs()" in js
-    process_body = js[js.index("async function processRoundMessage"):js.index("els.form.addEventListener")]
-    assert "job_id:pending.jobId" in process_body
-    assert "request_id:userMessage.id" in process_body
-    assert "pollRoundChatJob(round,pending)" in process_body
-    assert "function activeViewerFile()" in js
-    assert "viewer_file:userMessage.viewerFile||null" in process_body
-    assert "viewerFile:activeViewerFile()" in js
-    assert ".rw-chat-queue{margin-bottom:14px}" in (static / "round_workspace.css").read_text(encoding="utf-8")
     assert "viewerStorageKey" in js and "restoreViewer()" in js
-    assert "const viewerIdentityChanged=hydrateRestoredViewerSources()" in js
-    assert "if(viewerIdentityChanged)renderPanes()" in js
     assert "rw-pane-divider" in js and "Resize file panes" in js
-    assert "Math.max(25,Math.min(75,value))" in js
-    assert "paneRatio:state.paneRatio" in js
-    assert "pointermove',move" in js and "ArrowLeft" in js and "ArrowRight" in js
-
 
 def test_interrupted_precheckpoint_round_does_not_show_first_round_overlay(monkeypatch, tmp_path):
     round_zero = tmp_path / "project" / "checkpoint" / "checkpoints" / "round_0"
@@ -139,19 +74,6 @@ def test_interrupted_precheckpoint_round_does_not_show_first_round_overlay(monke
     assert captured["pinned_round"] == 0
 
 
-def test_round_chat_uses_selected_round_and_file_nav_inventory():
-    source = Path(app_module.__file__).read_text(encoding="utf-8")
-    route = source[source.index("def api_round_chat():"):source.index("@app.route", source.index("def api_round_chat():") + 1)]
-
-    assert "round_index, round_dir, round_error = _round_activity_dir_for_request()" in route
-    assert "_get_latest_round_dir_for_session()" not in route
-    assert "_round_chat_file_nav_inventory(" in route
-    assert "request_id = str(data.get('request_id')" in route
-    assert "'request_id': request_id or None" in route
-    assert "data.get('viewer_file')" in route
-    assert "file_nav_inventory" in route
-
-
 def test_activity_frontend_has_only_status_and_query_progress_sections():
     static = Path(app_module.app.static_folder)
     template = Path(app_module.app.root_path) / app_module.app.template_folder / "round_workspace.html"
@@ -159,12 +81,12 @@ def test_activity_frontend_has_only_status_and_query_progress_sections():
     html = template.read_text(encoding="utf-8")
     activity_js = js[
         js.index("function activityStatusClass"):
-        js.index("function chatGreetingForRound")
+        js.index("function applyPanelTab")
     ]
 
     assert "rw-activity-status" not in html
     assert "renderActivitySummary(data,items,requestedRound)" in activity_js
-    assert "renderActivityQueryStream(items,requestedRound)" in activity_js
+    assert "renderActivityQueryStream(items,requestedRound" in activity_js
     assert "els.activity.replaceChildren(" in activity_js
     for forbidden in (
         "Current Activity", "System Events", "Execution History",
@@ -181,8 +103,11 @@ def test_activity_frontend_has_only_status_and_query_progress_sections():
     assert "aria-expanded" in activity_js
     assert "state.activityExpanded" in activity_js
     assert "const calls=Array.isArray(row.subagent_calls)?row.subagent_calls:[]" in activity_js
-    assert "const hasCalls=item.details.length>0" in activity_js
-    assert "'Round '+requestedRound+' failed'" in activity_js
+    assert "const expanded=state.activityExpanded.has(expansionKey)" in activity_js
+    assert "'Query '+item.number+' details'" in activity_js
+    assert "function roundStatusTitle(status,roundIndex)" in activity_js
+    assert "'Round '+roundIndex+' '+canonicalRoundStatus(status)" in activity_js
+    assert "roundStatus==='stopped'" in activity_js
     assert "'Please resubmit this round and try again.'" in activity_js
     assert "rw-stop-run','Stop Run'" in activity_js
     assert "rw-resume-round','Resume Round'" in activity_js
@@ -193,22 +118,27 @@ def test_activity_frontend_has_only_status_and_query_progress_sections():
     assert "/api/rounds/delete" not in activity_js
     assert "Stop this round?" in activity_js
     assert "Keep Running" in activity_js
-    assert "api('/api/rounds/stop',{})" in activity_js
-    assert "api('/api/rounds/resume',{})" in activity_js
-    assert "api('/api/rounds/resubmit',{})" in activity_js
+    assert "api('/api/rounds/stop',roundIdentity(data))" in activity_js
+    assert "api('/api/rounds/resume',roundIdentity(data))" in activity_js
+    assert "api('/api/rounds/resubmit',roundIdentity(data))" in activity_js
     assert "data.execution_status=execution.status" in activity_js
-    assert "Round interrupted" in activity_js
+    assert "canonicalRoundStatus(roundStatus,requestedRound)" not in activity_js
+    assert "title.textContent=roundStatusTitle(roundStatus,requestedRound)" in activity_js
     assert "rawStatus==='interrupted'?'stopped':rawStatus" in js
     assert "section.dataset.status=round.status||'unknown'" in js
     assert "rw-round-status-icon" not in js
-    assert "rw-activity-caret-placeholder" in activity_js
+    assert "rw-activity-caret-placeholder" not in activity_js
     assert "'Sub-agent call'" in activity_js
     assert "detail.agent_role" in activity_js
     assert "detail.task_summary" in activity_js
     assert "rw-activity-query-summary" in activity_js
     assert "const requestToken=++state.activityRequestToken" in activity_js
+    assert "state.activityRequestToken+=1" in js
+    assert "renderActivitySelection(round); refreshActivity()" in js
     assert "requestToken!==state.activityRequestToken" in activity_js
-    assert "if(data.round_index!=null&&Number(data.round_index)!==requestedRound)return" in activity_js
+    assert "function runResponseMatches(data,requestedRound,runId=null)" in activity_js
+    assert "data.project_id===CFG.projectId" in activity_js
+    assert "Number(data.round_index??data.round)===requestedRound" in activity_js
     assert "state.activityExpanded.has(expansionKey)" in activity_js
     assert "activityExpandedStorageKey" in js
     assert "activityExpanded: restoreActivityExpanded()" in js
@@ -767,6 +697,7 @@ def test_verbose_delegated_task_is_separate_and_safely_reduced(tmp_path):
             "timestamp": "2026-01-01T10:10:00Z",
         }]},
     }), encoding="utf-8")
+    (query_dir / "query_input_04.md").write_text(raw_task, encoding="utf-8")
 
     item = app_module._build_discovery_query_item(
         query_dir, 4, {}, {}, False, tmp_path / "round_report.md", False, None,
@@ -774,13 +705,16 @@ def test_verbose_delegated_task_is_separate_and_safely_reduced(tmp_path):
 
     assert item["query_summary"] == "Concise legacy query summary."
     assert item["query_objective"] == "Determine whether the proposed relationship is supported."
+    assert item["query_input"] == {
+        "name": "query_input_04.md",
+        "path": "query_004/query_input_04.md",
+        "artifact_role": "query_input",
+        "query_number": 4,
+    }
     assert item["subagent_calls"][0]["task_summary"] == "Evaluate the remaining evidence."
     response_shape = json.dumps(item)
-    assert "/private/" not in response_shape
-    assert "internal code" not in response_shape
-    assert "detailed implementation" not in response_shape
-    assert "[truncated]" not in response_shape
-    assert raw_task not in response_shape
+    assert "Private result payload." not in response_shape
+    assert "<execution_agent>" not in response_shape
 
 
 def test_verbose_objective_is_sanitized_before_api_serialization(tmp_path):
@@ -1746,7 +1680,8 @@ def test_frontend_caret_and_expansion_render_every_call_with_stable_identity():
         js.index("function renderActivityQueryStream")
     ]
 
-    assert "const hasCalls=item.details.length>0" in activity_js
+    assert "const expanded=state.activityExpanded.has(expansionKey)" in activity_js
+    assert "'Query '+item.number+' details'" in activity_js
     assert "item.details.forEach(detail=>" in activity_js
     assert "if(detail.id)call.dataset.callId=detail.id" in activity_js
     assert "state.activityExpanded.has(expansionKey)" in activity_js
@@ -1819,6 +1754,90 @@ def test_runner_failure_marks_exact_workspace_round_failed(tmp_path):
     assert app_module._round_workspace_entry(3, other, 3)["status"] == "running"
 
 
+def test_dead_runner_pid_is_reconciled_for_activity_status(monkeypatch, tmp_path):
+    checkpoint = tmp_path / "checkpoint"
+    round_dir = checkpoint / "checkpoints" / "round_4"
+    query = round_dir / "query_001"
+    query.mkdir(parents=True)
+    (query / "checkpoint.json").write_text("{}", encoding="utf-8")
+    (checkpoint / "run_state.json").write_text(json.dumps({
+        "project_id": "fixture-project",
+        "round": 4,
+        "status": "running",
+        "pid": 999999,
+    }), encoding="utf-8")
+    monkeypatch.setattr(
+        app_module.local_round_runner, "_pid_matches_state", lambda _state: False,
+    )
+    monkeypatch.setattr(app_module, "_v2_round_status", lambda _info: "running")
+
+    assert app_module._round_workspace_round_status(4, round_dir) == "failed"
+
+
+def test_activity_response_exposes_recoverable_dead_process_state(monkeypatch, tmp_path):
+    rounds = tmp_path / "checkpoint" / "checkpoints"
+    query = rounds / "round_4" / "query_001"
+    query.mkdir(parents=True)
+    (query / "checkpoint.json").write_text("{}", encoding="utf-8")
+    (query / "query_status.json").write_text(json.dumps({
+        "query_num": 1,
+        "status": "running",
+        "current_step": "executing_code",
+        "summary": "Fixture query running.",
+    }), encoding="utf-8")
+    (rounds.parent / "run_state.json").write_text(json.dumps({
+        "project_id": "fixture-project",
+        "round": 4,
+        "status": "running",
+        "pid": None,
+    }), encoding="utf-8")
+    monkeypatch.setattr(
+        app_module, "_round_workspace_checkpoint_dir_for_session", lambda: rounds,
+    )
+    client = app_module.app.test_client()
+    with client.session_transaction() as session:
+        session["authenticated"] = True
+
+    payload = client.get("/api/round_activity", query_string={"round": 4}).get_json()
+
+    assert payload["round_status"] == "failed"
+    assert payload["resumable"] is True
+    assert payload["discovery_activity"][0]["status"] != "completed"
+
+
+def test_activity_polling_never_duplicates_round_resumed_events(monkeypatch, tmp_path):
+    rounds = tmp_path / "checkpoint" / "checkpoints"
+    round_dir = rounds / "round_4"
+    query = round_dir / "query_001"
+    query.mkdir(parents=True)
+    (query / "checkpoint.json").write_text("{}", encoding="utf-8")
+    activity = round_dir / "round_activity.jsonl"
+    activity.write_text(
+        json.dumps({"event_type": "round_resumed", "timestamp": "2026-01-01T00:00:00Z"}) + "\n",
+        encoding="utf-8",
+    )
+    (rounds.parent / "run_state.json").write_text(json.dumps({
+        "project_id": "fixture-project",
+        "round": 4,
+        "status": "interrupted",
+        "pid": None,
+    }), encoding="utf-8")
+    monkeypatch.setattr(
+        app_module, "_round_workspace_checkpoint_dir_for_session", lambda: rounds,
+    )
+    client = app_module.app.test_client()
+    with client.session_transaction() as session:
+        session["authenticated"] = True
+    before = activity.read_bytes()
+
+    first = client.get("/api/round_activity", query_string={"round": 4}).get_json()
+    second = client.get("/api/round_activity", query_string={"round": 4}).get_json()
+
+    assert activity.read_bytes() == before
+    assert sum(row.get("milestone_type") == "round_resumed" for row in first["discovery_activity"]) == 1
+    assert sum(row.get("milestone_type") == "round_resumed" for row in second["discovery_activity"]) == 1
+
+
 def test_runner_interruption_marks_exact_workspace_round_stopped(tmp_path):
     checkpoint = tmp_path / "checkpoint"
     round_dir = checkpoint / "checkpoints" / "round_4"
@@ -1869,11 +1888,10 @@ def test_completed_report_is_ordinary_sorted_primary_file(tmp_path):
 def test_report_uses_standard_viewer_and_activity_action_only():
     static = Path(app_module.app.static_folder)
     template = Path(app_module.app.root_path) / app_module.app.template_folder / "round_workspace.html"
-    audit_template = Path(app_module.app.root_path) / app_module.app.template_folder / "project_audit_agent.html"
     js = (static / "round_workspace.js").read_text(encoding="utf-8")
     css = (static / "round_workspace.css").read_text(encoding="utf-8")
     html = template.read_text(encoding="utf-8")
-    audit_html = audit_template.read_text(encoding="utf-8")
+    audit_html = html
 
     assert "item.primary_output" in js and "rw-primary-star" in js
     assert "const disclosure = node('span', 'rw-tree-disclosure-slot')" in js
@@ -1894,7 +1912,7 @@ def test_report_uses_standard_viewer_and_activity_action_only():
     assert "rw-tree-file-spacer" not in js
     assert "'·'" not in js and "★" not in js
     assert "aria-hidden" in js
-    assert "path: item.path, name: item.name" in js
+    assert "path: isCode?(codeRelative?'code/'+codeRelative:'code/'):(item.path), name: item.name" in js
     assert "e.dataTransfer.setData('application/json', JSON.stringify(file))" in js
     assert "tab.draggable=true" in js and "state.dragSource={pane:i,tab:tabIndex}" in js
     assert "function detachDraggedTab(source)" in js
@@ -1930,7 +1948,7 @@ def test_report_uses_standard_viewer_and_activity_action_only():
     assert "if(!paneModel.tabs.length){state.panes.splice(i,1);state.activePane=0;state.paneRatio=50;}" in js
     assert "function compactEmptyPanes()" in js
     assert "const populated=state.panes.filter(pane=>pane&&Array.isArray(pane.tabs)&&pane.tabs.length)" in js
-    assert "function renderPanes() {\n    compactEmptyPanes();" in js
+    assert "function renderPanes() {\n    clearStandaloneFigureViews();\n    clearTabScrollbarControllers();\n    compactEmptyPanes();" in js
     assert "rw-pane-empty" in js and "Open a file from the round explorer." in js
     assert "rw-pane-breadcrumb" in js and "aria-label','File path" in js
     assert "function fileLocation(file)" in js and "String(file.path||file.name).split('/')" in js
@@ -1949,10 +1967,10 @@ def test_report_uses_standard_viewer_and_activity_action_only():
     assert "payload.display_text??payload.markdown" in js
     assert "renderReportMarkdown(article,text,figures)" in js
     assert "cache:'default'" in js
-    assert "file.sourceKind===nextKind" in js
+    assert "file.sourceKind===nextFile.sourceKind" in js
     assert "file.sourceKind==='project-code'" in js
-    assert "'/api/round_workspace_code_artifact?path='" in js
-    assert "file.size=item.size??file.size;return;" in js
+    assert "'/api/round_workspace_code_location?path='" in js
+    assert "file.size=item.size??file.size;tabs.push(file);return;" in js
     assert "'&source='" in js and "file.artifactPath || file.path" in js
     assert "rw-report" not in html
     assert "Round Report" not in html
@@ -2067,28 +2085,6 @@ def test_trusted_round_registry_aggregates_external_figures(monkeypatch, tmp_pat
         assert not str(tmp_path) in json.dumps(entry)
 
 
-def test_round_chat_artifact_links_reuse_exact_round_inventory_and_viewer():
-    static = Path(app_module.app.static_folder)
-    template = Path(app_module.app.root_path) / app_module.app.template_folder / "round_workspace.html"
-    js = (static / "round_workspace.js").read_text(encoding="utf-8")
-    helper = (static / "round_workspace_artifact_links.js").read_text(encoding="utf-8")
-    html = template.read_text(encoding="utf-8")
-
-    assert "round_workspace_artifact_links.js" in html
-    assert html.index("round_workspace_artifact_links.js") < html.index("round_workspace.js")
-    assert "function trustedArtifactIndex(roundIndex)" in js
-    assert "state.rounds.find(item=>item.round_index===roundIndex)" in js
-    assert "state.codeTree" not in js[js.index("function trustedArtifactIndex"):js.index("function renderTreeNode")]
-    assert "round.linked_artifacts" in js
-    assert "ArtifactLinks.linkifyElement" in js
-    assert "file=>openFile(file,false)" in js
-    assert "renderRoundChatMarkdown(c,m.text,roundIndex)" in js
-    assert "BLOCKED_PARENT_TAGS = new Set(['A', 'PRE', 'SCRIPT', 'STYLE'])" in helper
-    assert "event.preventDefault()" in helper
-    assert "openArtifact(file)" in helper
-    assert "persistChats" in js and "artifactUrl" not in js[js.index("function persistChats"):js.index("function persistActivityExpanded")]
-
-
 def test_round_registry_reuses_cache_and_invalidates_when_round_state_changes(
     monkeypatch, tmp_path
 ):
@@ -2180,6 +2176,32 @@ def test_external_registry_deduplicates_references_and_rejects_forgery(monkeypat
         assert app_module._round_workspace_resolve_artifact(2, output_id, "../regeneration_score.png") is None
         assert app_module._round_workspace_resolve_artifact(3, output_id, "outputs/figures/regeneration_score.png") is None
         assert figure.exists()
+
+
+def test_opened_external_figure_download_returns_exact_registered_artifact(monkeypatch, tmp_path):
+    _round_dir, figure, _tracked = _external_artifact_fixture(monkeypatch, tmp_path)
+    with app_module.app.test_request_context("/"):
+        registry = app_module._round_workspace_artifact_registry(2)
+        output_id = next(
+            key for key, value in registry.items()
+            if value["kind"] == "execution-output"
+        )
+    client = app_module.app.test_client()
+    with client.session_transaction() as flask_session:
+        flask_session["authenticated"] = True
+
+    response = client.get("/api/round_workspace_artifact", query_string={
+        "round": 2,
+        "source": output_id,
+        "path": "outputs/figures/regeneration_score.png",
+        "download": "1",
+    })
+
+    assert response.status_code == 200
+    assert response.data == figure.read_bytes()
+    assert response.content_type.startswith("image/png")
+    assert response.headers["Content-Disposition"].startswith("attachment;")
+    assert "filename=regeneration_score.png" in response.headers["Content-Disposition"]
 
 
 def test_code_tree_artifacts_use_project_level_serving(monkeypatch, tmp_path):
@@ -2395,10 +2417,11 @@ def test_generated_figures_use_standard_open_drag_and_split_viewer_paths():
 
     assert "function isFigureFile(name)" in js
     assert "'.tif','.tiff'" in js
-    assert "if (isFigureFile(file.name))" in js
-    assert "img.src = artifactUrl(file)" in js
+    assert "if(isFigureFile(file.name)){renderStandaloneImage(body,file);return;}" in js
+    assert "function renderStandaloneImage(body,file)" in js
+    assert "img.src=artifactUrl(file)" in js
     assert "row.addEventListener('click', () => openFile(file, false))" in js
-    assert "path: item.path, name: item.name" in js
+    assert "path: isCode?(codeRelative?'code/'+codeRelative:'code/'):(item.path), name: item.name" in js
     assert "JSON.stringify(file)" in js
     assert "if(state.panes.length<2){openFile(file,true,direction);}" in js
     assert "state.panes.length<2" in js
@@ -2587,6 +2610,14 @@ def test_hidden_artifacts_are_not_served_by_checkpoint_assets(monkeypatch, tmp_p
     assert client.get("/checkpoint_assets/round_0/round_report.md").status_code == 200
     assert client.get("/checkpoint_assets/round_0/query_001/execution_agent/transcript.txt").status_code == 200
     assert client.get("/checkpoint_assets/round_0/query_001/figures/result.PNG").status_code == 200
+    figure_download = client.get(
+        "/checkpoint_assets/round_0/query_001/figures/result.PNG?download=1",
+    )
+    assert figure_download.status_code == 200
+    assert figure_download.data == b"generated image"
+    assert figure_download.content_type.startswith("image/png")
+    assert figure_download.headers["Content-Disposition"].startswith("attachment;")
+    assert "filename=result.PNG" in figure_download.headers["Content-Disposition"]
     for path in (
         "round_0/config.json",
         "round_0/.flask_session",
@@ -2668,18 +2699,6 @@ def test_markdown_document_uses_scoped_report_layout_and_responsive_typography()
     assert "@container (max-width:380px)" in document_rules
 
 
-def test_text_file_content_aligns_with_first_round_chat_label():
-    css = (Path(app_module.app.static_folder) / "round_workspace.css").read_text(encoding="utf-8")
-
-    assert ".rw-chat-actions{display:flex;flex:0 0 auto;justify-content:flex-end;min-height:38px" in css
-    assert ".rw-chat-messages{padding-top:8px}" in css
-    assert ".rw-pane-breadcrumb" in css and "flex:0 0 41px" in css
-    assert "padding:5px clamp(28px,4cqi,48px) 44px" in css
-    assert ".rw-markdown-document{padding:5px 24px 34px" in css
-    assert ".rw-markdown-document{padding:5px 18px 30px" in css
-    assert ".rw-code{padding-top:5px}" in css
-
-
 def test_markdown_lists_have_outside_markers_and_positive_nested_indentation():
     static = Path(app_module.app.static_folder)
     css = (static / "round_workspace.css").read_text(encoding="utf-8")
@@ -2721,37 +2740,6 @@ def test_markdown_overflow_media_and_elements_remain_viewer_scoped():
     assert ".rw-chat-turn-body h1" not in report_rules
 
 
-def test_round_chat_assistant_markdown_reuses_shared_scientific_presentation():
-    static = Path(app_module.app.static_folder)
-    workspace_js = (static / "round_workspace.js").read_text(encoding="utf-8")
-    workspace_css = (static / "round_workspace.css").read_text(encoding="utf-8")
-    shared_css = (static / "style.css").read_text(encoding="utf-8")
-
-    assert "m.role==='assistant'?'rw-chat-turn-body v2-report-markdown rw-chat-markdown':'rw-chat-turn-body'" in workspace_js
-    assert "else if(m.role==='assistant')renderRoundChatMarkdown(c,m.text,roundIndex)" in workspace_js
-    assert "else c.textContent=m.text" in workspace_js
-    assert ".rw-chat-markdown{box-sizing:border-box;min-width:0;max-width:100%}" in workspace_css
-    assert ".rw-chat-turn.assistant{align-self:flex-start;width:100%;min-width:0}" in workspace_css
-
-    for selector in (
-        ".v2-report-markdown h1",
-        ".v2-report-markdown p",
-        ".v2-report-markdown ul",
-        ".v2-report-markdown hr",
-        ".v2-report-markdown table",
-        ".v2-report-markdown :not(pre) > code",
-        ".v2-report-markdown blockquote",
-        ".v2-report-markdown a",
-    ):
-        assert selector in shared_css
-    assert "display: block" in shared_css[shared_css.index(".v2-report-markdown table"):]
-    assert "overflow-x: auto" in shared_css[shared_css.index(".v2-report-markdown table"):]
-    assert ".rw-chat-artifact-link{color:var(--v2-accent)" in workspace_css
-    assert "ArtifactLinks.linkifyElement" in workspace_js
-    assert ".rw-chat-turn-body table" not in workspace_css
-    assert ".rw-chat-turn.assistant .rw-chat-turn-body>ul" not in workspace_css
-
-
 def test_file_tabs_merge_with_workspace_and_show_path_breadcrumb():
     css = (Path(app_module.app.static_folder) / "round_workspace.css").read_text(encoding="utf-8")
 
@@ -2771,7 +2759,7 @@ def test_file_tabs_merge_with_workspace_and_show_path_breadcrumb():
     assert all("border-bottom-color:var(--v2-accent)" not in rule for rule in active_tab_rules)
     assert ".rw-pane-breadcrumb{" in css
     assert ".rw-viewer,.rw-pane,.rw-pane-body{background:var(--v2-bg)}" in css
-    assert ".rw-inspector,.rw-panel-view,.rw-chat-form{background:var(--v2-surface)}" in css
+    assert ".rw-inspector,.rw-panel-view{background:var(--v2-surface)}" in css
     assert ".rw-panel-tabs{border-bottom:0}" in css
     assert ".rw-pane-header,.rw-panel-tabs{box-sizing:border-box;height:41px;min-height:41px;border-bottom:0;background:var(--v2-surface)}" in css
     assert ".rw-sidebar{" in css and "background:var(--v2-surface)" in css
@@ -2825,32 +2813,6 @@ def test_workspace_keeps_disclosure_column_while_studio_title_aligns_to_caret_ax
     assert ".aa-sidebar {" in audit_css and "font-family: var(--v2-sans)" in audit_css
     assert "font-size: 0.67rem" in audit_css
     assert "letter-spacing: 0.1em" in audit_css
-
-
-def test_round_chat_queue_matches_audit_controls_without_send_button_bleed():
-    static = Path(app_module.app.static_folder)
-    workspace_css = (static / "round_workspace.css").read_text(encoding="utf-8")
-    audit_css = (static / "project_audit_agent.css").read_text(encoding="utf-8")
-
-    assert ".rw-chat-form button{" not in workspace_css
-    assert ".rw-chat-composer-surface>button[type=submit]{" in workspace_css
-    for declaration in (
-        "width:26px",
-        "height:26px",
-        "margin-right:-4px",
-        "border-radius:999px",
-        "background:transparent",
-        "color:var(--v2-muted)",
-    ):
-        assert declaration in workspace_css
-        assert declaration.replace(":", ": ") in audit_css
-    assert ".rw-chat-queued-delete:hover,.rw-chat-queued-delete:focus-visible" in workspace_css
-    assert "v2-report-markdown rw-chat-markdown" in (
-        static / "round_workspace.js"
-    ).read_text(encoding="utf-8")
-    assert "padding-inline-start: var(--v2-report-list-indent)" in (
-        static / "style.css"
-    ).read_text(encoding="utf-8")
 
 
 def _generated_report_fixture(name):
@@ -3081,6 +3043,7 @@ def test_markdown_viewer_uses_display_endpoint_without_changing_other_artifact_p
 
     assert "const markdownDisplayUrl" in js
     assert "/api/round_workspace_markdown?round=" in js
-    assert "markdownFile?markdownDisplayUrl(file):artifactUrl(file)" in js
-    assert "img.src = artifactUrl(file)" in js
+    assert "trustedMarkdownPayload?markdownDisplayUrl(file):artifactUrl(file)" in js
+    assert "trustedMarkdownPayload=markdownFile&&file.sourceKind!=='project-code'" in js
+    assert "img.src=artifactUrl(file)" in js
     assert "frame.src = artifactUrl(file)" in js

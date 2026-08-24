@@ -15,17 +15,37 @@ DiscoveryAgent installs and manages everything else it needs.
 
 ## Get started
 
-### 1. Install and launch DiscoveryAgent
+### 1. Install and launch the private beta
 
-Open **Terminal** on your Mac and run:
+DiscoveryAgent `v0.3.0-beta.1` is a private beta for Apple Silicon Macs. Accept
+the collaborator invitation to `evangorrell/DiscoveryAgent-app`, then open the
+private `v0.3.0-beta.1` GitHub Release while signed in.
+
+Remove any older DiscoveryAgent beta downloads, then download both release
+assets into the same directory:
+
+- `install.sh`
+- `discoveryagent-dev-d6d09412a141-5e7995a5e762-macos-arm64.tar.gz`
+
+Open **Terminal** and run, adjusting the directory if your browser downloaded
+the files somewhere other than `~/Downloads`:
 
 ```bash
-curl -fsSL https://github.com/evangorrell/DiscoveryAgent-app/releases/latest/download/install.sh | bash && "$HOME/.local/bin/discoveryagent"
+cd ~/Downloads
+bash install.sh
 ```
 
-This downloads the latest DiscoveryAgent installer, verifies and installs the application and its required software, and then launches DiscoveryAgent.
+After installation, open a new Terminal window or follow the PATH instruction
+printed by the installer, then launch DiscoveryAgent:
 
-The first installation may take a few minutes.
+```bash
+discoveryagent
+```
+
+The colocated release archive is verified before installation. Internet access
+is still required for public runtime and Python package dependencies. The first
+installation may take a few minutes. Existing DiscoveryAgent project data is
+preserved during reinstall and update.
 
 ### 2. Complete first-time authentication
 
