@@ -238,7 +238,7 @@ with its snapshot, so the next bootstrap will refuse until you clear
 
 ## Where the logs are
 
-Under `<data-root>/projects/<project-id>/checkpoint/`:
+Under `<data-root>/projects/<normalized-project-name>/checkpoint/`:
 
 | File | Contents |
 | --- | --- |

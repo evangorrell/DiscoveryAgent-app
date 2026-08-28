@@ -81,10 +81,11 @@ class ActiveResearchTests(unittest.TestCase):
             return ProcessIdentity.DEAD
         return ProcessIdentity.MATCH
 
-    def test_managed_and_legacy_live_rounds_are_detected_read_only(self) -> None:
+    def test_managed_and_imported_live_rounds_are_detected_from_one_registry(self) -> None:
         data = self.root / "data"
-        managed = data / "projects" / "prj_managed"
-        config = self._project(managed, "prj_managed", registry=data / "v2_projects.json")
+        managed = data / "projects" / "managed-name"
+        registry = data / "projects.json"
+        config = self._project(managed, "prj_managed", registry=registry)
         self._live_state(managed, "prj_managed", config)
         before = {path: path.read_bytes() for path in data.rglob("*") if path.is_file()}
         result = inspect_research_activity(
@@ -96,13 +97,18 @@ class ActiveResearchTests(unittest.TestCase):
 
         self.children[0].terminate()
         self.children[0].wait(timeout=5)
-        legacy_root = data / "legacy" / "local_disk" / "legacy-project"
-        legacy_config = self._project(
-            legacy_root,
-            "legacy-project",
-            registry=data / "legacy" / "local_disk" / "v2_projects.json",
-        )
-        self._live_state(legacy_root, "legacy-project", legacy_config)
+        imported_root = self.root / "external" / "imported-project"
+        imported_config = imported_root / "checkpoint/checkpoints/round_0/config.json"
+        imported_config.parent.mkdir(parents=True)
+        imported_config.write_text("{}\n", encoding="utf-8")
+        payload = json.loads(registry.read_text(encoding="utf-8"))
+        payload["projects"].append({
+            "id": "legacy-project-123456",
+            "project_root": str(imported_root),
+            "imported_in_place": True,
+        })
+        registry.write_text(json.dumps(payload), encoding="utf-8")
+        self._live_state(imported_root, "legacy-project-123456", imported_config)
         self.assertIs(
             inspect_research_activity(
                 data, platform_name="darwin", process_probe=self._child_probe
@@ -110,10 +116,23 @@ class ActiveResearchTests(unittest.TestCase):
             ResearchActivity.ACTIVE,
         )
 
+    def test_retired_registries_and_unregistered_directories_are_ignored(self) -> None:
+        data = self.root / "data"
+        retired_root = data / "projects" / "prj_retired"
+        config = self._project(
+            retired_root, "prj_retired", registry=data / "v2_projects.json",
+        )
+        self._live_state(retired_root, "prj_retired", config)
+        result = inspect_research_activity(
+            data, platform_name="darwin", process_probe=self._child_probe
+        )
+        self.assertIs(result.activity, ResearchActivity.IDLE)
+        self.assertEqual(result.state_paths, ())
+
     def test_stale_dead_pid_does_not_block_and_one_active_among_many_does(self) -> None:
         data = self.root / "data"
         stale = data / "projects" / "prj_stale"
-        config = self._project(stale, "prj_stale", registry=data / "v2_projects.json")
+        config = self._project(stale, "prj_stale", registry=data / "projects.json")
         checkpoint = stale / "checkpoint"
         (checkpoint / "run_state.json").write_text(
             json.dumps({
@@ -135,9 +154,9 @@ class ActiveResearchTests(unittest.TestCase):
         active_config = active / "checkpoint/checkpoints/round_0/config.json"
         active_config.parent.mkdir(parents=True)
         active_config.write_text("{}", encoding="utf-8")
-        registry = json.loads((data / "v2_projects.json").read_text())
+        registry = json.loads((data / "projects.json").read_text())
         registry["projects"].append({"id": "prj_active", "project_root": str(active)})
-        (data / "v2_projects.json").write_text(json.dumps(registry), encoding="utf-8")
+        (data / "projects.json").write_text(json.dumps(registry), encoding="utf-8")
         self._live_state(active, "prj_active", active_config)
         self.assertIs(
             inspect_research_activity(
@@ -152,7 +171,7 @@ class ActiveResearchTests(unittest.TestCase):
         config = self._project(
             project,
             "prj_ambiguous",
-            registry=Path(state.data_root) / "v2_projects.json",
+            registry=Path(state.data_root) / "projects.json",
         )
         checkpoint = project / "checkpoint"
         (checkpoint / "run_state.json").write_text(

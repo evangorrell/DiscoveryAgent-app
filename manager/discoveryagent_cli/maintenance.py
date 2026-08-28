@@ -111,58 +111,27 @@ def _registry_projects(path: Path) -> tuple[list[dict], bool]:
     return [value for value in projects if isinstance(value, dict)], False
 
 
-def _record_root(record: dict, *, default_root: Path) -> Path | None:
+def _record_root(record: dict) -> Path | None:
     project_id = record.get("id")
     if not isinstance(project_id, str) or not project_id or Path(project_id).name != project_id:
         return None
     raw = record.get("project_root")
-    if raw in (None, "", "."):
-        return default_root / project_id
-    if not isinstance(raw, str):
+    if not isinstance(raw, str) or not raw.strip():
         return None
     candidate = Path(raw).expanduser()
-    return candidate if candidate.is_absolute() else default_root / candidate
+    if not candidate.is_absolute() or ".." in candidate.parts:
+        return None
+    return candidate.absolute()
 
 
 def _project_roots(data_root: Path) -> tuple[tuple[Path, ...], bool]:
-    managed_root = data_root / "projects"
-    legacy_root = data_root / "legacy" / "local_disk"
     roots: set[Path] = set()
-    ambiguous = False
-
-    managed, invalid = _registry_projects(data_root / "v2_projects.json")
-    ambiguous |= invalid
-    for record in managed:
-        root = _record_root(record, default_root=managed_root)
+    projects, ambiguous = _registry_projects(data_root / "projects.json")
+    for record in projects:
+        root = _record_root(record)
         ambiguous |= root is None
         if root is not None:
-            roots.add(root.absolute())
-    if managed_root.is_dir():
-        try:
-            roots.update(
-                path.absolute()
-                for path in managed_root.iterdir()
-                if path.is_dir() and path.name.startswith("prj_")
-            )
-        except OSError:
-            ambiguous = True
-
-    legacy, invalid = _registry_projects(legacy_root / "v2_projects.json")
-    ambiguous |= invalid
-    for record in legacy:
-        root = _record_root(record, default_root=legacy_root)
-        ambiguous |= root is None
-        if root is not None:
-            roots.add(root.absolute())
-    if legacy_root.is_dir():
-        try:
-            roots.update(
-                path.absolute()
-                for path in legacy_root.iterdir()
-                if path.is_dir() and not path.is_symlink()
-            )
-        except OSError:
-            ambiguous = True
+            roots.add(root)
     return tuple(sorted(roots, key=os.fspath)), ambiguous
 
 
@@ -232,7 +201,7 @@ def inspect_research_activity(
     platform_name: str,
     process_probe: ProcessProbe = inspect_process_identity,
 ) -> ResearchInspection:
-    """Read managed and durable-legacy run state without changing project data."""
+    """Read run state only for roots in the authoritative project registry."""
     root = data_root.expanduser().absolute()
     projects, layout_ambiguous = _project_roots(root)
     inspected: list[Path] = []
