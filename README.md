@@ -8,6 +8,8 @@ DiscoveryAgent currently supports **Apple Silicon Macs**.
 
 To use DiscoveryAgent, you need:
 
+- access to the private `evangorrell/DiscoveryAgent-app` repository
+- [GitHub CLI](https://cli.github.com/) authenticated with that account (`gh auth login`)
 - an Anthropic API key
 - a Paperclip account
 
@@ -21,18 +23,22 @@ DiscoveryAgent `v0.3.0-beta.1` is a private beta for Apple Silicon Macs. Accept
 the collaborator invitation to `evangorrell/DiscoveryAgent-app`, then open the
 private `v0.3.0-beta.1` GitHub Release while signed in.
 
-Remove any older DiscoveryAgent beta downloads, then download both release
-assets into the same directory:
-
-- `install.sh`
-- `discoveryagent-dev-d6d09412a141-5e7995a5e762-macos-arm64.tar.gz`
-
-Open **Terminal** and run, adjusting the directory if your browser downloaded
-the files somewhere other than `~/Downloads`:
+Remove any older DiscoveryAgent beta downloads, confirm `gh auth status`
+succeeds, then download `install.sh` from the release. The installer retrieves
+the private application archive through your authenticated GitHub CLI session.
+Open **Terminal** and run, adjusting the directory if necessary:
 
 ```bash
 cd ~/Downloads
 bash install.sh
+```
+
+For an offline or pre-downloaded install, place both release assets in the same
+directory; the verified local archive takes precedence over network access:
+
+```bash
+install.sh
+discoveryagent-dev-823dc588d2eb-5e7995a5e762-macos-arm64.tar.gz
 ```
 
 After installation, open a new Terminal window or follow the PATH instruction

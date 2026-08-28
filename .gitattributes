@@ -1,0 +1,3 @@
+# Preserve immutable source snapshots byte-for-byte while retaining substantive whitespace checks.
+application/frontend/** whitespace=-blank-at-eof
+application/backend/** whitespace=-blank-at-eof

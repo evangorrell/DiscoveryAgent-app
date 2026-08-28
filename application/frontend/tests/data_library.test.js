@@ -60,7 +60,7 @@ test('Projects and Data share centered page identity, bounded content, and one t
         projectsAction,
         projectsTemplate.indexOf('</div>', projectsAction) + 6,
     );
-    assert.ok(projectsTray.includes('{{ new_project_button() }}'));
+    assert.ok(projectsTray.includes(`{{ project_actions('New Project', 'open-import-project', 'pj-import-error') }}`));
     assert.ok(projectsTemplate.includes("{% macro new_project_button(label='New Project') -%}"));
     assert.match(projectsTemplate, /class="v2-btn v2-btn-primary v2-new-project-btn" id="open-new-project"/);
     assert.match(projectsTemplate, /<span class="v2-plus" aria-hidden="true">\+<\/span> \{\{ label \}\}/);

@@ -5,17 +5,16 @@ requires-python = "==3.11.*"
 
 dependencies = [
     "anthropic==0.54.0",
-    "claude-agent-sdk==0.1.18",
+    "claude-agent-sdk==0.2.131",
     "Flask==3.0.0",
     "Flask-Session==0.5.0",
+    "gxl-paperclip==0.7.24",
     "markdown==3.6",
     "openai==1.95.1",
     "psutil>=5.9.0",
-    "psycopg2-binary==2.9.10",
     "python-dotenv==1.0.1",
     "requests>=2.32.0",
     "send2trash==2.1.0",
-    "sqlalchemy==2.0.37",
 ]
 
 [project.optional-dependencies]
@@ -30,3 +29,4 @@ packages = ["da_selection_ui", "AIR"]
 
 [tool.uv.sources]
 AIR = { path = "./AIR", editable = true}
+gxl-paperclip = { path = "vendor/gxl_paperclip-0.7.24-py3-none-any.whl" }

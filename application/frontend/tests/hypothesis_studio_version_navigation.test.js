@@ -148,7 +148,7 @@ test('a delayed history reconciliation preserves the newest cross-card version c
         'state', 'apiJsonWithTimeout', 'applyHistoryList',
         'viewedVersionResultIds', 'deriveCards', 'regenerationViewFor',
         'HSE', 'nextEventId', 'restoreViewedVersionResultIds', 'hasHypotheses',
-        'setViewedVersionResultId',
+        'setViewedVersionResultId', 'applyRoundLifecycle',
         `${restoreCardsSource}
          return restoreCurrentCardsFromHistory;`
     )(
@@ -171,7 +171,8 @@ test('a delayed history reconciliation preserves the newest cross-card version c
         () => 'unused',
         harness.restoreViewedVersionResultIds,
         () => true,
-        harness.setViewedVersionResultId
+        harness.setViewedVersionResultId,
+        () => {}
     );
 
     const pendingRestore = restore();

@@ -507,35 +507,31 @@ def test_listing_removal_and_persistence_across_client_state(monkeypatch, tmp_pa
     assert missing.get_json()["code"] == "skill_not_found"
 
 
-def test_supported_legacy_project_uses_its_trusted_code_directory(monkeypatch, tmp_path):
-    legacy_disk = tmp_path / "legacy-disk"
-    legacy_code = tmp_path / "legacy-project" / "code"
-    legacy_code.mkdir(parents=True)
-    legacy_disk.mkdir()
+def test_imported_project_uses_its_registered_code_directory(monkeypatch, tmp_path):
+    imported_code = tmp_path / "imported-project" / "code"
+    imported_code.mkdir(parents=True)
     record = {
-        "id": "legacy-project-id",
-        "display_name": "Legacy Project",
-        "url_slug": "legacy-project",
-        "project_root": str(legacy_code.parent),
-        "code_dir": str(legacy_code),
-        "checkpoint_dir": str(legacy_code.parent / "checkpoint"),
-        "readme_path": str(legacy_code / "README.md"),
+        "id": "prj_" + "a" * 32,
+        "display_name": "Imported Project",
+        "url_slug": "imported-project",
+        "project_root": str(imported_code.parent),
+        "code_dir": str(imported_code),
+        "checkpoint_dir": str(imported_code.parent / "checkpoint"),
+        "readme_path": str(imported_code / "README.md"),
+        "imported_in_place": True,
     }
-    app_module.write_project_metadata(legacy_code.parent, record["id"], record["display_name"])
-    (legacy_disk / "v2_projects.json").write_text(
-        json.dumps({"projects": [record]}), encoding="utf-8"
-    )
-    monkeypatch.setattr(app_module, "_get_disk_path", lambda: legacy_disk)
+    app_module.write_project_metadata(imported_code.parent, record["id"], record["display_name"])
+    app_module._v2_save_projects([record])
     client = app_module.app.test_client()
 
-    empty = client.get("/api/projects/legacy-project-id/skills")
+    empty = client.get(f"/api/projects/{record['id']}/skills")
     assert empty.status_code == 200
     assert empty.get_json()["skills"] == []
     imported = _post_skill(
-        client, "legacy-project-id", _zip({"SKILL.md": _skill_md("Legacy Helper")})
+        client, record["id"], _zip({"SKILL.md": _skill_md("Imported Helper")})
     )
     assert imported.status_code == 201
-    assert (legacy_code / ".claude" / "skills" / "legacy-helper" / "SKILL.md").is_file()
+    assert (imported_code / ".claude" / "skills" / "imported-helper" / "SKILL.md").is_file()
 
 
 def test_removal_identifier_cannot_escape_skill_root(monkeypatch, tmp_path):

@@ -118,7 +118,7 @@ def test_locate_rebases_registry_without_moving_files_or_rewriting_history(monke
     round_config.write_bytes(historical)
     marker = root / "code" / "analysis.py"
     marker.write_text("print('still here')\n", encoding="utf-8")
-    moved = _move(root, tmp_path / "new parent" / "moved-project")
+    moved = _move(root, tmp_path / "projects" / "located-project")
     _picker(monkeypatch, moved)
 
     response = client.post(f"/api/projects/{record['id']}/locate")
@@ -137,7 +137,7 @@ def test_locate_rebases_registry_without_moving_files_or_rewriting_history(monke
     assert app_module._v2_project_destination(
         moved.parent, record["display_name"], current_root=moved,
     ) == moved
-    assert app_module._v2_project_delete_root(recovered, managed=True) == moved
+    assert app_module._v2_project_delete_root(recovered) == moved
     runtime_paths = app_module.local_round_runner._project_paths(recovered)
     assert runtime_paths["project_root"] == moved
     assert runtime_paths["code_dir"] == moved / "code"

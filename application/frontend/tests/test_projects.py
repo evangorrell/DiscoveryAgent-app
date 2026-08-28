@@ -11,7 +11,7 @@ from da_selection_ui import app as app_module
 
 
 def _client(monkeypatch, tmp_path):
-    """Authenticated client with a clean DISK_PATH and NO legacy project."""
+    """Authenticated client with isolated application data."""
     monkeypatch.setattr(app_module, "_get_disk_path", lambda: tmp_path)
     trash = tmp_path / ".test-trash"
 
@@ -93,8 +93,8 @@ def test_create_persists_metadata_and_readme(monkeypatch, tmp_path):
     assert body["projects_url"] == "/projects"
     pid = body["project_id"]
 
-    # registry persisted outside git, under DISK_PATH
-    registry = tmp_path / "v2_projects.json"
+    # Registry persisted outside git beneath the configured data root.
+    registry = tmp_path / "projects.json"
     assert registry.exists()
     record = next(p for p in json.loads(registry.read_text())["projects"] if p["id"] == pid)
     assert record["display_name"] == "Optic Nerve Regeneration"
@@ -105,7 +105,7 @@ def test_create_persists_metadata_and_readme(monkeypatch, tmp_path):
     assert "project_model" not in record and "hypothesis_model" not in record
     assert record["query_count"] == 12
     assert record["deep_research"] is True and record["web_search"] is True
-    assert record["data_dir"] == "code/data"
+    assert record["data_dir"] == str(_project_root(pid) / "code" / "data")
     resolved = app_module._v2_get_project(pid)
     assert resolved["data_dir"] == str(_project_root(pid) / "code" / "data")
 
@@ -115,7 +115,7 @@ def test_create_persists_metadata_and_readme(monkeypatch, tmp_path):
     text = readme.read_text()
     assert text.startswith("# Optic Nerve Regeneration\n\n")
     assert ctx in text
-    assert record["readme_path"] == "code/data/README.md"
+    assert record["readme_path"] == str(readme)
     assert resolved["readme_path"] == str(readme)
 
     # minimal valid config.json exists at round_0; no readme_path override key
@@ -202,7 +202,7 @@ def test_create_rejects_invalid_explicit_query_counts_without_writing(monkeypatc
         })
         assert response.status_code == 400
         assert response.get_json()["code"] == "invalid_project_settings"
-    assert not (tmp_path / "v2_projects.json").exists()
+    assert json.loads((tmp_path / "projects.json").read_text()) == {"projects": []}
 
 
 @pytest.mark.parametrize("query_count", [1, 50])
@@ -235,7 +235,7 @@ def test_create_rejects_unlisted_or_non_anthropic_models_before_writing(monkeypa
         })
         assert response.status_code == 400
         assert response.get_json()["code"] == "unsupported_project_model"
-    assert not (tmp_path / "v2_projects.json").exists()
+    assert json.loads((tmp_path / "projects.json").read_text()) == {"projects": []}
 
 
 # --- (8,9) optional fields ---------------------------------------------------
@@ -248,7 +248,7 @@ def test_empty_name_rejected(monkeypatch, tmp_path):
     assert resp.status_code == 400
     body = resp.get_json()
     assert body["success"] is False and "project name" in body["error"].lower()
-    assert not (tmp_path / "v2_projects.json").exists()
+    assert json.loads((tmp_path / "projects.json").read_text()) == {"projects": []}
 
 
 def test_all_required_fields_rejected_when_blank(monkeypatch, tmp_path):
@@ -263,7 +263,7 @@ def test_all_required_fields_rejected_when_blank(monkeypatch, tmp_path):
     err = resp.get_json()["error"].lower()
     assert "project name" in err and "research objective" in err and "project context" in err
     # Nothing was persisted by any of the rejected attempts.
-    assert not (tmp_path / "v2_projects.json").exists()
+    assert json.loads((tmp_path / "projects.json").read_text()) == {"projects": []}
 
 
 def test_empty_context_rejected(monkeypatch, tmp_path):
@@ -271,7 +271,7 @@ def test_empty_context_rejected(monkeypatch, tmp_path):
     resp = _create(client, name="Proj", context="  ")
     assert resp.status_code == 400
     assert "project context" in resp.get_json()["error"].lower()
-    assert not (tmp_path / "v2_projects.json").exists()
+    assert json.loads((tmp_path / "projects.json").read_text()) == {"projects": []}
 
 
 def test_empty_objective_rejected_at_create(monkeypatch, tmp_path):
@@ -436,11 +436,15 @@ def test_failed_creation_cleans_up(monkeypatch, tmp_path):
     resp = _create(client, name="Doomed Project", context="ctx")
     assert resp.status_code == 500
     # no project directory and no registry entry survive
-    dirs = [p for p in tmp_path.iterdir() if p.is_dir() and p.name.startswith("doomed-project")]
+    projects_root = tmp_path / "projects"
+    dirs = [
+        p for p in projects_root.iterdir()
+        if p.is_dir() and p.name.startswith("doomed-project")
+    ] if projects_root.exists() else []
     assert dirs == []
-    assert not (tmp_path / "v2_projects.json").exists() or \
+    assert not (tmp_path / "projects.json").exists() or \
         all(p["display_name"] != "Doomed Project"
-            for p in json.loads((tmp_path / "v2_projects.json").read_text()).get("projects", []))
+            for p in json.loads((tmp_path / "projects.json").read_text()).get("projects", []))
 
 
 # --- deletion -----------------------------------------------------------------
@@ -462,7 +466,7 @@ def test_delete_project_removes_registry_entry_and_project_root(monkeypatch, tmp
     assert not delete_root.exists()
     assert (tmp_path / ".test-trash" / delete_root.name / "code" / "data" / "README.md").is_file()
     assert keep_root.exists()
-    remaining = {p["id"] for p in json.loads((tmp_path / "v2_projects.json").read_text())["projects"]}
+    remaining = {p["id"] for p in json.loads((tmp_path / "projects.json").read_text())["projects"]}
     assert delete_id not in remaining
     assert keep_id in remaining
 
@@ -619,7 +623,7 @@ def test_project_objective_endpoint_persists_canonical_task_description(monkeypa
     assert body["success"] is True
     assert body["task_description"] == objective
 
-    record = next(p for p in json.loads((tmp_path / "v2_projects.json").read_text())["projects"] if p["id"] == pid)
+    record = next(p for p in json.loads((tmp_path / "projects.json").read_text())["projects"] if p["id"] == pid)
     assert record["task_description"] == objective
     cfg = json.loads((_project_root(pid) / "checkpoint" / "checkpoints" / "round_0" / "config.json").read_text())["config"]
     assert cfg["task_description"] == objective

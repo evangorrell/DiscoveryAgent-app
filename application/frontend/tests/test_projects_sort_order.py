@@ -38,7 +38,7 @@ def _list_ids(client):
 
 
 def _registry(tmp_path):
-    return json.loads((tmp_path / "v2_projects.json").read_text())["projects"]
+    return json.loads((tmp_path / "projects.json").read_text())["projects"]
 
 
 # --- (1) newest creation sorts first -----------------------------------------
@@ -84,7 +84,7 @@ def test_missing_last_opened_at_falls_back_to_created_at(monkeypatch, tmp_path):
     newer = _create(client, "Newer Project")
 
     # Simulate a pre-existing registry entry written before this field existed.
-    reg_path = tmp_path / "v2_projects.json"
+    reg_path = tmp_path / "projects.json"
     data = json.loads(reg_path.read_text())
     for p in data["projects"]:
         p.pop("last_opened_at", None)

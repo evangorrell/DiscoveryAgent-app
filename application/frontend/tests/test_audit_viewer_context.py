@@ -167,8 +167,6 @@ def test_invalid_reference_does_not_break_chat_and_no_artifact_means_no_viewer_s
         lambda _timeout, **kwargs: captured.append(kwargs) or {"answer": "Normal audit answer."},
     )
     monkeypatch.setattr(app_module, "_write_interaction_log", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(app_module, "log_full_event_to_s3", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(app_module, "log_event", lambda *_args, **_kwargs: None)
 
     invalid = {
         "version": 1,
@@ -229,8 +227,6 @@ def test_prompt_keeps_full_project_inventory_and_makes_visible_figure_inspectabl
         lambda _timeout, **kwargs: captured.update(kwargs) or {"answer": "Grounded answer."},
     )
     monkeypatch.setattr(app_module, "_write_interaction_log", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(app_module, "log_full_event_to_s3", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(app_module, "log_event", lambda *_args, **_kwargs: None)
 
     with _client_request_context(client):
         source = _checkpoint_source(0)

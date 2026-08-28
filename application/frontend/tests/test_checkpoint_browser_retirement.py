@@ -34,7 +34,7 @@ def _write_registry(path, records):
 
 
 def _managed_client(monkeypatch, tmp_path, records):
-    registry = tmp_path / "v2_projects.json"
+    registry = tmp_path / "projects.json"
     _write_registry(registry, records)
     monkeypatch.setattr(app_module, "_get_disk_path", lambda: tmp_path)
     return app_module.app.test_client(), registry
@@ -75,21 +75,6 @@ def test_unresolved_remote_audit_has_no_checkpoint_browser_shortcut(
 
     assert response.status_code == 200
     assert b"/checkpoint_browser" not in response.data
-
-
-def test_legacy_template_and_tree_file_apis_are_retired():
-    root = Path(app_module.app.root_path)
-    source = (root / "app.py").read_text(encoding="utf-8")
-    rules = {rule.rule for rule in app_module.app.url_map.iter_rules()}
-
-    assert not (root / "templates" / "checkpoint_browser.html").exists()
-    assert "render_template('checkpoint_browser.html'" not in source
-    assert 'render_template("checkpoint_browser.html"' not in source
-    assert "/api/checkpoint_tree" not in rules
-    assert "/api/checkpoint_file" not in rules
-    client = app_module.app.test_client()
-    assert client.get("/api/checkpoint_tree").status_code == 404
-    assert client.get("/api/checkpoint_file").status_code == 404
 
 
 def test_active_checkpoint_assets_and_audit_investigation_remain_available():

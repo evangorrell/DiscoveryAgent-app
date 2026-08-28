@@ -16,12 +16,10 @@ def test_creation_endpoint_creates_managed_macos_parent_directories(monkeypatch,
     home = tmp_path / 'Users' / 'scientist'
     data_root = home / 'Library' / 'Application Support' / 'DiscoveryAgent'
     projects_root = data_root / 'projects'
-    legacy_root = tmp_path / 'source-checkout' / 'local_disk'
-
     monkeypatch.setattr(app_module, 'get_data_root', lambda: data_root)
     monkeypatch.setattr(app_module, 'get_projects_root', lambda: projects_root)
-    monkeypatch.setattr(app_module, 'get_project_root', lambda project_id: projects_root / project_id)
-    monkeypatch.setattr(app_module, '_get_disk_path', lambda: legacy_root)
+    monkeypatch.setattr(app_module, 'get_projects_registry_path', lambda: data_root / 'projects.json')
+    monkeypatch.setattr(app_module, 'get_project_root', lambda slug: projects_root / slug)
 
     assert not data_root.exists()
     client = app_module.app.test_client()
@@ -35,9 +33,9 @@ def test_creation_endpoint_creates_managed_macos_parent_directories(monkeypatch,
     project_id = response.get_json()['project_id']
     assert project_id.startswith('prj_')
     project_root = Path(app_module._v2_get_project(project_id)['project_root'])
+    assert project_root == projects_root / 'rgc-α-analysis-v1'
     assert project_root.is_dir()
     assert projects_root.is_dir()
-    assert not legacy_root.exists()
 
     metadata = json.loads(
         (project_root / '.discoveryagent' / 'project.json').read_text(encoding='utf-8')
@@ -46,12 +44,12 @@ def test_creation_endpoint_creates_managed_macos_parent_directories(monkeypatch,
         'project_id': project_id,
         'display_name': 'RGC / α-analysis? <V1>',
     }
-    registry = json.loads((data_root / 'v2_projects.json').read_text(encoding='utf-8'))
+    registry = json.loads((data_root / 'projects.json').read_text(encoding='utf-8'))
     record = registry['projects'][0]
     assert record['id'] == project_id
     assert record['project_root'] == str(project_root)
-    assert record['code_dir'] == 'code'
-    assert str(tmp_path / 'source-checkout') not in json.dumps(record)
+    assert record['code_dir'] == str(project_root / 'code')
+    assert record['imported_in_place'] is False
 
 
 def test_project_endpoint_uses_autouse_temporary_storage(tmp_path):
@@ -67,4 +65,4 @@ def test_project_endpoint_uses_autouse_temporary_storage(tmp_path):
     project_id = response.get_json()['project_id']
     project_root = Path(app_module._v2_get_project(project_id)['project_root'])
     assert (project_root / '.discoveryagent' / 'project.json').is_file()
-    assert (tmp_path / 'v2_projects.json').is_file()
+    assert (tmp_path / 'projects.json').is_file()

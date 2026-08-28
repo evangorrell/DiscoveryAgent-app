@@ -47,7 +47,7 @@ def _create(client, name="Optic Nerve Regeneration", context="Some dataset conte
 
 
 def _registry(tmp_path):
-    return json.loads((tmp_path / "v2_projects.json").read_text())["projects"]
+    return json.loads((tmp_path / "projects.json").read_text())["projects"]
 
 
 def _round_dir(tmp_path, pid, n):
@@ -86,19 +86,15 @@ def test_punctuation_normalized_safely(monkeypatch, tmp_path):
 
 # --- (5) collision handling ---------------------------------------------------
 
-def test_duplicate_names_get_numeric_suffixes(monkeypatch, tmp_path):
+def test_distinct_names_with_same_slug_are_rejected_without_suffixes(monkeypatch, tmp_path):
     client = _client(monkeypatch, tmp_path)
-    parents = [tmp_path / f"parent-{index}" for index in range(3)]
-    for parent in parents:
-        parent.mkdir()
-    b1 = _create(client, name="Optic / Nerve", parent=parents[0])
-    b2 = _create(client, name="Optic - Nerve", parent=parents[1])
-    b3 = _create(client, name="Optic _ Nerve", parent=parents[2])
+    b1 = _create(client, name="Optic / Nerve")
+    b2 = _create(client, name="Optic - Nerve")
+    b3 = _create(client, name="Optic _ Nerve")
     registry = _registry(tmp_path)
-    slugs = {p["id"]: p["url_slug"] for p in registry}
-    assert slugs[b1["project_id"]] == "optic-nerve"
-    assert slugs[b2["project_id"]] == "optic-nerve-2"
-    assert slugs[b3["project_id"]] == "optic-nerve-3"
+    assert b1["success"] is True
+    assert b2["code"] == b3["code"] == "duplicate_project_slug"
+    assert [project["url_slug"] for project in registry] == ["optic-nerve"]
 
 
 # --- (6,7,8,9,10) backfill for legacy records ---------------------------------
@@ -109,7 +105,7 @@ def test_backfill_assigns_slug_to_legacy_record(monkeypatch, tmp_path):
     pid = body["project_id"]
 
     # Simulate a pre-slug registry record (written before url_slug existed).
-    reg_path = tmp_path / "v2_projects.json"
+    reg_path = tmp_path / "projects.json"
     data = json.loads(reg_path.read_text())
     record = next(p for p in data["projects"] if p["id"] == pid)
     created_before, updated_before = record["created_at"], record["updated_at"]
@@ -130,7 +126,7 @@ def test_backfill_assigns_slug_to_legacy_record(monkeypatch, tmp_path):
 def test_backfill_is_a_noop_once_all_records_have_slugs(monkeypatch, tmp_path):
     client = _client(monkeypatch, tmp_path)
     _create(client, name="Already Slugged Project")
-    reg_path = tmp_path / "v2_projects.json"
+    reg_path = tmp_path / "projects.json"
     before_mtime = reg_path.stat().st_mtime_ns
     before_text = reg_path.read_text()
 
@@ -484,7 +480,7 @@ def test_project_storage_paths_unchanged_by_slug(monkeypatch, tmp_path):
     assert project_root.name == "optic-nerve-regeneration"
     assert Path(record["checkpoint_dir"]).is_relative_to(project_root)
     assert project_root.exists()
-    assert (tmp_path / "optic-nerve-regeneration").is_dir()
+    assert (tmp_path / "projects" / "optic-nerve-regeneration").is_dir()
 
 
 # --- (28) routes registered; endpoint names intact ---------------------------

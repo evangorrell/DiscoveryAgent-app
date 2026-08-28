@@ -465,7 +465,7 @@ def test_legacy_routes_and_project_home_use_exact_v2_destinations(monkeypatch, t
     _complete_round(tmp_path, project_id, 2, "ROUND TWO")
     running = _round_dir(tmp_path, project_id, 3)
     (running / "query_001").mkdir(parents=True)
-    registry = tmp_path / "v2_projects.json"
+    registry = tmp_path / "projects.json"
     before = registry.read_bytes()
 
     completed = client.get(f"/legacy/projects/{slug}/rounds/1")
@@ -489,15 +489,3 @@ def test_legacy_routes_and_project_home_use_exact_v2_destinations(monkeypatch, t
         f"/rounds/?project={slug}&round=1&review=1",
     ]
     assert all("/legacy/" not in destination for destination in destinations)
-
-
-def test_legacy_report_shell_and_private_endpoints_are_removed():
-    root = Path(app_module.app.root_path)
-    routes = {rule.rule for rule in app_module.app.url_map.iter_rules()}
-
-    assert not (root / "templates" / "report.html").exists()
-    assert not (root / "static" / "script.js").exists()
-    assert "/report" not in routes
-    assert "/api/report_chat" not in routes
-    assert "/api/cancel_report_chat" not in routes
-    assert "/download_report" not in routes

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import posixpath
 import shutil
@@ -14,6 +15,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Callable, Mapping, TextIO
+from urllib.parse import quote, unquote, urlsplit
 
 from .errors import ManagerError, UpdateError
 from .installation import ReleaseMetadata, load_active_release
@@ -33,7 +35,135 @@ MAXIMUM_MANIFEST_BYTES = 1024 * 1024
 ARTIFACT_ROOT = PurePosixPath("discoveryagent-install")
 
 
+@dataclass(frozen=True)
+class _GitHubReleaseAsset:
+    repository: str
+    release_endpoint: str
+    filename: str
+
+
+def _github_release_asset(url: str) -> _GitHubReleaseAsset | None:
+    parsed = urlsplit(url)
+    if parsed.scheme != "https" or parsed.netloc != "github.com" or parsed.query or parsed.fragment:
+        return None
+    parts = [unquote(part) for part in parsed.path.split("/") if part]
+    if len(parts) != 6 or parts[2] != "releases":
+        return None
+    owner, repository = parts[:2]
+    if parts[3:5] == ["latest", "download"]:
+        selector, filename = "latest", parts[5]
+    elif parts[3] == "download":
+        selector, filename = parts[4], parts[5]
+    else:
+        return None
+    safe_component = lambda value: bool(value) and value not in {".", ".."} and "/" not in value and "\\" not in value
+    if not all(safe_component(value) for value in (owner, repository, filename)):
+        return None
+    repository_name = f"{owner}/{repository}"
+    if selector == "latest":
+        endpoint = f"repos/{repository_name}/releases/latest"
+    elif safe_component(selector) and selector != "download":
+        endpoint = f"repos/{repository_name}/releases/tags/{quote(selector, safe='')}"
+    else:
+        return None
+    return _GitHubReleaseAsset(repository_name, endpoint, filename)
+
+
+def _github_cli_environment() -> dict[str, str]:
+    environment = dict(os.environ)
+    # Provider credentials are unrelated to GitHub release access and must
+    # never be inherited by the helper process. GH_TOKEN/GITHUB_TOKEN remain
+    # available for the GitHub CLI's normal session-scoped authentication.
+    for name in ("ANTHROPIC_API_KEY", "PAPERCLIP_API_KEY"):
+        environment.pop(name, None)
+    return environment
+
+
+def _run_gh_api(arguments: list[str], *, stdout=None) -> subprocess.CompletedProcess:
+    command = ["gh", "api", "--method", "GET", *arguments]
+    options = {
+        "check": False,
+        "stderr": subprocess.PIPE,
+        "env": _github_cli_environment(),
+    }
+    if stdout is None:
+        options["stdout"] = subprocess.PIPE
+    else:
+        options["stdout"] = stdout
+    try:
+        result = subprocess.run(command, **options)
+    except FileNotFoundError as exc:
+        raise UpdateError(
+            "Private DiscoveryAgent updates require GitHub CLI. Install gh and run gh auth login."
+        ) from exc
+    if result.returncode != 0:
+        detail = (result.stderr or b"").decode(errors="replace").strip()
+        raise UpdateError(
+            "Could not access the private DiscoveryAgent GitHub release. "
+            "Run gh auth login with an account that can access the release"
+            + (f": {detail}" if detail else ".")
+        )
+    return result
+
+
+def _github_asset_api_endpoint(asset: _GitHubReleaseAsset) -> str:
+    metadata_result = _run_gh_api([
+        "-H", "Accept: application/vnd.github+json", asset.release_endpoint,
+    ])
+    try:
+        metadata = json.loads(metadata_result.stdout)
+        assets = metadata.get("assets") if isinstance(metadata, dict) else None
+    except (json.JSONDecodeError, UnicodeDecodeError, TypeError) as exc:
+        raise UpdateError("GitHub returned invalid private release metadata") from exc
+    if not isinstance(assets, list):
+        raise UpdateError("GitHub private release metadata does not contain assets")
+    matches = [
+        value for value in assets
+        if isinstance(value, dict)
+        and value.get("name") == asset.filename
+        and isinstance(value.get("id"), int)
+    ]
+    if len(matches) != 1:
+        raise UpdateError(
+            f"Private GitHub release does not contain exactly one {asset.filename} asset"
+        )
+    return f"repos/{asset.repository}/releases/assets/{matches[0]['id']}"
+
+
+def _private_github_asset_bytes(asset: _GitHubReleaseAsset, maximum_bytes: int) -> bytes:
+    endpoint = _github_asset_api_endpoint(asset)
+    result = _run_gh_api([
+        "-H", "Accept: application/octet-stream", endpoint,
+    ])
+    contents = result.stdout or b""
+    if len(contents) > maximum_bytes:
+        raise UpdateError("Private GitHub release asset is unexpectedly large")
+    return contents
+
+
+def _download_private_github_asset(asset: _GitHubReleaseAsset, destination: Path) -> str:
+    endpoint = _github_asset_api_endpoint(asset)
+    try:
+        with destination.open("xb") as stream:
+            _run_gh_api([
+                "-H", "Accept: application/octet-stream", endpoint,
+            ], stdout=stream)
+    except OSError as exc:
+        raise UpdateError(f"Could not store the DiscoveryAgent update: {exc}") from exc
+    digest = hashlib.sha256()
+    try:
+        with destination.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError as exc:
+        raise UpdateError(f"Could not verify the DiscoveryAgent update: {exc}") from exc
+    return digest.hexdigest()
+
+
 def fetch_manifest(url: str) -> bytes:
+    private_asset = _github_release_asset(url)
+    if private_asset is not None:
+        return _private_github_asset_bytes(private_asset, MAXIMUM_MANIFEST_BYTES)
     request = urllib.request.Request(url, headers={"User-Agent": "DiscoveryAgent-manager"})
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
@@ -46,6 +176,9 @@ def fetch_manifest(url: str) -> bytes:
 
 
 def download_artifact(url: str, destination: Path) -> str:
+    private_asset = _github_release_asset(url)
+    if private_asset is not None:
+        return _download_private_github_asset(private_asset, destination)
     request = urllib.request.Request(url, headers={"User-Agent": "DiscoveryAgent-manager"})
     digest = hashlib.sha256()
     try:

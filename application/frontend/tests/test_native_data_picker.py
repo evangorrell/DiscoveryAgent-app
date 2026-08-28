@@ -21,6 +21,10 @@ import pytest
 from da_selection_ui import app as app_module
 
 
+PACKAGED_HELPER_SHA256 = "80edd7a18f0fd952a81686df5519b91ecc992d113698c157e9de6c64022c7a71"
+ADD_DATA_PICKER_INSTRUCTION = "Select a folder containing the data you want to add."
+
+
 def native_paths() -> tuple[Path, Path, Path, Path]:
     bundle, executable = app_module._v2_data_library_picker_helper_paths()
     native_root = bundle.parent
@@ -70,6 +74,7 @@ def test_packaged_helper_is_executable_arm64_macho_with_runtime_hash_and_uuid():
     assert cpu_type == 0x0100000C
     assert executable.stat().st_mode & 0o111
     assert app_module._v2_data_library_picker_helper_sha256() == hashlib.sha256(binary).hexdigest()
+    assert hashlib.sha256(binary).hexdigest() == PACKAGED_HELPER_SHA256
     assert len(uuid_commands) == 1
     assert len(uuid_commands[0]) == 24
     assert uuid_commands[0][8:] != bytes(16)
@@ -80,6 +85,7 @@ def test_native_build_does_not_strip_the_launchservices_required_macho_uuid():
     build_script = (source.parent / "build_folder_picker.sh").read_text(encoding="utf-8")
 
     assert "-Wl,-no_uuid" not in build_script
+    assert 'OUTPUT=${1:-' in build_script
 
 
 def test_bundle_has_a_first_class_launchservices_identity():
@@ -109,6 +115,38 @@ def test_native_source_requires_real_frontmost_key_and_responder_stability():
     assert "stableTurns < 5" in source
     assert "ReadinessTimeout = 2.0" in source
     assert source.count("AdvanceMainRunLoop();") >= 3
+
+
+def test_native_panel_displays_the_add_data_instruction_above_its_browser():
+    source_path, _bundle, _plist, _executable = native_paths()
+    source = source_path.read_text(encoding="utf-8")
+
+    message = f'panel.message = @"{ADD_DATA_PICKER_INSTRUCTION}";'
+    assert message in source
+    assert source.index(message) < source.index("[panel makeKeyAndOrderFront:nil];")
+
+
+def test_bundled_instruction_is_isolated_from_project_picker_flows():
+    app_source = Path(app_module.__file__).read_text(encoding="utf-8")
+    data_run = app_source[
+        app_source.index("def _v2_run_data_library_picker()"):
+        app_source.index("def _v2_data_library_picker_helper_paths()")
+    ]
+    project_picker_region = app_source[
+        app_source.index("def _v2_native_project_location_picker_command"):
+        app_source.index("def _v2_data_library_picker_helper_paths()")
+    ]
+    recovery_picker = app_source[
+        app_source.index("def _v2_native_project_recovery_picker_command"):
+        app_source.index("def _v2_project_delete_root")
+    ]
+
+    assert "_v2_data_library_picker_command(result_path)" in data_run
+    assert app_source.count("_v2_data_library_picker_command(result_path)") == 1
+    assert app_source.count("'DiscoveryAgentFolderPicker.app'") == 1
+    assert "DiscoveryAgentFolderPicker.app" not in project_picker_region
+    assert "DiscoveryAgentFolderPicker.app" not in recovery_picker
+    assert ADD_DATA_PICKER_INSTRUCTION not in app_source
 
 
 def test_panel_is_mouse_enabled_before_reveal_and_only_revealed_after_activation():

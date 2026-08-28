@@ -75,7 +75,7 @@ def test_edit_empty_name_gets_safe_default(monkeypatch, tmp_path):
     pid = _create(client)["project_id"]
     resp = _edit(client, pid, "   ", "ctx")
     assert resp.status_code == 200
-    record = next(p for p in json.loads((tmp_path / "v2_projects.json").read_text())["projects"] if p["id"] == pid)
+    record = next(p for p in json.loads((tmp_path / "projects.json").read_text())["projects"] if p["id"] == pid)
     assert record["display_name"] == "Untitled project"
 
 
@@ -84,7 +84,7 @@ def test_edit_empty_context_clears_readme(monkeypatch, tmp_path):
     pid = _create(client)["project_id"]
     resp = _edit(client, pid, "Name", "  ")
     assert resp.status_code == 200
-    record = next(p for p in json.loads((tmp_path / "v2_projects.json").read_text())["projects"] if p["id"] == pid)
+    record = next(p for p in json.loads((tmp_path / "projects.json").read_text())["projects"] if p["id"] == pid)
     assert record["dataset_context"] == ""
     assert record["readme_path"] is None
     assert not (_project_root(pid) / "code" / "data" / "README.md").exists()
@@ -100,14 +100,16 @@ def test_edit_updates_name_context_and_readme(monkeypatch, tmp_path):
     resp = _edit(client, pid, "New Name", new_ctx, objective=new_objective)
     assert resp.status_code == 200 and resp.get_json()["success"] is True
 
-    record = next(p for p in json.loads((tmp_path / "v2_projects.json").read_text())["projects"] if p["id"] == pid)
+    record = next(p for p in json.loads((tmp_path / "projects.json").read_text())["projects"] if p["id"] == pid)
     assert record["display_name"] == "New Name"
     assert record["task_description"] == new_objective
     assert record["dataset_context"] == new_ctx
 
     expected = f"# New Name\n\n{new_ctx}\n"
     assert (_project_root(pid) / "code" / "data" / "README.md").read_text() == expected
-    assert record["readme_path"] == "code/data/README.md"
+    assert record["readme_path"] == str(
+        _project_root(pid) / "code" / "data" / "README.md"
+    )
     assert app_module._v2_get_project(pid)["readme_path"] == str(
         _project_root(pid) / "code" / "data" / "README.md"
     )
@@ -129,11 +131,11 @@ def test_edit_updates_updated_at(monkeypatch, tmp_path):
     before = next(p for p in _list(client) if p["id"] == pid)
     assert before["show_updated"] is False  # brand new -> "Created recently"
 
-    reg = json.loads((tmp_path / "v2_projects.json").read_text())["projects"][0]
+    reg = json.loads((tmp_path / "projects.json").read_text())["projects"][0]
     created = reg["created_at"]
 
     _edit(client, pid, "Renamed", "New context.")
-    record = next(p for p in json.loads((tmp_path / "v2_projects.json").read_text())["projects"] if p["id"] == pid)
+    record = next(p for p in json.loads((tmp_path / "projects.json").read_text())["projects"] if p["id"] == pid)
     assert record["updated_at"] != created
 
     after = next(p for p in _list(client) if p["id"] == pid)
@@ -145,15 +147,15 @@ def test_edit_updates_updated_at(monkeypatch, tmp_path):
 def test_detail_fetch_does_not_mutate(monkeypatch, tmp_path):
     client = _client(monkeypatch, tmp_path)
     pid = _create(client, name="Stable", context="Stable context.")["project_id"]
-    reg_before = (tmp_path / "v2_projects.json").read_text()
+    reg_before = (tmp_path / "projects.json").read_text()
     client.get(f"/api/projects/{pid}")  # opening edit (prefill) only
-    assert (tmp_path / "v2_projects.json").read_text() == reg_before
+    assert (tmp_path / "projects.json").read_text() == reg_before
 
 
 def test_legacy_missing_model_reads_as_default_without_mutating(monkeypatch, tmp_path):
     client = _client(monkeypatch, tmp_path)
     pid = _create(client)["project_id"]
-    registry_path = tmp_path / "v2_projects.json"
+    registry_path = tmp_path / "projects.json"
     registry = json.loads(registry_path.read_text(encoding="utf-8"))
     for key in ("project_model", "reasoning_model", "execution_model", "hypothesis_model"):
         registry["projects"][0].pop(key, None)
@@ -174,7 +176,7 @@ def test_legacy_automatic_query_count_reads_as_twelve_and_migrates_only_on_save(
 ):
     client = _client(monkeypatch, tmp_path)
     pid = _create(client)["project_id"]
-    registry_path = tmp_path / "v2_projects.json"
+    registry_path = tmp_path / "projects.json"
     registry = json.loads(registry_path.read_text(encoding="utf-8"))
     record = registry["projects"][0]
     if legacy_value is None:
@@ -206,7 +208,7 @@ def test_legacy_automatic_query_count_reads_as_twelve_and_migrates_only_on_save(
 def test_legacy_explicit_query_override_is_preserved_and_migrated_on_save(monkeypatch, tmp_path):
     client = _client(monkeypatch, tmp_path)
     pid = _create(client)["project_id"]
-    registry_path = tmp_path / "v2_projects.json"
+    registry_path = tmp_path / "projects.json"
     registry = json.loads(registry_path.read_text(encoding="utf-8"))
     record = registry["projects"][0]
     record.pop("query_count", None)
@@ -254,6 +256,7 @@ def test_edit_saves_one_project_model_without_rewriting_interrupted_snapshot(mon
     assert saved["reasoning_model"] == "claude-sonnet-4-6"
     assert saved["execution_model"] == "claude-sonnet-4-6"
     assert saved["query_count"] == 29
+    config_path = Path(saved["checkpoint_dir"]) / "config.json"
     assert config_path.read_text(encoding="utf-8") == before
     after_config = json.loads(config_path.read_text(encoding="utf-8"))["config"]
     before_config = json.loads(before)["config"]
@@ -283,14 +286,16 @@ def test_edit_does_not_rewrite_a_completed_round_query_snapshot(monkeypatch, tmp
     )
 
     assert response.status_code == 200
-    assert app_module._v2_get_project(pid)["query_count"] == 41
+    saved = app_module._v2_get_project(pid)
+    assert saved["query_count"] == 41
+    config_path = Path(saved["checkpoint_dir"]) / "config.json"
     assert config_path.read_text(encoding="utf-8") == before
 
 
 def test_retired_saved_model_is_recoverable_but_cannot_be_silently_kept(monkeypatch, tmp_path):
     client = _client(monkeypatch, tmp_path)
     pid = _create(client)["project_id"]
-    registry_path = tmp_path / "v2_projects.json"
+    registry_path = tmp_path / "projects.json"
     registry = json.loads(registry_path.read_text(encoding="utf-8"))
     registry["projects"][0]["project_model"] = "claude-retired-1"
     registry_path.write_text(json.dumps(registry), encoding="utf-8")
@@ -329,6 +334,7 @@ def test_edit_adds_new_files_keeps_existing(monkeypatch, tmp_path):
     assert (data / "existing.csv").exists()
 
     _edit(client, pid, "Name", "ctx", files=[(io.BytesIO(b"new"), "added.tsv")])
+    data = _project_root(pid) / "code" / "data"
     assert (data / "existing.csv").read_text() == "orig"  # untouched
     assert (data / "added.tsv").exists()
 
@@ -372,6 +378,7 @@ def test_edit_duplicate_new_filename_is_not_stored_again(monkeypatch, tmp_path):
     pid = _create(client, files=[(io.BytesIO(b"orig"), "data.csv")])["project_id"]
     data = _project_root(pid) / "code" / "data"
     _edit(client, pid, "Name", "ctx", files=[(io.BytesIO(b"newdup"), "data.csv")])
+    data = _project_root(pid) / "code" / "data"
     assert (data / "data.csv").read_text() == "orig"  # not overwritten
     assert not (data / "data_1.csv").exists()
 

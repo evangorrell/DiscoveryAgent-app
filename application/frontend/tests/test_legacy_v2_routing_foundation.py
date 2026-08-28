@@ -1,4 +1,4 @@
-"""Focused contracts for the first legacy-to-V2 routing foundation batch."""
+"""Focused contracts for registered project routing and legacy artifact paths."""
 
 import json
 from pathlib import Path
@@ -28,10 +28,10 @@ def _create(client, name="Routing Foundation"):
 
 
 def _managed_project(tmp_path, project_id):
-    stored = json.loads((tmp_path / "v2_projects.json").read_text())["projects"]
+    stored = json.loads((tmp_path / "projects.json").read_text())["projects"]
     record = next(project for project in stored if project["id"] == project_id)
     return app_module._v2_normalize_registered_project_for_resolution(
-        record, managed=True, registry_parent=tmp_path,
+        record, registry_parent=tmp_path,
     )
 
 
@@ -76,30 +76,20 @@ def test_resolver_finds_managed_project_by_relevant_canonical_path(
     assert resolved["id"] == project_id
 
 
-def test_resolver_finds_intentionally_registered_legacy_project(monkeypatch, tmp_path):
-    managed_root = tmp_path / "managed"
-    legacy_root = tmp_path / "legacy"
+def test_resolver_finds_imported_project_in_single_registry(monkeypatch, tmp_path):
     project_root = tmp_path / "registered-project"
-    legacy_root.mkdir()
     record = {
-        "id": "legacy-project-id",
-        "url_slug": "registered-legacy-project",
-        "display_name": "Registered Legacy Project",
+        "id": "prj_" + "a" * 32,
+        "url_slug": "registered-imported-project",
+        "display_name": "Registered Imported Project",
         "project_root": str(project_root),
         "code_dir": str(project_root / "code"),
         "data_dir": str(project_root / "code" / "data"),
         "checkpoint_dir": str(project_root / "checkpoint"),
         "readme_path": str(project_root / "code" / "data" / "README.md"),
+        "imported_in_place": True,
     }
-    (legacy_root / "v2_projects.json").write_text(
-        json.dumps({"projects": [record]}), encoding="utf-8",
-    )
-    monkeypatch.setattr(app_module, "get_data_root", lambda: managed_root)
-    monkeypatch.setattr(app_module, "get_projects_root", lambda: managed_root / "projects")
-    monkeypatch.setattr(
-        app_module, "get_project_root", lambda project_id: managed_root / "projects" / project_id,
-    )
-    monkeypatch.setattr(app_module, "_get_disk_path", lambda: legacy_root)
+    app_module._v2_save_projects([record])
 
     resolved = app_module._v2_resolve_registered_project_context(
         path_context={
@@ -107,8 +97,8 @@ def test_resolver_finds_intentionally_registered_legacy_project(monkeypatch, tmp
         },
     )
 
-    assert resolved["id"] == "legacy-project-id"
-    assert resolved["url_slug"] == "registered-legacy-project"
+    assert resolved["id"] == record["id"]
+    assert resolved["url_slug"] == "registered-imported-project"
 
 
 def test_resolver_returns_no_match_for_unknown_or_ambiguous_context(monkeypatch, tmp_path):
@@ -116,7 +106,7 @@ def test_resolver_returns_no_match_for_unknown_or_ambiguous_context(monkeypatch,
     first_id = _create(client, "First Project")
     second_id = _create(client, "Second Project")
     shared_code = tmp_path / "shared-code"
-    registry_path = tmp_path / "v2_projects.json"
+    registry_path = tmp_path / "projects.json"
     registry = json.loads(registry_path.read_text())
     for record in registry["projects"]:
         if record["id"] in {first_id, second_id}:
@@ -135,7 +125,7 @@ def test_resolver_returns_no_match_for_unknown_or_ambiguous_context(monkeypatch,
 def test_resolver_does_not_backfill_migrate_save_or_modify_registry(monkeypatch, tmp_path):
     client = _client(monkeypatch, tmp_path)
     project_id = _create(client)
-    registry_path = tmp_path / "v2_projects.json"
+    registry_path = tmp_path / "projects.json"
     before = registry_path.read_bytes()
     before_mtime = registry_path.stat().st_mtime_ns
 
@@ -143,7 +133,6 @@ def test_resolver_does_not_backfill_migrate_save_or_modify_registry(monkeypatch,
         raise AssertionError("read-only resolver invoked a mutating helper")
 
     monkeypatch.setattr(app_module, "_v2_ensure_url_slugs_backfilled", unexpected_mutation)
-    monkeypatch.setattr(app_module, "_maybe_migrate_legacy_interactions", unexpected_mutation)
     monkeypatch.setattr(app_module, "_v2_save_projects", unexpected_mutation)
 
     assert app_module._v2_resolve_registered_project_context(project_id=project_id)["id"] == project_id
@@ -214,17 +203,3 @@ def test_hypothesis_studio_never_falls_back_to_legacy_round_monitor():
     assert "CFG.projectHomeUrl || CFG.projectsUrl || '/projects'" in javascript
     assert "projectHomeUrl:" in html
     assert "projectsUrl:" in html
-
-
-def test_legacy_round_monitor_presentation_and_constellation_are_removed():
-    static = Path(app_module.app.static_folder)
-    template = Path(app_module.app.template_folder or "templates")
-    if not template.is_absolute():
-        template = Path(app_module.app.root_path) / template
-    source = Path(app_module.__file__).read_text(encoding="utf-8")
-
-    assert not (template / "round_monitor.html").exists()
-    assert not (static / "round_monitor.js").exists()
-    assert not (static / "round_monitor.css").exists()
-    assert "def _build_round_constellation(" not in source
-    assert "'constellation':" not in source

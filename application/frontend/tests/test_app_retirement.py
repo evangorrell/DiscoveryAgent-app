@@ -19,6 +19,42 @@ RETIRED_V1_ROUTES = (
     "/website_guide",
 )
 
+RETIRED_V1_ROUTE_RULES = (
+    "/login",
+    "/register",
+    "/logout",
+    "/api/login",
+    "/api/register",
+    "/api/logout",
+    "/finalize",
+    "/api/preview_feedback",
+    "/settings/general",
+    "/settings/compute",
+    "/settings/model-provider",
+    "/api/settings/model-provider/environment",
+    "/api/settings/model-provider/credentials/anthropic",
+    "/api/checkpoint_tree",
+    "/api/checkpoint_file",
+    "/api/report_chat",
+    "/api/cancel_report_chat",
+    "/download_report",
+    "/projects/<project_slug>/audit",
+)
+
+RETIRED_V1_FILES = (
+    "templates/index.html",
+    "templates/activity_log.html",
+    "templates/website_guide.html",
+    "templates/checkpoint_browser.html",
+    "templates/report.html",
+    "templates/background_report.html",
+    "templates/round_monitor.html",
+    "static/activity_log.js",
+    "static/script.js",
+    "static/round_monitor.js",
+    "static/round_monitor.css",
+)
+
 
 def _client(monkeypatch, tmp_path):
     monkeypatch.setattr(app_module, "_get_disk_path", lambda: tmp_path)
@@ -61,7 +97,7 @@ def test_obsolete_v1_route_does_not_resolve_active_project_context(
 ):
     client = _client(monkeypatch, tmp_path)
     project = _create(client)
-    registry = tmp_path / "v2_projects.json"
+    registry = tmp_path / "projects.json"
     registry_before = registry.read_bytes()
     registry_mtime = registry.stat().st_mtime_ns
 
@@ -110,7 +146,7 @@ def test_obsolete_v1_route_ignores_audit_remote_and_legacy_session_state(
         "checkpoint_dir": str(project_root / "checkpoint"),
         "readme_path": str(project_root / "code" / "data" / "README.md"),
     }
-    registry = legacy_root / "v2_projects.json"
+    registry = legacy_root / "projects.json"
     registry.write_text(json.dumps({"projects": [record]}), encoding="utf-8")
     before = registry.read_bytes()
     monkeypatch.setattr(app_module, "get_data_root", lambda: managed_root)
@@ -141,16 +177,36 @@ def test_obsolete_v1_routes_are_unregistered_but_historical_assets_remain():
     routes = {rule.rule for rule in app_module.app.url_map.iter_rules()}
 
     assert set(RETIRED_V1_ROUTES).isdisjoint(routes)
+    assert set(RETIRED_V1_ROUTE_RULES).isdisjoint(routes)
+    assert not any(route.startswith("/api/round_chat") for route in routes)
     assert "/checkpoint_assets/<path:filename>" in routes
     assert "/background_report/assets/<path:filename>" in routes
     assert "/report_assets/<root>/<path:filename>" in routes
-    assert not (root / "templates" / "index.html").exists()
-    assert not (root / "templates" / "activity_log.html").exists()
-    assert not (root / "templates" / "website_guide.html").exists()
-    assert not (root / "templates" / "report.html").exists()
-    assert not (root / "templates" / "background_report.html").exists()
-    assert not (root / "static" / "activity_log.js").exists()
-    assert not (root / "static" / "script.js").exists()
+    for relative_path in RETIRED_V1_FILES:
+        assert not (root / relative_path).exists(), relative_path
+
+    source = (root / "app.py").read_text(encoding="utf-8")
+    for fragment in (
+        "render_template('checkpoint_browser.html'",
+        'render_template("checkpoint_browser.html"',
+        "render_template('background_report.html'",
+        'render_template("background_report.html"',
+        "def _build_round_constellation(",
+        "'constellation':",
+    ):
+        assert fragment not in source
+
+    round_workspace = (root / "templates" / "round_workspace.html").read_text(encoding="utf-8")
+    assert "Background Report Chat" not in round_workspace
+    assert "report-chat-panel" not in round_workspace
+    base = (root / "templates" / "base.html").read_text(encoding="utf-8")
+    assert "project_audit_agent" not in base
+    assert ">Audit Agent</a>" not in base
+    audit_home = (root / "templates" / "audit_home.html").read_text(encoding="utf-8")
+    assert "audit-logout-btn" not in audit_home
+    assert "/api/logout" not in audit_home
+    style = (root / "static" / "style.css").read_text(encoding="utf-8")
+    assert ".account-username" not in style
 
 
 def test_active_frontend_navigation_does_not_target_obsolete_v1_routes():

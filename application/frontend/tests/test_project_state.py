@@ -591,7 +591,7 @@ def test_hypothesis_selected_shows_hypothesis_in_attention(monkeypatch, tmp_path
     assert "current_direction" not in data
     attn = data["attention"]
     assert attn["state"] == "hypothesis_selected"
-    assert attn["status_pill"] == "Hypothesis selected"
+    assert attn["status_pill"] == "Ready for investigation"
     assert attn["headline"] == "Your hypothesis is ready for investigation."
     assert attn["cta_label"] == "Start Round 1"
     assert attn["body_lead"] is None
@@ -1148,7 +1148,7 @@ def test_completed_round_then_next_selection_shows_next_round(monkeypatch, tmp_p
     attn = data["attention"]
     # newer selection overrides the older completed-round review state
     assert attn["state"] == "hypothesis_selected"
-    assert attn["status_pill"] == "Hypothesis selected"
+    assert attn["status_pill"] == "Ready for investigation"
     assert attn["headline"] == "Your hypothesis is ready for investigation."
     assert attn["cta_label"] == "Start Round 4"
     assert attn["body_lead"] is None
@@ -1171,6 +1171,62 @@ def test_completed_round_own_launcher_not_treated_as_next_selection(monkeypatch,
     assert attn["state"] == "round_ready_for_review"
     assert attn["cta_label"] == "Review Round 3"
     assert attn["cta_destination"] == "/rounds/?project=housing-affordability-study&round=3&review=1"
+
+
+def test_durable_chronology_keeps_precompletion_selection_historical(
+    monkeypatch, tmp_path,
+):
+    _base_tree(tmp_path)
+    r0 = _complete_round(tmp_path, 0, selected=SELECTED_HYP_2)
+    r0.joinpath("generated_hypotheses.json").write_text(
+        json.dumps({"hypotheses": [SELECTED_HYP_2]}), encoding="utf-8",
+    )
+    r0.joinpath("hypothesis_studio_history.json").write_text(json.dumps({
+        "version": 1,
+        "events": [
+            {
+                "id": "historical-selection", "sequence": 1,
+                "timestamp": "2026-01-15T10:03:00+00:00",
+                "type": "hypothesis_selected",
+                "hypothesis": {"index": 1, "full_text": SELECTED_HYP_2},
+            },
+        ],
+    }), encoding="utf-8")
+    r0.joinpath("round_activity.jsonl").write_text(json.dumps({
+        "timestamp": "2026-01-15T10:08:00+00:00",
+        "event_type": "round_report_saved",
+    }) + "\n", encoding="utf-8")
+
+    status = _status(_get_state(_client_with_session(monkeypatch, tmp_path)))
+    assert status["state"] == "hypothesis_development"
+    assert status["round"] == 1
+    assert status["cta_label"] == "Open Hypothesis Studio"
+    assert status["cta_action"] is None
+
+
+def test_ready_selection_with_missing_continuation_config_has_no_start_action(
+    monkeypatch, tmp_path,
+):
+    import os
+
+    _base_tree(tmp_path)
+    r0 = _complete_round(tmp_path, 0)
+    r0.joinpath("generated_hypotheses.json").write_text(
+        json.dumps({"hypotheses": [SELECTED_HYP_2]}), encoding="utf-8",
+    )
+    selection = r0 / "selected_hypothesis.md"
+    selection.write_text(SELECTED_HYP_2, encoding="utf-8")
+    report_mtime = (r0 / "round_report.md").stat().st_mtime
+    os.utime(selection, (report_mtime + 30, report_mtime + 30))
+    r0.joinpath("config.json").unlink()
+
+    status = _status(_get_state(_client_with_session(monkeypatch, tmp_path)))
+    assert status["state"] == "hypothesis_start_blocked"
+    assert status["status_pill"] == "Setup required"
+    assert status["round"] == 1
+    assert status["cta_action"] is None
+    assert status["cta_label"] == "Inspect Round 0"
+    assert "config.json" in status["blocking_reason"]
 
 
 # --- How the Research Evolved <> Latest Findings distinction ------------------

@@ -68,7 +68,7 @@ test('Locate Project uses one server picker path, stays open on cancel/error, an
     const request = block('async function requestProjectLocationRecovery(projectId)', 'function applyRecoveredEditLocation');
     assert.match(request, /\/api\/projects\/['"] \+ encodeURIComponent\(projectId\) \+ ['"]\/locate/);
     assert.match(request, /method: 'POST'/);
-    const locate = block('async function locateMissingProject()', 'function openCreate()');
+    const locate = block('async function locateMissingProject()', 'function setInlineLocationRecoveryBusy');
     assert.match(locate, /requestProjectLocationRecovery\(requestState\.project\.id\)/);
     assert.match(locate, /if \(data\.cancelled\)/);
     assert.match(locate, /recoveryError\.textContent/);
@@ -79,7 +79,7 @@ test('Locate Project uses one server picker path, stays open on cancel/error, an
 });
 
 test('Edit inline Locate opens the shared native picker directly without opening the recovery dialog', () => {
-    const direct = block('async function locateEditProjectInline()', 'function openCreate()');
+    const direct = block('async function locateEditProjectInline()', 'function importErrorForInvoker');
     assert.match(direct, /recoveryProcessing \|\| modalMode !== 'edit'/);
     assert.match(direct, /requestProjectLocationRecovery\(projectId\)/);
     assert.doesNotMatch(direct, /openProjectRecovery|recoveryOverlay/);
@@ -124,7 +124,7 @@ test('Edit exposes registry-backed location state and requires Locate before sav
     const prepared = block('async function submitPreparedProject(body)', 'async function submitCurrentProject()');
     assert.match(prepared, /!projectLocationAvailable/);
     assert.match(prepared, /action: 'edit-save'/);
-    assert.ok(prepared.indexOf('openProjectRecovery') < prepared.indexOf('persistProject'));
+    assert.ok(prepared.indexOf('openProjectRecovery') < prepared.lastIndexOf('persistProject'));
 });
 
 test('unavailable deletion has distinct accurate registry-only confirmation and server revalidation', () => {

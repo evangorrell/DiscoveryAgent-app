@@ -155,7 +155,7 @@ def test_invalid_explicit_urls_do_not_activate_or_mutate_another_project(
     project_b = _create_project(client, "Project Beta")
     assert client.get(project_a["destination"]).status_code == 200
 
-    registry_path = tmp_path / "v2_projects.json"
+    registry_path = tmp_path / "projects.json"
     registry_before = registry_path.read_bytes()
     with client.session_transaction() as flask_session:
         session_before = dict(flask_session)

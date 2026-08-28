@@ -36,7 +36,7 @@ def _paper_dir(project, stamp="20260816_120000"):
 
 
 def _update_record(tmp_path, project_id, **changes):
-    registry_path = tmp_path / "v2_projects.json"
+    registry_path = tmp_path / "projects.json"
     payload = json.loads(registry_path.read_text(encoding="utf-8"))
     record = next(item for item in payload["projects"] if item["id"] == project_id)
     record.update(changes)
@@ -209,21 +209,3 @@ def test_legacy_background_asset_route_remains_for_stored_report_links(monkeypat
     assert response.data == b"legacy-image"
     source = Path(app_module.__file__).read_text(encoding="utf-8")
     assert 'src.startswith("/background_report/assets/")' in source
-
-
-def test_background_and_report_shell_templates_and_v1_script_are_removed():
-    root = Path(app_module.app.root_path)
-    routes = {rule.rule for rule in app_module.app.url_map.iter_rules()}
-    assert not (root / "templates" / "background_report.html").exists()
-    assert not (root / "templates" / "report.html").exists()
-    assert not (root / "static" / "script.js").exists()
-    assert "/background_report" not in routes
-    assert "/report" not in routes
-    assert "/background_report/assets/<path:filename>" in routes
-    assert "/report_assets/<root>/<path:filename>" in routes
-    source = Path(app_module.__file__).read_text(encoding="utf-8")
-    assert "render_template('background_report.html'" not in source
-    assert 'render_template("background_report.html"' not in source
-    audit_template = (root / "templates" / "round_workspace.html").read_text(encoding="utf-8")
-    assert "Background Report Chat" not in audit_template
-    assert "report-chat-panel" not in audit_template

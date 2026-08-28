@@ -99,3 +99,22 @@ test('project and run identity reject cross-project and stale terminal responses
     assert.equal(acceptRunStatus({ run_id: runB, status: 'running' }), true);
     assert.equal(state.runStatuses.get(runB), 'running');
 });
+
+test('Activity is round-local and excludes successor lifecycle presentation', () => {
+    const render = functionSource('renderActivity', 'renderActivitySelection');
+    assert.match(render, /replaceChildren\(summary,renderActivityQueryStream/);
+    for (const forbidden of [
+        'renderProjectLifecycle', 'projectLifecycle', 'project_lifecycle',
+        'Develop the hypothesis', 'Ready for investigation', 'Setup required',
+    ]) {
+        assert.doesNotMatch(source, new RegExp(forbidden));
+    }
+    const milestones = functionSource('activityMilestoneType', 'normalizeActivity');
+    for (const eventType of [
+        'round_started', 'round_resumed', 'report_writing_started',
+        'round_report_saved', 'memory_report_saved', 'workflow_completed', 'round_error',
+    ]) {
+        assert.match(milestones, new RegExp(eventType));
+    }
+    assert.match(source, /roundStatus==='completed'/);
+});

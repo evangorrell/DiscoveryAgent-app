@@ -8,13 +8,11 @@ from pathlib import Path
 from flask import session
 
 from da_selection_ui import app as app_module
-from da_selection_ui.interaction_storage import migrate_legacy_interactions
 
 
 def _client():
     client = app_module.app.test_client()
     with client.session_transaction() as state:
-        state["username"] = "interaction-storage-test"
         state["app_mode"] = app_module.APP_MODE_SELECTION
     return client
 
@@ -246,13 +244,14 @@ def test_audit_history_follows_immutable_id_through_rename_and_relocation(tmp_pa
     })
     assert saved.status_code == 200
 
-    destination_parent = tmp_path / "relocated"
-    destination_parent.mkdir()
+    original = app_module._v2_get_project(project_id)
+    destination_parent = Path(original["project_root"]).parent
     edited = client.post(f"/api/projects/{project_id}/edit", data={
         "project_name": "Renamed Lifecycle Audit Project",
         "task_description": "Investigate Lifecycle Audit Project.",
         "dataset_context": "Dataset context for Lifecycle Audit Project.",
         "project_parent_dir": str(destination_parent),
+        "use_canonical_default_location": "true",
         "confirm_project_relocation": "true",
     })
     assert edited.status_code == 200, edited.get_data(as_text=True)
@@ -463,98 +462,3 @@ def test_explicit_dev_override_remains_project_namespaced(monkeypatch, tmp_path)
         _project_root(project_id) / ".discoveryagent" / "interactions"
         / "audit_interactions.jsonl"
     ).exists()
-
-
-def test_unambiguous_legacy_records_migrate_once_with_exact_order(tmp_path):
-    project_root = tmp_path / "projects" / "prj_one"
-    project = {
-        "id": "prj_one",
-        "url_slug": "one",
-        "display_name": "One Project",
-        "project_root": str(project_root),
-    }
-    legacy = tmp_path / "legacy" / "audit_interactions.jsonl"
-    legacy.parent.mkdir(parents=True)
-    lines = [
-        json.dumps({"event_type": "chat", "project_label": "One Project", "message": "first"}),
-        json.dumps({
-            "event_type": "report_chat",
-            "checkpoint_dir": str(project_root / "checkpoint" / "checkpoints" / "round_0"),
-            "message": "second",
-        }),
-    ]
-    legacy.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-    first = migrate_legacy_interactions(legacy, [project])
-    destination = project_root / ".discoveryagent" / "interactions" / "audit_interactions.jsonl"
-    first_content = destination.read_text(encoding="utf-8")
-    second = migrate_legacy_interactions(legacy, [project])
-
-    assert first["migrated_by_project"] == {"prj_one": 2}
-    assert first_content == "\n".join(lines) + "\n"
-    assert destination.read_text(encoding="utf-8") == first_content
-    assert second["migrated_by_project"] == {}
-    assert second["already_present_by_project"] == {"prj_one": 2}
-    assert legacy.read_text(encoding="utf-8") == "\n".join(lines) + "\n"
-
-
-def test_ambiguous_and_unmatched_legacy_records_are_never_guessed(tmp_path):
-    projects = [
-        {
-            "id": "prj_a",
-            "url_slug": "same",
-            "display_name": "Duplicate Name",
-            "project_root": str(tmp_path / "prj_a"),
-        },
-        {
-            "id": "prj_b",
-            "url_slug": "same-2",
-            "display_name": "Duplicate Name",
-            "project_root": str(tmp_path / "prj_b"),
-        },
-    ]
-    legacy = tmp_path / "legacy.jsonl"
-    ambiguous = json.dumps({"event_type": "chat", "project_label": "Duplicate Name"})
-    unmatched = json.dumps({"event_type": "chat", "project_label": "Unknown Project"})
-    conflicting_ids = json.dumps({
-        "event_type": "chat",
-        "project_id": "prj_a",
-        "v2_active_project_id": "prj_unknown",
-    })
-    legacy.write_text(
-        f"{ambiguous}\n{unmatched}\n{conflicting_ids}\n",
-        encoding="utf-8",
-    )
-
-    result = migrate_legacy_interactions(legacy, projects)
-
-    assert result["ambiguous_records"] == 2
-    assert result["unmatched_records"] == 1
-    assert result["migrated_by_project"] == {}
-    assert not (tmp_path / "prj_a" / ".discoveryagent" / "interactions").exists()
-    assert not (tmp_path / "prj_b" / ".discoveryagent" / "interactions").exists()
-    assert legacy.read_text(encoding="utf-8") == (
-        f"{ambiguous}\n{unmatched}\n{conflicting_ids}\n"
-    )
-
-
-def test_registered_project_discovery_triggers_idempotent_legacy_migration(tmp_path):
-    client = _client()
-    created = _create(client, "Discovery Migration")
-    project_id = created["project_id"]
-    legacy = app_module.LEGACY_INTERACTION_LOG_PATH
-    legacy.parent.mkdir(parents=True, exist_ok=True)
-    line = json.dumps({
-        "event_type": "audit_chat_restore",
-        "project_label": "Discovery Migration",
-        "conversation_messages": [{"role": "assistant", "content": "restored"}],
-    })
-    legacy.write_text(line + "\n", encoding="utf-8")
-    app_module._INTERACTION_MIGRATION_STATE.update({"signature": None, "result": None})
-
-    assert client.get("/api/projects").status_code == 200
-    destination = _project_root(project_id) / ".discoveryagent" / "interactions" / "audit_interactions.jsonl"
-    assert destination.read_text(encoding="utf-8") == line + "\n"
-    assert client.get("/api/projects").status_code == 200
-    assert destination.read_text(encoding="utf-8") == line + "\n"
-    assert legacy.read_text(encoding="utf-8") == line + "\n"

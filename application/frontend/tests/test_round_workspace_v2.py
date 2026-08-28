@@ -119,6 +119,20 @@ def test_activity_frontend_has_only_status_and_query_progress_sections():
     assert "Stop this round?" in activity_js
     assert "Keep Running" in activity_js
     assert "api('/api/rounds/stop',roundIdentity(data))" in activity_js
+    for forbidden in (
+        "renderProjectLifecycle", "projectLifecycle", "project_lifecycle",
+        "Project continuation status", "hypothesis_development",
+        "hypothesis_selected", "hypothesis_start_blocked",
+        "Develop the hypothesis", "Ready for investigation", "Setup required",
+    ):
+        assert forbidden not in js
+    assert "els.activity.replaceChildren(summary,renderActivityQueryStream(" in activity_js
+    app_text = Path(app_module.__file__).read_text(encoding="utf-8")
+    workspace_endpoint = app_text[
+        app_text.index("def api_round_workspace_tree"):
+        app_text.index("def api_round_workspace_artifact")
+    ]
+    assert "project_lifecycle" not in workspace_endpoint
     assert "api('/api/rounds/resume',roundIdentity(data))" in activity_js
     assert "api('/api/rounds/resubmit',roundIdentity(data))" in activity_js
     assert "data.execution_status=execution.status" in activity_js

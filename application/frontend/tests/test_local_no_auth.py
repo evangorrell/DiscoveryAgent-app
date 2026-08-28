@@ -36,19 +36,6 @@ def test_fresh_session_can_create_list_and_open_project(monkeypatch, tmp_path):
     assert client.get(payload["destination"]).status_code == 200
 
 
-def test_legacy_access_endpoints_are_removed(monkeypatch, tmp_path):
-    client = _client(monkeypatch, tmp_path)
-    for path in ("/login", "/register", "/logout", "/api/login", "/api/register", "/api/logout"):
-        response = client.post(path) if path.startswith("/api/") else client.get(path)
-        assert response.status_code == 404, path
-
-
-def test_orphaned_finalize_routes_are_removed(monkeypatch, tmp_path):
-    client = _client(monkeypatch, tmp_path)
-    assert client.get("/finalize").status_code == 404
-    assert client.post("/api/preview_feedback", json={}).status_code == 404
-
-
 def test_pages_have_no_access_flow_or_global_footer(monkeypatch, tmp_path):
     client = _client(monkeypatch, tmp_path)
     forbidden = (
@@ -63,16 +50,8 @@ def test_pages_have_no_access_flow_or_global_footer(monkeypatch, tmp_path):
         assert all(text not in response.data for text in forbidden), path
 
 
-def test_settings_ui_and_credential_endpoints_are_removed(monkeypatch, tmp_path):
+def test_projects_page_has_no_settings_ui(monkeypatch, tmp_path):
     client = _client(monkeypatch, tmp_path)
-    for path in (
-        "/settings/general",
-        "/settings/compute",
-        "/settings/model-provider",
-        "/api/settings/model-provider/environment",
-        "/api/settings/model-provider/credentials/anthropic",
-    ):
-        assert client.get(path).status_code == 404, path
     assert b"Settings" not in client.get("/projects").data
 
 

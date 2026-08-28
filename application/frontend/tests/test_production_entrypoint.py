@@ -7,10 +7,10 @@ import json
 import os
 import socket
 import subprocess
-import sys
 import threading
 import time
 import urllib.request
+from pathlib import Path
 
 import pytest
 
@@ -27,6 +27,9 @@ from da_selection_ui.production_server import (
     run_frontend,
 )
 from da_selection_ui.project_storage import get_data_root
+
+
+FRONTEND_PYTHON = Path(__file__).resolve().parents[1] / ".venv" / "bin" / "python"
 
 
 class ReturningServer:
@@ -217,7 +220,7 @@ def test_module_returns_nonzero_when_port_is_already_in_use(tmp_path):
             "PYTHONUNBUFFERED": "1",
         })
         completed = subprocess.run(
-            [sys.executable, "-m", "da_selection_ui", "--port", str(port)],
+            [str(FRONTEND_PYTHON), "-m", "da_selection_ui", "--port", str(port)],
             cwd=tmp_path,
             env=environment,
             capture_output=True,
@@ -238,13 +241,12 @@ def test_module_smoke_from_unrelated_working_directory(tmp_path):
     environment.pop("PYTHONPATH", None)
     environment.update({
         "DISCOVERYAGENT_DATA_DIR": str(data_root),
-        "DISK_PATH": str(data_root / "legacy" / "local_disk"),
         "DISCOVERYAGENT_BACKEND_ROOT": str(tmp_path / "manager-backend"),
         "DISCOVERYAGENT_BACKEND_PYTHON": str(tmp_path / "manager-python"),
         "PYTHONUNBUFFERED": "1",
     })
     process = subprocess.Popen(
-        [sys.executable, "-m", "da_selection_ui", "--port", str(port)],
+        [str(FRONTEND_PYTHON), "-m", "da_selection_ui", "--port", str(port)],
         cwd=launch_directory,
         env=environment,
         stdout=subprocess.PIPE,

@@ -82,6 +82,7 @@ int main(int argc, const char *argv[]) {
             panel.allowsMultipleSelection = YES;
             panel.canCreateDirectories = NO;
             panel.prompt = @"Select";
+            panel.message = @"Select a folder containing the data you want to add.";
             panel.ignoresMouseEvents = NO;
             panel.alphaValue = 1.0;
 

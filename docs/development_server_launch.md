@@ -286,6 +286,22 @@ Both `--install-root` and `--data-root` require absolute paths.
 
 ---
 
+## Release pin sequencing
+
+A development snapshot may temporarily pin a commit that is reachable from a
+pushed feature branch or open pull request. That pin is suitable for review,
+but it is not release-final. After the source pull request merges, resolve the
+exact commit that landed on `origin/main`, rerun `tools/build_release.py`, then
+rebuild the install artifact and update `RELEASE_ID` and
+`PUBLIC_ARTIFACT_SHA256` together. Squash and rebase merges necessarily create
+new commit IDs; a merge commit also has a distinct mainline commit ID even
+though the original feature commit remains in its history.
+
+Do not create a tag or upload an asset until both source pins are validated
+against the intended release branches and the rebuilt checksum is committed.
+
+---
+
 ## Testing the real install path
 
 Neither mode above exercises packaging. To run what an external user gets —

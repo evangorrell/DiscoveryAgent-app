@@ -10,6 +10,7 @@ from pathlib import Path
 
 
 DATA_DIR_ENV = "DISCOVERYAGENT_DATA_DIR"
+PROJECTS_REGISTRY_FILENAME = "projects.json"
 
 
 def get_data_root(*, platform: str | None = None, environ=None, home: Path | None = None) -> Path:
@@ -38,6 +39,11 @@ def get_projects_root(**kwargs) -> Path:
     return get_data_root(**kwargs) / "projects"
 
 
+def get_projects_registry_path(**kwargs) -> Path:
+    """Return the one authoritative project registry without creating it."""
+    return get_data_root(**kwargs) / PROJECTS_REGISTRY_FILENAME
+
+
 def get_runtime_root(**kwargs) -> Path:
     """Return the root for durable application runtime state."""
     return get_data_root(**kwargs) / "runtime"
@@ -48,41 +54,12 @@ def get_flask_session_dir(**kwargs) -> Path:
     return get_runtime_root(**kwargs) / "flask_session"
 
 
-def get_legacy_root(**kwargs) -> Path:
-    """Return the root for retained pre-managed-project compatibility data."""
-    return get_data_root(**kwargs) / "legacy"
-
-
-def get_legacy_disk_root(**kwargs) -> Path:
-    """Return the durable replacement for the historical ``./local_disk``."""
-    return get_legacy_root(**kwargs) / "local_disk"
-
-
-def get_historical_checkout_legacy_disk_root() -> Path:
-    """Return the pre-cleanup checkout-local legacy store without creating it.
-
-    The location is derived from the installed module rather than the process
-    working directory.  In the editable/source installation that needs this
-    one-time compatibility bridge, ``project_storage.py`` lives beneath the
-    checkout that formerly owned ``local_disk``.
-    """
-    return Path(__file__).resolve().parents[1] / "local_disk"
-
-
-def get_legacy_auth_root(**kwargs) -> Path:
-    """Return the durable root for retained registration/key/progress state."""
-    return get_legacy_root(**kwargs) / "auth_submissions"
-
-
-def get_legacy_interaction_log_path(**kwargs) -> Path:
-    """Return the read-only source used by the optional legacy-log migration."""
-    return get_legacy_root(**kwargs) / "interaction_logs" / "audit_interactions.jsonl"
-
-
-def get_project_root(project_id: str, **kwargs) -> Path:
-    if not project_id or Path(project_id).name != project_id:
-        raise ValueError("Invalid project id")
-    return get_projects_root(**kwargs) / project_id
+def get_project_root(project_directory_name: str, **kwargs) -> Path:
+    """Return a canonical managed root from its stable display-name slug."""
+    leaf = str(project_directory_name or "").strip()
+    if not leaf or leaf in {".", ".."} or Path(leaf).name != leaf:
+        raise ValueError("Invalid project directory name")
+    return get_projects_root(**kwargs) / leaf
 
 
 def new_project_id() -> str:
@@ -101,8 +78,8 @@ def write_project_metadata(project_root: Path, project_id: str, display_name: st
 
 
 def write_project_metadata_if_absent(
-    project_root: Path, project_id: str, display_name: str,
-) -> Path:
+    project_root: Path, project_id: str, display_name: str, *, return_identity: bool = False,
+) -> Path | tuple[Path, tuple[int, int]]:
     """Atomically create identity metadata without replacing any existing entry."""
     metadata_path = Path(project_root) / ".discoveryagent" / "project.json"
     metadata_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -115,6 +92,7 @@ def write_project_metadata_if_absent(
         f"{metadata_path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex[:8]}"
     )
     descriptor = None
+    identity: tuple[int, int] | None = None
     try:
         descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, "wb", closefd=True) as handle:
@@ -122,6 +100,8 @@ def write_project_metadata_if_absent(
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
+            metadata = os.fstat(handle.fileno())
+            identity = (metadata.st_dev, metadata.st_ino)
         # A same-directory hard link publishes the complete file atomically and
         # fails rather than replacing an entry created by another process.
         os.link(temporary, metadata_path)
@@ -132,4 +112,8 @@ def write_project_metadata_if_absent(
             temporary.unlink()
         except FileNotFoundError:
             pass
+    if return_identity:
+        if identity is None:  # pragma: no cover - a successful write always sets it
+            raise OSError("Could not establish marker ownership.")
+        return metadata_path, identity
     return metadata_path

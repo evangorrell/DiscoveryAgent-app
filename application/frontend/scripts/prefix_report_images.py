@@ -71,20 +71,20 @@ def main() -> int:
         help="Checkpoint S3 prefix used to derive the code_dir path.",
     )
     parser.add_argument(
-        "--disk-path",
-        default=os.environ.get("DISK_PATH", "./local_disk"),
-        help="Base disk path (defaults to DISK_PATH or ./local_disk).",
+        "--data-root",
+        default=os.environ.get("DISCOVERYAGENT_DATA_DIR", "."),
+        help="Configured DiscoveryAgent data root.",
     )
     parser.add_argument("--dry-run", action="store_true", help="Only report changes without writing files.")
     args = parser.parse_args()
 
-    if not os.environ.get("DISK_PATH") and load_dotenv:
+    if not os.environ.get("DISCOVERYAGENT_DATA_DIR") and load_dotenv:
         load_dotenv()
 
     checkpoint_dir = Path(args.checkpoint_dir)
     checkpoint_s3_prefix = args.checkpoint_s3_prefix.strip("/")
-    disk_path = Path(args.disk_path)
-    code_dir = disk_path / checkpoint_s3_prefix / "code"
+    data_root = Path(args.data_root)
+    code_dir = data_root / checkpoint_s3_prefix / "code"
 
     targets = [
         checkpoint_dir / "memory_report.md",

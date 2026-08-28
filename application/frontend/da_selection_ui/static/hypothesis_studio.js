@@ -145,6 +145,8 @@
         reviewTarget: null,
         readOnly: false,
         partialHistory: false,
+        readyToStart: false,
+        startBlockedReason: null,
         rounds: [],
         currentRoundIndex: null,
         currentRoundLabel: null,
@@ -2039,6 +2041,24 @@
                     selectedStatus.title = 'Select another hypothesis to change your choice.';
                 }
                 controls.appendChild(selectedStatus);
+                if (isPendingSelected && state.readyToStart) {
+                    const startBtn = el(
+                        'button', 'hs-card-action hs-card-start-round',
+                        'Start Round ' + selectedRoundNumber(null)
+                    );
+                    startBtn.type = 'button';
+                    startBtn.addEventListener('click', (event) => {
+                        event.stopPropagation();
+                        openStartRoundModal(selectedRoundNumber(null));
+                    });
+                    controls.appendChild(startBtn);
+                } else if (isPendingSelected && state.startBlockedReason) {
+                    const blocked = el(
+                        'span', 'hs-card-action hs-card-selected-static', 'Setup required'
+                    );
+                    blocked.title = state.startBlockedReason;
+                    controls.appendChild(blocked);
+                }
             } else if (!state.readOnly && !isSelected) {
                 const selectBtn = el('button', 'hs-card-action hs-card-select', 'Select for next round');
                 selectBtn.type = 'button';
@@ -2796,6 +2816,7 @@
                 ? detail.data.storage_round_index : detail.data.round_index;
             state.viewRoundLabel = detail.data.label || state.currentRoundLabel || ('Round ' + CFG.runningRoundIndex);
             state.partialHistory = !!detail.data.partial_history;
+            applyRoundLifecycle(detail.data);
             state.events = HSE.normalizeHistoryEvents(detail.data, nextEventId);
             state.viewedRegenerationPositions = {};
             state.focusIndex = null;
@@ -2873,6 +2894,7 @@
         state.currentRoundIndex = data.current_round_index;
         const current = state.rounds.find((r) => r.round_index === state.currentRoundIndex || r.is_current);
         state.currentRoundLabel = current ? current.label : null;
+        applyRoundLifecycle(current);
         if (state.viewRoundIndex === null) {
             state.viewRoundIndex = data.current_round_index;
             state.viewRoundLabel = state.currentRoundLabel;
@@ -2880,6 +2902,12 @@
             const viewed = state.rounds.find((r) => r.round_index === state.viewRoundIndex);
             if (viewed) state.viewRoundLabel = viewed.label;
         }
+    }
+
+    function applyRoundLifecycle(data) {
+        state.readyToStart = !!(data && data.ready_to_start === true);
+        state.startBlockedReason = data && data.start_blocked_reason
+            ? String(data.start_blocked_reason) : null;
     }
 
     function renderSidebar() {
@@ -2931,6 +2959,7 @@
         const current = state.rounds.find((r) =>
             r.round_index === state.currentRoundIndex || r.is_current
         );
+        applyRoundLifecycle(current);
         state.readOnly = CFG.runningRoundIndex != null || !!(
             current && ['running', 'stopped', 'completed'].includes(current.status)
         );
@@ -2960,6 +2989,7 @@
             state.viewRoundIndex = data.storage_round_index != null ? data.storage_round_index : data.round_index;
             state.viewRoundLabel = data.label || entryLabelFor(roundIndex);
             state.partialHistory = !!data.partial_history;
+            applyRoundLifecycle(data);
             state.focusIndex = null;
             state.expanded = {};
             state.manualEditIndex = null;
@@ -2995,6 +3025,7 @@
             state.viewRoundIndex = detail.data.storage_round_index != null ? detail.data.storage_round_index : detail.data.round_index;
             state.viewRoundLabel = detail.data.label || state.currentRoundLabel;
             state.partialHistory = !!detail.data.partial_history;
+            applyRoundLifecycle(detail.data);
             state.events = HSE.normalizeHistoryEvents(detail.data, nextEventId);
             state.viewedRegenerationPositions = {};
             state.readOnly = !!detail.data.read_only;
@@ -3054,6 +3085,7 @@
             state.viewRoundIndex = detail.data.storage_round_index != null ? detail.data.storage_round_index : detail.data.round_index;
             state.viewRoundLabel = detail.data.label || state.currentRoundLabel;
             state.partialHistory = !!detail.data.partial_history;
+            applyRoundLifecycle(detail.data);
             state.events = authoritativeEvents;
             restoreViewedVersionResultIds(preservedViewedResultIds);
             if (followNewCurrent) delete state.viewedRegenerationPositions[followIndex];
@@ -4245,13 +4277,19 @@
             if (resp.ok && data && data.success) {
                 closeReview();
                 state.events.push({ kind: 'selection', id: nextEventId(), hypothesis: h });
+                state.readyToStart = data.ready_to_start !== false;
+                state.startBlockedReason = data.start_blocked_reason || null;
                 // Selection is provisional until the autonomous round is
                 // launched. The selected card is now locked; the other cards
                 // stay editable and may replace this choice before launch.
                 state.readOnly = false;
                 render();
                 resetReviewConfirm();
-                openStartRoundModal(selectedRoundNumber(data));
+                if (state.readyToStart) {
+                    openStartRoundModal(selectedRoundNumber(data));
+                } else if (state.startBlockedReason) {
+                    setComposerError(state.startBlockedReason);
+                }
             } else {
                 resetReviewConfirm();
                 els.reviewError.textContent = (data && data.error) || 'Could not select the hypothesis. Please try again.';

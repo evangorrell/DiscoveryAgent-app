@@ -202,12 +202,3 @@ def test_project_wide_audit_inventory_contains_artifacts_from_multiple_rounds(
     assert "round_0" in inventory
     assert "round_1" in inventory
     assert inventory.count("round_report.md") >= 2
-
-
-def test_round_chat_routes_and_standalone_navigation_are_absent():
-    routes = {rule.rule for rule in app_module.app.url_map.iter_rules()}
-    assert "/projects/<project_slug>/audit" not in routes
-    assert not any(route.startswith("/api/round_chat") for route in routes)
-    base = (Path(app_module.app.root_path) / "templates" / "base.html").read_text(encoding="utf-8")
-    assert "project_audit_agent" not in base
-    assert ">Audit Agent</a>" not in base

@@ -364,14 +364,89 @@ def _latest_native_checkpoint(round_dir: Path) -> Path | None:
 
 
 def _is_fresh_selection(round_dir: Path) -> bool:
+    """Whether ``round_dir`` contains the unbound selection for its successor.
+
+    New Studio histories record semantic UTC timestamps for both selection and
+    round completion. Prefer that durable chronology because copying or
+    importing a project can legitimately normalize file mtimes. Older trees
+    have no such chronology, so retain the established mtime fallback.
+    """
     selection = round_dir / "selected_hypothesis.md"
     report = round_dir / "round_report.md"
     if not selection.is_file():
         return False
+    if report.is_file():
+        selection_time = _latest_json_event_time(
+            round_dir / "hypothesis_studio_history.json",
+            event_key="type", event_value="hypothesis_selected",
+        )
+        report_time = _latest_jsonl_event_time(
+            round_dir / "round_activity.jsonl",
+            event_key="event_type", event_value="round_report_saved",
+        )
+        if selection_time is not None and report_time is not None:
+            return selection_time > report_time
     try:
         return not report.exists() or selection.stat().st_mtime > report.stat().st_mtime
     except OSError:
         return False
+
+
+def _event_timestamp(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _latest_json_event_time(
+    path: Path, *, event_key: str, event_value: str,
+) -> datetime | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    events = payload.get("events") if isinstance(payload, dict) else None
+    if not isinstance(events, list):
+        return None
+    timestamps = [
+        timestamp
+        for event in events
+        if isinstance(event, dict) and event.get(event_key) == event_value
+        if (timestamp := _event_timestamp(event.get("timestamp"))) is not None
+    ]
+    return max(timestamps, default=None)
+
+
+def _latest_jsonl_event_time(
+    path: Path, *, event_key: str, event_value: str,
+) -> datetime | None:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    timestamps: list[datetime] = []
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict) or event.get(event_key) != event_value:
+            continue
+        timestamp = _event_timestamp(event.get("timestamp"))
+        if timestamp is not None:
+            timestamps.append(timestamp)
+    return max(timestamps, default=None)
+
+
+def selection_is_fresh_for_continuation(round_dir: Path) -> bool:
+    """Public read-only lifecycle predicate shared by every V2 surface."""
+    return _is_fresh_selection(Path(round_dir))
 
 
 def _resolve_launch(project: dict[str, Any], paths: dict[str, Path]) -> dict[str, Any]:

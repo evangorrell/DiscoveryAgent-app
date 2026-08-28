@@ -7,15 +7,17 @@ InteractiveHypothesisGenerator class. All logic lives in the CLI script.
 """
 
 import argparse
-from collections import deque
 import concurrent.futures
+import ctypes
 import copy
+import errno
 import hashlib
 import hmac
 import json
 import mimetypes
 import os
 import re
+import secrets
 import shutil
 import stat as stat_module
 import subprocess
@@ -26,8 +28,6 @@ import time
 import threading
 import unicodedata
 import uuid
-import urllib.error
-import urllib.request
 import webbrowser
 from contextlib import contextmanager, nullcontext
 from datetime import datetime, timedelta
@@ -41,12 +41,6 @@ from markupsafe import Markup
 from flask_session import Session
 import psutil
 from send2trash import send2trash
-from sqlalchemy import func
-
-boto3 = None
-Config = None
-TransferConfig = None
-
 try:
     from dotenv import load_dotenv
 except Exception:  # pragma: no cover - optional dependency
@@ -55,15 +49,6 @@ except Exception:  # pragma: no cover - optional dependency
 if load_dotenv:
     load_dotenv()
 
-from .db import (
-    db_enabled,
-    init_db,
-    db_session_scope,
-    ProjectKey,
-    ProjectProgress,
-    RegistrationSubmission,
-    EventLog,
-)
 from . import local_round_runner
 from . import model_catalog
 from . import data_library
@@ -77,19 +62,21 @@ from .project_skills import (
 )
 from .interaction_storage import (
     append_jsonl_line,
-    migrate_legacy_interactions,
     project_conversation_state_path,
     project_interaction_log_path,
     read_conversation_state,
     write_conversation_state,
 )
 from .project_storage import (
-    get_data_root, get_flask_session_dir, get_legacy_auth_root,
-    get_historical_checkout_legacy_disk_root, get_legacy_disk_root,
-    get_legacy_interaction_log_path, get_projects_root, get_project_root,
+    get_data_root, get_flask_session_dir,
+    get_projects_registry_path, get_projects_root, get_project_root,
     new_project_id, write_project_metadata, write_project_metadata_if_absent,
 )
-from .legacy_project_migration import migrate_checkout_legacy_store
+from .project_import import (
+    ProjectImportMetadataError,
+    inspect_project_metadata,
+    recognized_layout,
+)
 from .utils.memory_monitor import (
     get_memory_mb,
     get_memory_info,
@@ -211,20 +198,7 @@ def api_health():
     })
 
 
-def _clear_session_cookie(response):
-    """Ensure client-side session cookies are cleared (forces new session on next login)."""
-    cookie_name = app.config.get('SESSION_COOKIE_NAME', 'session')
-    response.delete_cookie(cookie_name)
-    return response
 application = app
-
-DB_AVAILABLE = db_enabled()
-if DB_AVAILABLE:
-    try:
-        init_db()
-    except Exception as exc:
-        DB_AVAILABLE = False
-        print(f"⚠️  Failed to initialize database: {exc}")
 
 # Global storage for session generators (in production, use Redis or database)
 GENERATORS = {}
@@ -254,7 +228,7 @@ AUDIT_CHAT_JOB_TTL_SECS = int(os.environ.get('DISCOVERY_AGENT_AUDIT_CHAT_JOB_TTL
 _MEMORY_REPORT_LOCK = threading.Lock()
 
 # Session eviction: tracks the last time each session was touched so idle
-# sessions can be purged from GENERATORS without waiting for a logout event.
+# sessions can be purged from GENERATORS without explicit teardown.
 _GENERATOR_LAST_USED: dict[str, float] = {}
 _GENERATOR_LAST_USED_LOCK = threading.Lock()
 SESSION_EVICT_IDLE_SECS = int(os.environ.get('DISCOVERY_AGENT_SESSION_EVICT_SECS', '3600'))  # 1 hour
@@ -314,7 +288,6 @@ CLI_CODE_CHAT_MODEL = None
 CLI_LEGACY_HYP_GEN = False
 CLI_NUM_HYPOTHESES = None
 CLI_CODE_DIR = None
-CLI_PROJECT_KEY_HASHES = set()
 CLI_INCLUDE_BACKGROUND_LITERATURE = False
 CLI_GENERATE_PLAN = False
 CLI_AUTO_INITIALIZE = False
@@ -339,53 +312,10 @@ APP_MODE_SELECTION = 'selection'
 APP_MODE_AUDIT = 'audit'
 APP_MODE_AUDIT_ONLY = 'audit_only'
 ALLOWED_FIGURE_EXTENSIONS = frozenset({'.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp'})
-AUTO_CLEANUP_ENABLED = os.environ.get('DISCOVERY_AGENT_AUTO_CLEANUP', '1') != '0'
-DISABLE_S3_SYNC = os.environ.get('DISCOVERY_AGENT_DISABLE_S3_SYNC', '0') == '1'
-ADMIN_EMAIL = os.environ.get('ADMIN_EMAIL')
-NTFY_URL = os.environ.get('NTFY_URL')
-NTFY_TOPIC = os.environ.get('NTFY_TOPIC')
-NTFY_SERVER = os.environ.get('NTFY_SERVER', 'https://ntfy.sh')
-NTFY_TOKEN = os.environ.get('NTFY_TOKEN')
-NTFY_TITLE = os.environ.get('NTFY_TITLE', 'Discovery Agent')
-NTFY_PRIORITY = os.environ.get('NTFY_PRIORITY')
-NTFY_MAX_LEN = int(os.environ.get('NTFY_MAX_LEN', '4000'))
 ADMIN_TOKEN = os.environ.get('DISCOVERY_AGENT_ADMIN_TOKEN')
-CLIENT_EVENT_RATE_LIMIT = max(10, int(os.environ.get('DISCOVERY_AGENT_CLIENT_EVENT_RATE_LIMIT', '120')))
-CLIENT_EVENT_RATE_WINDOW_S = max(5, int(os.environ.get('DISCOVERY_AGENT_CLIENT_EVENT_RATE_WINDOW_S', '60')))
-CLIENT_EVENT_MAX_BYTES = max(1024, int(os.environ.get('DISCOVERY_AGENT_CLIENT_EVENT_MAX_BYTES', '12000')))
-ALLOWED_CLIENT_EVENT_TYPES = {
-    'page_view',
-    'ui_click',
-    'form_submit',
-    'client_error',
-    'visibility_change',
-    'page_unload',
-}
-CLIENT_EVENT_RATE_STATE: dict[str, deque[float]] = {}
-CLIENT_EVENT_RATE_LOCK = threading.Lock()
 
 INTERACTION_LOG_OVERRIDE_ENV = 'DISCOVERY_AGENT_INTERACTION_LOG_DIR'
-# Read-only compatibility source for the optional pre-V1 migration. Production
-# writes never target this file; migration destinations remain project-local.
-LEGACY_INTERACTION_LOG_PATH = get_legacy_interaction_log_path()
 
-_auth_dir = get_legacy_auth_root()
-_default_registration_log = _auth_dir / 'registrations.jsonl'
-REGISTRATION_LOG_PATH = Path(os.environ.get('DISCOVERY_AGENT_REGISTRATION_LOG', _default_registration_log))
-REGISTRATION_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-PROJECT_KEY_HASH_FILE = _auth_dir / 'project_key.hash'
-PROJECT_KEY_HASHES = set()
-PLAINTEXT_PROJECT_KEYS = set()
-PROJECT_KEY_REGISTRY_FILE = _auth_dir / 'project_keys.json'
-PROJECT_KEY_REGISTRY = {}
-PROJECT_KEY_CACHE = {'hash_mtime': None, 'registry_mtime': None, 'last_db_refresh': None}
-PROJECT_KEY_LOCK = threading.Lock()
-PROJECT_PROGRESS_FILE = _auth_dir / 'project_progress.json'
-PROJECT_PROGRESS = {}
-
-S3_SYNC_STATUS = {}
-S3_SYNC_LOCK = threading.Lock()
-REGISTRATION_CACHE = {'mtime': None, 'usernames': set()}
 IMAGE_PATTERN = re.compile(r'!\[([^\]]*)\]\(([^)\s]+)(\s+"[^"]*")?\)')
 IMG_SRC_PATTERN = re.compile(r'(<img\b[^>]*?\bsrc=)(["\'])(.+?)\2', re.IGNORECASE)
 SCHEME_PATTERN = re.compile(r'^[a-zA-Z][a-zA-Z0-9+.-]*:')
@@ -421,83 +351,21 @@ def _parse_utc_iso(raw: str | None) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
-def _sync_completion_marker_path(checkpoint_s3_prefix: str) -> Path:
-    return _disk_root_for_prefix(checkpoint_s3_prefix) / '.s3sync_complete.json'
 
 
-def _write_sync_marker(checkpoint_s3_prefix: str, state: str, error: str | None = None) -> None:
-    if not checkpoint_s3_prefix:
-        return
-    marker_path = _sync_completion_marker_path(checkpoint_s3_prefix)
-    marker_path.parent.mkdir(parents=True, exist_ok=True)
-    now = _utcnow_iso()
-    payload = {
-        'state': state,
-        'updated_at': now,
-        'error': error,
-    }
-    if state == 'success':
-        payload['finished_at'] = now
-    tmp_path = marker_path.with_suffix('.tmp')
-    tmp_path.write_text(json.dumps(payload), encoding='utf-8')
-    tmp_path.replace(marker_path)
 
 
-def _read_sync_marker(checkpoint_s3_prefix: str | None) -> dict:
-    if not checkpoint_s3_prefix:
-        return {}
-    marker_path = _sync_completion_marker_path(checkpoint_s3_prefix)
-    try:
-        payload = json.loads(marker_path.read_text(encoding='utf-8'))
-    except Exception:
-        return {}
-    return payload if isinstance(payload, dict) else {}
 
 
-def _sync_completion_seen_after(checkpoint_s3_prefix: str | None, requested_at: str | None) -> bool:
-    if not checkpoint_s3_prefix or not requested_at:
-        return False
-    requested_dt = _parse_utc_iso(requested_at)
-    if requested_dt is None:
-        return False
-    payload = _read_sync_marker(checkpoint_s3_prefix)
-    finished_dt = _parse_utc_iso(payload.get('finished_at'))
-    if finished_dt is None:
-        return False
-    return finished_dt >= requested_dt
 
 
-def _checkpoint_has_config(path: Path | None) -> bool:
-    if not path:
-        return False
-    try:
-        if not path.exists() or not path.is_dir():
-            return False
-        resolved = _latest_round_checkpoint_dir(path)
-        return resolved.is_dir() and (resolved / 'config.json').is_file()
-    except Exception:
-        return False
 
 
-def _project_assets_ready(project_cfg: dict) -> bool:
-    checkpoint_dir = project_cfg.get('checkpoint_dir')
-    code_dir = project_cfg.get('code_dir')
-    checkpoint_ready = _checkpoint_has_config(Path(checkpoint_dir)) if checkpoint_dir else False
-    code_ready = _dir_has_files(Path(code_dir)) if code_dir else False
-    return checkpoint_ready and code_ready
 
 
 def _get_disk_path() -> Path:
-    disk_path = os.environ.get('DISK_PATH')
-    if not disk_path and load_dotenv:
-        try:
-            load_dotenv()
-        except Exception:
-            pass
-        disk_path = os.environ.get('DISK_PATH')
-    if disk_path:
-        return Path(disk_path).expanduser().resolve()
-    return get_legacy_disk_root()
+    """Compatibility name for artifact paths beneath the one configured root."""
+    return get_data_root()
 
 
 def _normalize_project_prefix(checkpoint_s3_prefix: str) -> str:
@@ -524,44 +392,8 @@ def _checkpoint_sync_root(checkpoint_s3_prefix: str) -> Path:
     return _disk_root_for_prefix(checkpoint_s3_prefix) / "checkpoint"
 
 
-def _checkpoint_prefix_from_raw(raw_prefix: str | None) -> tuple[str | None, str | None]:
-    """
-    Normalize a user/project prefix into a checkpoint-only S3 prefix.
-
-    Accepts raw prefixes like:
-    - s3://bucket/project
-    - s3://bucket/project/checkpoint
-    - project
-    - project/checkpoint
-    and returns (bucket, "<project>/checkpoint/").
-    """
-    bucket, prefix = _parse_s3_prefix(raw_prefix)
-    if not prefix:
-        return bucket, prefix
-    prefix = prefix.rstrip("/")
-    for suffix in ("/checkpoint", "/code"):
-        if prefix.endswith(suffix):
-            prefix = prefix[: -len(suffix)]
-            break
-    prefix = f"{prefix}/checkpoint/"
-    return bucket, prefix
 
 
-def _cleanup_disk_cache(checkpoint_s3_prefix: str) -> tuple[bool, str | None]:
-    if not AUTO_CLEANUP_ENABLED:
-        return False, "disabled"
-    if not checkpoint_s3_prefix:
-        return False, "missing_prefix"
-    disk_root = _get_disk_path().resolve()
-    target_root = _disk_root_for_prefix(checkpoint_s3_prefix).resolve()
-    try:
-        target_root.relative_to(disk_root)
-    except ValueError:
-        return False, "unsafe_path"
-    if not target_root.exists():
-        return False, "missing_path"
-    shutil.rmtree(target_root)
-    return True, None
 
 
 def _latest_round_checkpoint_dir(checkpoint_root: Path) -> Path:
@@ -1355,7 +1187,7 @@ def _mtime_fallback(qd: Path) -> str | None:
 
 
 # --- query_status.json: structured per-query progress instrumentation ----
-# The backend now writes checkpoints/round_N/query_NNN/query_status.json during 
+# The backend now writes checkpoints/round_N/query_NNN/query_status.json during
 # a run. When present, this is the primary source of truth for that query's progress
 
 _QUERY_STATUS_FALLBACK_TEXT = "specific objective not yet written to query status or query files."
@@ -4433,7 +4265,7 @@ def _get_latest_round_index(round_root: Path) -> int | None:
 def _get_project_round_from_disk() -> int:
     """
     Resolve the current research round from disk by scanning
-    DISK_PATH/<project>/checkpoint/checkpoints/round_N and returning max(N) + 1.
+    <data-root>/<project>/checkpoint/checkpoints/round_N and returning max(N) + 1.
     """
     project_cfg = session.get('project_config') or {}
     checkpoint_prefix = session.get('checkpoint_s3_prefix') or project_cfg.get('checkpoint_s3_prefix')
@@ -4524,338 +4356,20 @@ def _derive_project_config(
     }
 
 
-def _split_values(raw_value):
-    if not raw_value:
-        return []
-    if isinstance(raw_value, (list, tuple, set)):
-        iterator = raw_value
-    else:
-        iterator = str(raw_value).replace('\n', ',').split(',')
-    return [item.strip() for item in iterator if isinstance(item, str) and item.strip()]
 
 
-def add_project_key_hashes(values):
-    for digest in _split_values(values):
-        PROJECT_KEY_HASHES.add(digest.lower())
 
 
-def _reseed_project_key_hashes() -> None:
-    PROJECT_KEY_HASHES.clear()
-    add_project_key_hashes(os.environ.get('DISCOVERY_AGENT_PROJECT_KEY_HASH'))
-    for digest in CLI_PROJECT_KEY_HASHES:
-        PROJECT_KEY_HASHES.add(digest)
 
 
-def add_plaintext_project_keys(values):
-    for value in _split_values(values):
-        PLAINTEXT_PROJECT_KEYS.add(value)
 
 
-def load_project_key_registry():
-    """Load project key registry with per-key config from JSON."""
-    if DB_AVAILABLE:
-        try:
-            with db_session_scope() as db:
-                entries = (
-                    db.query(ProjectKey)
-                    .filter(ProjectKey.revoked_at.is_(None))
-                    .all()
-                )
-        except Exception as exc:
-            print(f"⚠️  Failed to load project key registry from DB: {exc}")
-            return
-
-        for entry in entries:
-            digest = str(entry.hash or '').strip().lower()
-            if not digest:
-                continue
-            cfg = dict(entry.config or {})
-            audit_flag = cfg.get('audit')
-            app_mode = cfg.get('app_mode')
-            checkpoint_s3_prefix = (
-                cfg.get('checkpoint_s3_prefix')
-                or entry.project_prefix
-            )
-            github_remote_path = cfg.get('github_remote_path')
-            readme_path = cfg.get('readme_path')
-            if checkpoint_s3_prefix:
-                derived = _derive_project_config(checkpoint_s3_prefix, github_remote_path, readme_path=readme_path)
-                cfg.update(derived)
-            if audit_flag is not None:
-                cfg['audit'] = bool(audit_flag)
-            if app_mode:
-                cfg['app_mode'] = app_mode
-            PROJECT_KEY_REGISTRY[digest] = {
-                'hash': digest,
-                'label': entry.label,
-                'checkpoint_s3_prefix': checkpoint_s3_prefix,
-                'config': cfg,
-            }
-            PROJECT_KEY_HASHES.add(digest)
-        return
-
-    if not PROJECT_KEY_REGISTRY_FILE.exists():
-        return
-    try:
-        with PROJECT_KEY_REGISTRY_FILE.open('r', encoding='utf-8') as handle:
-            raw_data = json.load(handle)
-    except Exception as exc:
-        print(f"⚠️  Failed to load project key registry {PROJECT_KEY_REGISTRY_FILE}: {exc}")
-        return
-
-    entries = []
-    if isinstance(raw_data, dict):
-        entries = raw_data.get('keys') or []
-    elif isinstance(raw_data, list):
-        entries = raw_data
-
-    if not isinstance(entries, list):
-        print(f"⚠️  Invalid registry format in {PROJECT_KEY_REGISTRY_FILE}")
-        return
-
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        digest = str(entry.get('hash', '')).strip().lower()
-        if not digest:
-            continue
-        cfg = dict(entry.get('config', {}) or {})
-        if entry.get('research_paper_path') and not cfg.get('research_paper_path'):
-            cfg['research_paper_path'] = entry.get('research_paper_path')
-        audit_flag = cfg.get('audit')
-        app_mode = cfg.get('app_mode')
-        checkpoint_s3_prefix = (
-            entry.get('checkpoint_s3_prefix')
-            or entry.get('project_prefix')
-            or cfg.get('checkpoint_s3_prefix')
-            or cfg.get('project_prefix')
-        )
-        if checkpoint_s3_prefix:
-            github_remote_path = (
-                entry.get('github_remote_path')
-                or cfg.get('github_remote_path')
-            )
-            readme_path = entry.get('readme_path') or cfg.get('readme_path')
-            derived = _derive_project_config(checkpoint_s3_prefix, github_remote_path, readme_path=readme_path)
-            cfg.update(derived)
-            if audit_flag is not None:
-                cfg['audit'] = bool(audit_flag)
-            if app_mode:
-                cfg['app_mode'] = app_mode
-        elif not cfg and any(
-            entry.get(k)
-            for k in ('checkpoint_dir', 'code_dir', 'readme_path', 'data_path')
-        ):
-            cfg = {
-                'checkpoint_dir': entry.get('checkpoint_dir'),
-                'code_dir': entry.get('code_dir'),
-                'readme_path': entry.get('readme_path'),
-                'data_path': entry.get('data_path'),
-            }
-        PROJECT_KEY_REGISTRY[digest] = {
-            'hash': digest,
-            'label': entry.get('label'),
-            'checkpoint_s3_prefix': checkpoint_s3_prefix,
-            'config': cfg,
-        }
-        PROJECT_KEY_HASHES.add(digest)
 
 
-def load_saved_project_key_hashes():
-    if DB_AVAILABLE:
-        return
-    try:
-        if not PROJECT_KEY_HASH_FILE.exists():
-            return
-        with PROJECT_KEY_HASH_FILE.open('r', encoding='utf-8') as handle:
-            for line in handle:
-                digest = line.strip()
-                if digest:
-                    PROJECT_KEY_HASHES.add(digest.lower())
-    except OSError:
-        pass
 
 
-def _project_key_file_mtime(path: Path) -> float | None:
-    try:
-        return path.stat().st_mtime
-    except OSError:
-        return None
 
 
-def _refresh_project_keys_if_needed(force: bool = False) -> None:
-    with PROJECT_KEY_LOCK:
-        if DB_AVAILABLE:
-            now = datetime.utcnow()
-            last_refresh = PROJECT_KEY_CACHE.get('last_db_refresh')
-            if not force and last_refresh and (now - last_refresh).total_seconds() < 5:
-                return
-            _reseed_project_key_hashes()
-            PROJECT_KEY_REGISTRY.clear()
-            load_project_key_registry()
-            load_saved_project_key_hashes()
-            PROJECT_KEY_CACHE['last_db_refresh'] = now
-            return
-
-        registry_mtime = _project_key_file_mtime(PROJECT_KEY_REGISTRY_FILE)
-        hash_mtime = _project_key_file_mtime(PROJECT_KEY_HASH_FILE)
-        cache_registry = PROJECT_KEY_CACHE.get('registry_mtime')
-        cache_hash = PROJECT_KEY_CACHE.get('hash_mtime')
-
-        if not force and registry_mtime == cache_registry and hash_mtime == cache_hash:
-            return
-
-        _reseed_project_key_hashes()
-        PROJECT_KEY_REGISTRY.clear()
-        load_saved_project_key_hashes()
-        load_project_key_registry()
-        PROJECT_KEY_CACHE['registry_mtime'] = registry_mtime
-        PROJECT_KEY_CACHE['hash_mtime'] = hash_mtime
-
-
-add_project_key_hashes(os.environ.get('DISCOVERY_AGENT_PROJECT_KEY_HASH'))
-add_plaintext_project_keys(os.environ.get('DISCOVERY_AGENT_PROJECT_KEY'))
-load_saved_project_key_hashes()
-load_project_key_registry()
-_refresh_project_keys_if_needed(force=True)
-
-
-def load_project_progress():
-    """Load per-project submission counters from disk."""
-    global PROJECT_PROGRESS
-    if DB_AVAILABLE:
-        PROJECT_PROGRESS = {}
-        return
-    if not PROJECT_PROGRESS_FILE.exists():
-        PROJECT_PROGRESS = {}
-        return
-    try:
-        with PROJECT_PROGRESS_FILE.open('r', encoding='utf-8') as handle:
-            data = json.load(handle)
-            PROJECT_PROGRESS = data if isinstance(data, dict) else {}
-    except Exception as exc:
-        print(f"⚠️  Failed to load project progress {PROJECT_PROGRESS_FILE}: {exc}")
-        PROJECT_PROGRESS = {}
-
-
-def _save_project_progress():
-    """Persist the submission counters to disk with an atomic replace."""
-    if DB_AVAILABLE:
-        return
-    try:
-        PROJECT_PROGRESS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = PROJECT_PROGRESS_FILE.with_suffix('.tmp')
-        tmp_path.write_text(json.dumps(PROJECT_PROGRESS, indent=2), encoding='utf-8')
-        tmp_path.replace(PROJECT_PROGRESS_FILE)
-    except Exception as exc:
-        print(f"⚠️  Failed to save project progress to {PROJECT_PROGRESS_FILE}: {exc}")
-
-
-def get_project_progress(digest: str | None) -> dict:
-    """Return submission stats for a project key digest (defaults to zeros)."""
-    if not digest:
-        return {'submission_count': 0}
-    digest = str(digest).strip().lower()
-    if DB_AVAILABLE:
-        try:
-            with db_session_scope() as db:
-                entry = db.get(ProjectProgress, digest)
-                if not entry:
-                    return {'submission_count': 0}
-                return {
-                    'submission_count': entry.submission_count or 0,
-                    'last_submitted_at': entry.last_submitted_at.isoformat() + 'Z'
-                    if entry.last_submitted_at else None,
-                    'last_submitted_by': entry.last_submitted_by,
-                    'label': entry.label,
-                }
-        except Exception as exc:
-            print(f"⚠️  Failed to fetch project progress from DB: {exc}")
-            return {'submission_count': 0}
-    entry = PROJECT_PROGRESS.get(digest) if isinstance(PROJECT_PROGRESS, dict) else {}
-    if not isinstance(entry, dict):
-        entry = {}
-    count = entry.get('submission_count', 0)
-    if not isinstance(count, int) or count < 0:
-        count = 0
-    return {
-        'submission_count': count,
-        'last_submitted_at': entry.get('last_submitted_at'),
-        'last_submitted_by': entry.get('last_submitted_by'),
-        'label': entry.get('label'),
-    }
-
-
-def get_total_completed_rounds() -> int:
-    """Return total completed rounds across all projects."""
-    if DB_AVAILABLE:
-        try:
-            with db_session_scope() as db:
-                total = db.query(func.sum(ProjectProgress.submission_count)).scalar()
-            return int(total or 0)
-        except Exception as exc:
-            print(f"⚠️  Failed to fetch total rounds from DB: {exc}")
-            return 0
-    if not isinstance(PROJECT_PROGRESS, dict):
-        return 0
-    total = 0
-    for entry in PROJECT_PROGRESS.values():
-        if not isinstance(entry, dict):
-            continue
-        count = entry.get('submission_count', 0)
-        if isinstance(count, int) and count > 0:
-            total += count
-    return total
-
-
-def increment_project_submission(digest: str | None, username: str | None = None, label: str | None = None) -> dict:
-    """Increment and persist the submission counter for the given project digest."""
-    if not digest:
-        return {'submission_count': 0}
-    digest = str(digest).strip().lower()
-    if DB_AVAILABLE:
-        try:
-            with db_session_scope() as db:
-                entry = db.get(ProjectProgress, digest)
-                if not entry:
-                    entry = ProjectProgress(project_key_hash=digest, submission_count=0)
-                    db.add(entry)
-                entry.submission_count = (entry.submission_count or 0) + 1
-                entry.last_submitted_at = datetime.utcnow()
-                if username:
-                    entry.last_submitted_by = username
-                if label and not entry.label:
-                    entry.label = label
-                return {
-                    'submission_count': entry.submission_count,
-                    'last_submitted_at': entry.last_submitted_at.isoformat() + 'Z'
-                    if entry.last_submitted_at else None,
-                    'last_submitted_by': entry.last_submitted_by,
-                    'label': entry.label,
-                }
-        except Exception as exc:
-            print(f"⚠️  Failed to update project progress in DB: {exc}")
-            return {'submission_count': 0}
-    entry = get_project_progress(digest)
-    submission_count = entry.get('submission_count', 0) + 1
-    entry['submission_count'] = submission_count
-    entry['last_submitted_at'] = datetime.utcnow().isoformat() + 'Z'
-    if username:
-        entry['last_submitted_by'] = username
-    if label and not entry.get('label'):
-        entry['label'] = label
-    PROJECT_PROGRESS[digest] = entry
-    _save_project_progress()
-    return entry
-
-
-load_project_progress()
-
-
-def is_project_key_configured() -> bool:
-    """Return True when the server has at least one configured project key."""
-    _refresh_project_keys_if_needed()
-    return bool(PROJECT_KEY_HASHES or PLAINTEXT_PROJECT_KEYS or PROJECT_KEY_REGISTRY)
 
 
 def sanitize_field(value: str, max_length: int = 256) -> str:
@@ -4868,156 +4382,18 @@ def sanitize_field(value: str, max_length: int = 256) -> str:
     return value
 
 
-def _sanitize_event_payload(payload, *, max_depth: int = 3, max_items: int = 50, max_str: int = 500):
-    if max_depth <= 0:
-        return {}
-    if isinstance(payload, dict):
-        sanitized = {}
-        for idx, (key, value) in enumerate(payload.items()):
-            if idx >= max_items:
-                break
-            safe_key = sanitize_field(str(key), 80)
-            sanitized[safe_key] = _sanitize_event_payload(
-                value,
-                max_depth=max_depth - 1,
-                max_items=max_items,
-                max_str=max_str
-            )
-        return sanitized
-    if isinstance(payload, (list, tuple)):
-        return [
-            _sanitize_event_payload(item, max_depth=max_depth - 1, max_items=max_items, max_str=max_str)
-            for item in list(payload)[:max_items]
-        ]
-    if isinstance(payload, str):
-        return sanitize_field(payload, max_str)
-    if isinstance(payload, (int, float, bool)) or payload is None:
-        return payload
-    return sanitize_field(str(payload), max_str)
 
 
-def _client_event_identity() -> str:
-    """Build a stable rate-limit key for client telemetry events."""
-    session_id = session.get('session_id')
-    if session_id:
-        return f"session:{session_id}"
-    ip = (request.headers.get('X-Forwarded-For', request.remote_addr) or 'unknown').split(',')[0].strip()
-    ua = sanitize_field(request.headers.get('User-Agent', ''), 120)
-    return f"anon:{ip}:{ua}"
 
 
-def _client_event_rate_limited(identity: str) -> bool:
-    """Sliding-window limiter for /api/log_event."""
-    now = perf_counter()
-    window_start = now - CLIENT_EVENT_RATE_WINDOW_S
-    with CLIENT_EVENT_RATE_LOCK:
-        bucket = CLIENT_EVENT_RATE_STATE.get(identity)
-        if bucket is None:
-            bucket = deque()
-            CLIENT_EVENT_RATE_STATE[identity] = bucket
-        while bucket and bucket[0] < window_start:
-            bucket.popleft()
-        if len(bucket) >= CLIENT_EVENT_RATE_LIMIT:
-            return True
-        bucket.append(now)
-        return False
 
 
-def verify_project_key(candidate: str) -> str | None:
-    """Compare a provided project key against configured secrets; return matching digest or None."""
-    _refresh_project_keys_if_needed()
-    if not candidate:
-        return None
-    candidate = candidate.strip()
-    if not candidate:
-        return None
-
-    # Plaintext dev keys
-    for plain_key in PLAINTEXT_PROJECT_KEYS:
-        if hmac.compare_digest(candidate, plain_key):
-            return hashlib.sha256(candidate.encode('utf-8')).hexdigest().lower()
-
-    # Hashed keys (registry or flat hash file)
-    digest = hashlib.sha256(candidate.encode('utf-8')).hexdigest().lower()
-    with PROJECT_KEY_LOCK:
-        for stored_hash in PROJECT_KEY_HASHES:
-            if hmac.compare_digest(digest, stored_hash):
-                return digest
-    return None
 
 
-def record_registration_submission(entry: dict) -> None:
-    """Append sanitized registration submissions to disk."""
-    if DB_AVAILABLE:
-        with db_session_scope() as db:
-            db.add(RegistrationSubmission(
-                name=entry.get('name', ''),
-                affiliation=entry.get('affiliation', ''),
-                email=entry.get('email', ''),
-                username=entry.get('username', ''),
-            ))
-        return
-    payload = entry.copy()
-    payload['submitted_at'] = datetime.utcnow().isoformat() + 'Z'
-    with REGISTRATION_LOG_PATH.open('a', encoding='utf-8') as handle:
-        handle.write(json.dumps(payload))
-        handle.write('\n')
 
 
-def _load_registration_usernames() -> set[str]:
-    if not REGISTRATION_LOG_PATH.exists():
-        return set()
-    try:
-        mtime = REGISTRATION_LOG_PATH.stat().st_mtime
-    except OSError:
-        return set()
-    cached_mtime = REGISTRATION_CACHE.get('mtime')
-    if cached_mtime == mtime:
-        return REGISTRATION_CACHE.get('usernames', set())
-    usernames = set()
-    try:
-        with REGISTRATION_LOG_PATH.open('r', encoding='utf-8') as handle:
-            for line in handle:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(entry, dict):
-                    username = entry.get('username', '')
-                    if username:
-                        usernames.add(username.strip().lower())
-    except OSError:
-        return set()
-    REGISTRATION_CACHE['mtime'] = mtime
-    REGISTRATION_CACHE['usernames'] = usernames
-    return usernames
 
 
-def is_username_registered(username: str) -> tuple[bool, str | None]:
-    """Return (registered, error) for the provided username."""
-    normalized = (username or '').strip().lower()
-    if not normalized:
-        return False, None
-    if DB_AVAILABLE:
-        try:
-            with db_session_scope() as db:
-                exists = (
-                    db.query(RegistrationSubmission)
-                    .filter(func.lower(RegistrationSubmission.username) == normalized)
-                    .first()
-                )
-            return exists is not None, None
-        except Exception as exc:
-            print(f"⚠️  Failed to check registration status: {exc}")
-            return False, "Registration lookup failed"
-    try:
-        return normalized in _load_registration_usernames(), None
-    except Exception as exc:
-        print(f"⚠️  Failed to check registration log: {exc}")
-        return False, "Registration lookup failed"
 
 
 _interaction_log_lock = threading.Lock()
@@ -5049,12 +4425,12 @@ def _managed_interaction_project(project_id: str | None = None) -> dict | None:
     if not candidate or Path(candidate).name != candidate:
         return None
     try:
-        _projects, record, _registry, managed = _v2_locate_project(candidate)
+        _projects, record, _registry, _managed = _v2_locate_project(candidate)
     except Exception:
         return None
     if not isinstance(record, dict):
         return None
-    availability = _v2_project_availability(record, managed=managed)
+    availability = _v2_project_availability(record)
     if not availability.get('available'):
         return None
     validated = dict(record)
@@ -5101,7 +4477,10 @@ def _project_interaction_log_path(project_id: str | None = None) -> Path | None:
     resolved_id = str(record.get('id') or '').strip()
     if not resolved_id:
         return None
-    root = Path(record.get('project_root') or get_project_root(resolved_id)).expanduser()
+    raw_root = record.get('project_root')
+    if not raw_root:
+        return None
+    root = Path(raw_root).expanduser()
     return project_interaction_log_path(
         root,
         project_id=resolved_id,
@@ -5117,7 +4496,10 @@ def _project_conversation_state_path(project_id: str | None = None) -> Path | No
     resolved_id = str(record.get('id') or '').strip()
     if not resolved_id:
         return None
-    root = Path(record.get('project_root') or get_project_root(resolved_id)).expanduser()
+    raw_root = record.get('project_root')
+    if not raw_root:
+        return None
+    root = Path(raw_root).expanduser()
     return project_conversation_state_path(
         root,
         project_id=resolved_id,
@@ -5204,9 +4586,7 @@ def _write_interaction_log(event_type: str, payload: dict) -> Path | None:
         try:
             ctx = {
                 'session_id': session.get('session_id'),
-                'username': session.get('username'),
                 'project_label': session.get('project_label'),
-                'project_key_hash': session.get('project_key_digest'),
                 'app_mode': session.get('app_mode'),
                 'project_id': project_id,
                 'project_slug': record_project.get('url_slug'),
@@ -5233,271 +4613,26 @@ def _write_interaction_log(event_type: str, payload: dict) -> Path | None:
         return None
 
 
-def log_event(event_type: str, payload: dict | None = None) -> None:
-    if not DB_AVAILABLE:
-        return
-    try:
-        event_type = sanitize_field(event_type, 80)
-        if not event_type:
-            return
-        session_id = session.get('session_id')
-        if not session_id:
-            session_id = os.urandom(16).hex()
-            session['session_id'] = session_id
-        safe_payload = _sanitize_event_payload(payload or {})
-        with db_session_scope() as db:
-            db.add(EventLog(
-                project_key_hash=session.get('project_key_digest'),
-                username=session.get('username'),
-                session_id=session_id,
-                event_type=event_type,
-                payload=safe_payload,
-            ))
-    except Exception as exc:
-        print(f"⚠️  Failed to log event {event_type}: {exc}")
 
 
-def _get_telemetry_bucket() -> str | None:
-    return (
-        os.environ.get('DISCOVERY_AGENT_TELEMETRY_BUCKET')
-        or os.environ.get('DISCOVERY_AGENT_LOG_BUCKET')
-        or os.environ.get('S3_BUCKET_NAME')
-        or os.environ.get('DISCOVERY_AGENT_S3_BUCKET')
-        or 'agentic-science'
-    )
 
 
-def _build_telemetry_s3_key(
-    *,
-    project_id: str,
-    session_id: str,
-    date_prefix: str,
-    event_id: str,
-    timestamp: str,
-) -> str:
-    base_prefix = os.environ.get('DISCOVERY_AGENT_TELEMETRY_PREFIX', 'telemetry').strip('/')
-    safe_project = _sanitize_s3_component(project_id, 'unknown')
-    safe_session = _sanitize_s3_component(session_id, 'unknown')
-    return (
-        f"{base_prefix}/session_logs/{safe_project}/session_{safe_session}/"
-        f"{date_prefix}/event_{timestamp}_{event_id}.json"
-    )
 
 
-def _build_telemetry_context() -> dict:
-    project_key_hash = session.get('project_key_digest')
-    project_label = session.get('project_label')
-    checkpoint_prefix = session.get('checkpoint_s3_prefix')
-    return {
-        'session_id': session.get('session_id'),
-        'username': session.get('username'),
-        'project_key_hash': project_key_hash,
-        'project_label': project_label,
-        'checkpoint_s3_prefix': checkpoint_prefix,
-        'project_submission_count': session.get('project_submission_count'),
-        'project_round': _get_project_round_from_disk(),
-    }
 
 
-def log_full_event_to_s3(
-    event_type: str,
-    payload: dict,
-    *,
-    hypothesis_index: int | None = None,
-    source: str | None = None,
-) -> str | None:
-    """Compatibility no-op: the local release never exports telemetry."""
-    return None
-    if boto3 is None:
-        return None
-    bucket = _get_telemetry_bucket()
-    if not bucket:
-        return None
-    try:
-        credentials = boto3.Session().get_credentials()
-    except Exception:
-        credentials = None
-    if credentials is None:
-        if os.environ.get('DISCOVERY_AGENT_WARN_MISSING_AWS_CREDENTIALS', '0') == '1':
-            print(f"⚠️  Skipping telemetry event {event_type}: AWS credentials not configured")
-        return None
-    session_id = session.get('session_id')
-    if not session_id:
-        session_id = os.urandom(16).hex()
-        session['session_id'] = session_id
-    event_id = uuid.uuid4().hex
-    now = datetime.utcnow().replace(tzinfo=timezone.utc)
-    timestamp = now.strftime('%Y%m%dT%H%M%SZ')
-    date_prefix = now.strftime('%Y%m%d')
-    context = _build_telemetry_context()
-    project_id = context.get('project_key_hash') or context.get('project_label') or 'unknown'
-    key = _build_telemetry_s3_key(
-        project_id=project_id,
-        session_id=session_id,
-        date_prefix=date_prefix,
-        event_id=event_id,
-        timestamp=timestamp,
-    )
-    event = {
-        'event_id': event_id,
-        'timestamp': now.isoformat().replace('+00:00', 'Z'),
-        'event_type': event_type,
-        **context,
-        'hypothesis_index': hypothesis_index,
-        'source': source,
-        'payload': payload,
-    }
-    try:
-        body = json.dumps(event, ensure_ascii=True, default=str)
-        client = boto3.client('s3')
-        client.put_object(Bucket=bucket, Key=key, Body=body.encode('utf-8'), ContentType='application/json')
-        s3_uri = f"s3://{bucket}/{key}"
-        log_event('telemetry_event', {
-            'event_type': event_type,
-            's3_uri': s3_uri,
-            'hypothesis_index': hypothesis_index,
-            'project_round': context.get('project_round'),
-        })
-        return s3_uri
-    except Exception as exc:
-        print(f"⚠️  Failed to upload telemetry event {event_type}: {exc}")
-        return None
 
 
-def _parse_s3_prefix(raw_prefix: str | None) -> tuple[str | None, str | None]:
-    if not raw_prefix:
-        return None, None
-    raw_prefix = raw_prefix.strip()
-    if raw_prefix.startswith('s3://'):
-        raw_prefix = raw_prefix[len('s3://'):]
-        if '/' in raw_prefix:
-            bucket, prefix = raw_prefix.split('/', 1)
-        else:
-            bucket, prefix = raw_prefix, ''
-    else:
-        bucket = None
-        prefix = raw_prefix
-    if prefix and not prefix.endswith('/'):
-        prefix += '/'
-    if not bucket:
-        bucket = (
-            os.environ.get('DISCOVERY_AGENT_S3_BUCKET')
-            or os.environ.get('S3_BUCKET_NAME')
-            or os.environ.get('S3_BUCKET')
-        )
-    return bucket, prefix
 
 
-def _sanitize_s3_component(value: str, fallback: str) -> str:
-    cleaned = re.sub(r'[^a-zA-Z0-9._-]+', '-', (value or '').strip().lower())
-    cleaned = cleaned.strip('-._')
-    return cleaned or fallback
 
 
-def _resolve_ntfy_url() -> str | None:
-    raw = (NTFY_URL or NTFY_TOPIC or '').strip()
-    if not raw:
-        return None
-    if raw.startswith('http://') or raw.startswith('https://'):
-        return raw
-    server = (NTFY_SERVER or 'https://ntfy.sh').strip().rstrip('/')
-    topic = raw.lstrip('/')
-    return f"{server}/{topic}"
 
 
-def _truncate_ntfy_body(message: str) -> str:
-    if not message:
-        return message
-    if len(message) <= NTFY_MAX_LEN:
-        return message
-    return message[:NTFY_MAX_LEN - 1].rstrip() + "…"
 
 
-def send_admin_selection_email(
-    *,
-    username: str | None,
-    project_prefix: str,
-    hypothesis_text: str,
-) -> dict:
-    return send_admin_selection_notification(
-        username=username,
-        project_prefix=project_prefix,
-        hypothesis_text=hypothesis_text,
-        s3_uri=None,
-        round_num=None,
-    )
 
 
-def send_admin_selection_notification(
-    *,
-    username: str | None,
-    project_prefix: str,
-    hypothesis_text: str,
-    s3_uri: str | None,
-    round_num: int | None,
-) -> dict:
-    ntfy_url = _resolve_ntfy_url()
-    if not ntfy_url:
-        log_event('admin_notify_skipped', {
-            'reason': 'missing_ntfy_configuration',
-            'has_ntfy_url': bool(NTFY_URL),
-            'has_ntfy_topic': bool(NTFY_TOPIC),
-        })
-        print("⚠️  Admin notification skipped: missing NTFY configuration.")
-        return {
-            'status': 'skipped',
-            'reason': 'missing_ntfy_configuration',
-            'target': None,
-        }
-
-    safe_username = username or 'Unknown user'
-    safe_project = project_prefix or 'unknown'
-    header_lines = [
-        f"User {safe_username} has completed their selection for {safe_project}.",
-    ]
-    if round_num is not None:
-        header_lines.append(f"Project round: {round_num}.")
-    if s3_uri:
-        header_lines.append(f"Selected hypothesis S3 URI: {s3_uri}")
-    else:
-        header_lines.append("Selected hypothesis S3 URI: (not available)")
-    body = _truncate_ntfy_body(
-        "\n".join(header_lines)
-        + "\n\nHere is their submitted hypothesis:\n\n"
-        + f"{hypothesis_text}\n"
-    )
-
-    try:
-        headers = {
-            'Content-Type': 'text/plain; charset=utf-8',
-            'Title': f"{NTFY_TITLE}: Selection completed by {safe_username}",
-        }
-        if NTFY_PRIORITY:
-            headers['Priority'] = str(NTFY_PRIORITY)
-        if NTFY_TOKEN:
-            headers['Authorization'] = f"Bearer {NTFY_TOKEN}"
-        request_obj = urllib.request.Request(
-            ntfy_url,
-            data=body.encode('utf-8'),
-            headers=headers,
-            method='POST',
-        )
-        with urllib.request.urlopen(request_obj, timeout=10) as response:
-            response.read()
-        log_event('admin_notify_sent', {'target': ntfy_url})
-        return {'status': 'sent', 'target': ntfy_url}
-    except urllib.error.HTTPError as exc:
-        error_body = exc.read().decode('utf-8', errors='ignore') if exc.fp else ''
-        error_msg = f"HTTP {exc.code}: {exc.reason}"
-        if error_body:
-            error_msg = f"{error_msg} - {error_body.strip()}"
-        print(f"⚠️  Admin notification failed: {error_msg}")
-        log_event('admin_notify_failed', {'error': error_msg})
-        return {'status': 'failed', 'target': ntfy_url, 'error': error_msg}
-    except Exception as exc:
-        print(f"⚠️  Admin notification failed: {exc}")
-        log_event('admin_notify_failed', {'error': str(exc)})
-        return {'status': 'failed', 'target': ntfy_url, 'error': str(exc)}
 
 
 def _is_relative_image_path(path: str) -> bool:
@@ -5554,361 +4689,26 @@ def _prefix_report_images_in_checkpoint(checkpoint_dir: Path, code_dir: Path) ->
     return total_changes
 
 
-def _build_session_log_s3_key(checkpoint_s3_prefix: str, round_num: int, timestamp: str) -> str:
-    return f"logs/{checkpoint_s3_prefix}/round_{round_num}_{timestamp}.json"
 
 
-def upload_session_log_to_s3(log_path: str, checkpoint_s3_prefix: str, round_num: int) -> str | None:
-    if boto3 is None:
-        return None
-    bucket = (
-        os.environ.get('S3_BUCKET_NAME')
-        or os.environ.get('DISCOVERY_AGENT_LOG_BUCKET')
-        or 'agentic-science'
-    )
-    if not bucket:
-        return None
-    path = Path(log_path)
-    if not path.exists():
-        return None
-    timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
-    safe_prefix = _sanitize_s3_component(checkpoint_s3_prefix, 'unknown')
-    key = _build_session_log_s3_key(safe_prefix, round_num, timestamp)
-    client = boto3.client('s3')
-    client.upload_file(str(path), bucket, key)
-    return f"s3://{bucket}/{key}"
 
 
-def _build_selected_hypothesis_s3_key(output_path: Path, checkpoint_s3_prefix: str) -> str:
-    disk_root = _get_disk_path()
-    try:
-        relative = output_path.resolve().relative_to(disk_root)
-        return relative.as_posix()
-    except ValueError:
-        safe_prefix = checkpoint_s3_prefix.rstrip('/')
-        return f"{safe_prefix}/checkpoint/{output_path.name}"
 
 
-def upload_selected_hypothesis_to_s3(output_path: str, checkpoint_s3_prefix: str) -> str | None:
-    if boto3 is None:
-        return None
-    bucket = os.environ.get('S3_BUCKET_NAME')
-    if not bucket:
-        return None
-    path = Path(output_path)
-    if not path.exists():
-        return None
-    if not checkpoint_s3_prefix:
-        return None
-    key = _build_selected_hypothesis_s3_key(path, checkpoint_s3_prefix)
-    client = boto3.client('s3')
-    client.upload_file(str(path), bucket, key)
-    return f"s3://{bucket}/{key}"
 
 
-def _record_sync_status(token: str, state: str, error: str | None = None) -> None:
-    payload = {
-        'state': state,
-        'error': error,
-        'updated_at': _utcnow_iso(),
-    }
-    with S3_SYNC_LOCK:
-        existing = S3_SYNC_STATUS.get(token) or {}
-        payload['started_at'] = existing.get('started_at') or payload['updated_at']
-        if state in ('success', 'error'):
-            payload['finished_at'] = payload['updated_at']
-        S3_SYNC_STATUS[token] = payload
 
 
-def _get_s3_sync_limits() -> tuple[int, int, int]:
-    def _env_int(name: str, default: int) -> int:
-        raw = os.environ.get(name)
-        if raw is None:
-            return default
-        try:
-            return int(raw)
-        except ValueError:
-            return default
-
-    max_workers = max(1, _env_int('S3_SYNC_MAX_WORKERS', 4))
-    max_in_flight = max(1, _env_int('S3_SYNC_MAX_IN_FLIGHT', max_workers * 4))
-    max_pool = max(4, _env_int('S3_SYNC_MAX_POOL_CONNECTIONS', max_workers * 4))
-    return max_workers, max_in_flight, max_pool
 
 
-def _run_checkpoint_sync(bucket: str, prefix: str, target_root: str) -> None:
-    os.makedirs(target_root, exist_ok=True)
-    max_workers, max_in_flight, max_pool = _get_s3_sync_limits()
-    client_config = Config(max_pool_connections=max_pool) if Config else None
-    client = boto3.client('s3', config=client_config) if client_config else boto3.client('s3')
-    transfer_config = TransferConfig(max_concurrency=1) if TransferConfig else None
-    paginator = client.get_paginator('list_objects_v2')
-    metadata_path = os.path.join(target_root, '.s3sync.json')
-    metadata = {}
-    try:
-        if os.path.exists(metadata_path):
-            with open(metadata_path, 'r', encoding='utf-8') as handle:
-                metadata = json.load(handle) or {}
-    except Exception:
-        metadata = {}
-    def _download_one(key: str, local_path: str, remote_mtime: datetime | None) -> str:
-        if transfer_config:
-            client.download_file(bucket, key, local_path, Config=transfer_config)
-        else:
-            client.download_file(bucket, key, local_path)
-        if remote_mtime is not None:
-            remote_ts = remote_mtime.astimezone(timezone.utc).timestamp()
-            os.utime(local_path, (remote_ts, remote_ts))
-        return key
-
-    pending_meta: dict[str, dict] = {}
-    in_flight: set[concurrent.futures.Future[str]] = set()
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
-            for item in page.get('Contents', []):
-                key = item.get('Key')
-                if not key or key.endswith('/'):
-                    continue
-                rel_path = key[len(prefix):] if prefix and key.startswith(prefix) else key
-                local_path = os.path.join(target_root, rel_path)
-                os.makedirs(os.path.dirname(local_path), exist_ok=True)
-                remote_size = item.get('Size')
-                remote_mtime = item.get('LastModified')
-                remote_etag = (item.get('ETag') or '').strip('"')
-                if os.path.exists(local_path) and remote_size is not None and remote_mtime is not None:
-                    local_size = os.path.getsize(local_path)
-                    local_mtime = os.path.getmtime(local_path)
-                    remote_ts = remote_mtime.astimezone(timezone.utc).timestamp()
-                    cached = metadata.get(key) or {}
-                    if (
-                        local_size == remote_size
-                        and (cached.get('etag') == remote_etag or cached.get('last_modified') == remote_ts)
-                    ):
-                        continue
-                    if local_size == remote_size and local_mtime >= remote_ts:
-                        continue
-
-                pending_meta[key] = {
-                    'etag': remote_etag,
-                    'size': remote_size,
-                    'last_modified': remote_mtime.astimezone(timezone.utc).timestamp()
-                    if remote_mtime
-                    else None,
-                }
-                future = executor.submit(_download_one, key, local_path, remote_mtime)
-                in_flight.add(future)
-                if len(in_flight) >= max_in_flight:
-                    done, in_flight = concurrent.futures.wait(
-                        in_flight,
-                        return_when=concurrent.futures.FIRST_COMPLETED,
-                    )
-                    for finished in done:
-                        finished_key = finished.result()
-                        meta = pending_meta.pop(finished_key, None)
-                        if meta is not None:
-                            metadata[finished_key] = meta
-
-        if in_flight:
-            done, _ = concurrent.futures.wait(in_flight)
-            for finished in done:
-                finished_key = finished.result()
-                meta = pending_meta.pop(finished_key, None)
-                if meta is not None:
-                    metadata[finished_key] = meta
-    try:
-        with open(metadata_path, 'w', encoding='utf-8') as handle:
-            json.dump(metadata, handle)
-    except Exception:
-        pass
 
 
-def start_checkpoint_sync(digest: str, s3_prefix: str, target_root: str | None = None) -> None:
-    if not digest or not s3_prefix:
-        return
-    if boto3 is None:
-        _record_sync_status(digest, 'error', 'boto3 not installed')
-        return
-    with S3_SYNC_LOCK:
-        status = S3_SYNC_STATUS.get(digest) or {}
-        if status.get('state') == 'running':
-            return
-        S3_SYNC_STATUS[digest] = {
-            'state': 'running',
-            'started_at': _utcnow_iso(),
-        }
-
-    bucket, prefix = _parse_s3_prefix(s3_prefix)
-    if not bucket:
-        _record_sync_status(digest, 'error', 'missing bucket')
-        return
-
-    if not target_root:
-        _record_sync_status(digest, 'error', 'missing target root')
-        return
-
-    def _worker():
-        try:
-            _run_checkpoint_sync(bucket, prefix, target_root)
-            _record_sync_status(digest, 'success')
-            log_event('checkpoint_sync_complete', {'bucket': bucket, 'prefix': prefix})
-        except Exception as exc:
-            _record_sync_status(digest, 'error', str(exc))
-            log_event('checkpoint_sync_error', {'error': str(exc), 'bucket': bucket, 'prefix': prefix})
-
-    log_event('checkpoint_sync_start', {'bucket': bucket, 'prefix': prefix, 'target_root': target_root})
-    thread = threading.Thread(target=_worker, daemon=True)
-    thread.start()
 
 
-def start_checkpoint_prefix_sync(digest: str, checkpoint_s3_prefix: str) -> None:
-    """
-    Kick off a background sync of code/checkpoints for the given project prefix.
-
-    Uses the pull_s3 helper (bucket from S3_BUCKET_NAME, root from DISK_PATH).
-    Status is recorded under a distinct token to avoid colliding with the
-    checkpoint_s3_prefix sync status.
-    """
-    if not digest or not checkpoint_s3_prefix:
-        return
-    if boto3 is None:
-        _record_sync_status(f"{digest}:pull_s3", 'error', 'boto3 not installed')
-        return
-
-    token = f"{digest}:pull_s3"
-    with S3_SYNC_LOCK:
-        status = S3_SYNC_STATUS.get(token) or {}
-        if status.get('state') == 'running':
-            return
-        S3_SYNC_STATUS[token] = {
-            'state': 'running',
-            'started_at': _utcnow_iso(),
-        }
-
-    def _worker():
-        try:
-            sync_checkpoint_code_from_s3_to_disk(checkpoint_s3_prefix)
-            disk_root = _disk_root_for_prefix(checkpoint_s3_prefix)
-            checkpoint_dir = _latest_round_checkpoint_dir(disk_root / 'checkpoint')
-            _prefix_report_images_in_checkpoint(
-                checkpoint_dir,
-                disk_root / 'code',
-            )
-            _write_sync_marker(checkpoint_s3_prefix, 'success')
-            _record_sync_status(token, 'success')
-            log_event('project_prefix_sync_complete', {'project_prefix': checkpoint_s3_prefix})
-        except Exception as exc:  # pragma: no cover - log only
-            _write_sync_marker(checkpoint_s3_prefix, 'error', str(exc))
-            _record_sync_status(token, 'error', str(exc))
-            log_event('project_prefix_sync_error', {'error': str(exc), 'project_prefix': checkpoint_s3_prefix})
-            print(f"⚠️  S3 sync failed for project_prefix={checkpoint_s3_prefix}: {exc}")
-
-    log_event('project_prefix_sync_start', {'project_prefix': checkpoint_s3_prefix})
-    _write_sync_marker(checkpoint_s3_prefix, 'running')
-    thread = threading.Thread(target=_worker, daemon=True)
-    thread.start()
 
 
-def start_sequential_checkpoint_sync(digest: str, checkpoint_s3_prefix: str, target_root: str | None = None) -> None:
-    if not digest or not checkpoint_s3_prefix:
-        return
-    if DISABLE_S3_SYNC:
-        _record_sync_status(digest, 'success')
-        _record_sync_status(f"{digest}:pull_s3", 'success')
-        log_event('checkpoint_sync_skipped', {'reason': 'disabled', 'checkpoint_s3_prefix': checkpoint_s3_prefix})
-        return
-    if boto3 is None:
-        _record_sync_status(digest, 'error', 'boto3 not installed')
-        _record_sync_status(f"{digest}:pull_s3", 'error', 'boto3 not installed')
-        return
 
-    token_pull = f"{digest}:pull_s3"
-    with S3_SYNC_LOCK:
-        if S3_SYNC_STATUS.get(digest, {}).get('state') == 'running' or S3_SYNC_STATUS.get(token_pull, {}).get('state') == 'running':
-            return
-        S3_SYNC_STATUS[digest] = {
-            'state': 'running',
-            'started_at': _utcnow_iso(),
-        }
-        S3_SYNC_STATUS[token_pull] = {
-            'state': 'running',
-            'started_at': _utcnow_iso(),
-        }
 
-    bucket, prefix = _checkpoint_prefix_from_raw(checkpoint_s3_prefix)
-    if not bucket:
-        _record_sync_status(digest, 'error', 'missing bucket')
-        _record_sync_status(token_pull, 'error', 'missing bucket')
-        return
-    if not target_root:
-        _record_sync_status(digest, 'error', 'missing target root')
-        _record_sync_status(token_pull, 'error', 'missing target root')
-        return
-
-    log_event('checkpoint_sync_start', {'bucket': bucket, 'prefix': prefix, 'target_root': target_root})
-    log_event('project_prefix_sync_start', {'project_prefix': checkpoint_s3_prefix})
-    log_event('checkpoint_s3_prefix', {'checkpoint_s3_prefix': checkpoint_s3_prefix})
-    _write_sync_marker(checkpoint_s3_prefix, 'running')
-    print(f"[s3-sync] checkpoint_s3_prefix={checkpoint_s3_prefix}")
-    resolved_target = Path(target_root).expanduser().resolve()
-    resolved_disk = _get_disk_path().resolve()
-    print(
-        "[s3-sync] "
-        f"cwd={Path.cwd()} "
-        f"DISK_PATH={os.environ.get('DISK_PATH')} "
-        f"resolved_disk={resolved_disk} "
-        f"target_root={target_root} "
-        f"resolved_target={resolved_target}"
-    )
-    log_event('checkpoint_sync_diag', {
-        'cwd': str(Path.cwd()),
-        'disk_path_env': os.environ.get('DISK_PATH'),
-        'resolved_disk': str(resolved_disk),
-        'target_root': target_root,
-        'resolved_target': str(resolved_target),
-        'checkpoint_s3_prefix': checkpoint_s3_prefix,
-    })
-
-    def _worker():
-        log_memory("s3_sync_worker: starting checkpoint sync")
-        try:
-            _run_checkpoint_sync(bucket, prefix, target_root)
-            _record_sync_status(digest, 'success')
-            log_event('checkpoint_sync_complete', {'bucket': bucket, 'prefix': prefix})
-            log_memory("s3_sync_worker: checkpoint sync complete")
-        except Exception as exc:
-            _record_sync_status(digest, 'error', str(exc))
-            _record_sync_status(token_pull, 'error', f"checkpoint sync failed: {exc}")
-            log_event('checkpoint_sync_error', {'error': str(exc), 'bucket': bucket, 'prefix': prefix})
-            log_memory("s3_sync_worker: checkpoint sync failed", level="error")
-            return
-        try:
-            log_memory("s3_sync_worker: starting project prefix sync")
-            # Checkpoint content is already synced in phase 1 (_run_checkpoint_sync);
-            # phase 2 only needs project code to avoid duplicate checkpoint downloads.
-            sync_checkpoint_code_from_s3_to_disk(
-                checkpoint_s3_prefix,
-                include_code=True,
-                include_checkpoint=False,
-            )
-            log_memory("s3_sync_worker: project prefix sync complete")
-            disk_root = _disk_root_for_prefix(checkpoint_s3_prefix)
-            checkpoint_dir = _latest_round_checkpoint_dir(disk_root / 'checkpoint')
-            _prefix_report_images_in_checkpoint(
-                checkpoint_dir,
-                disk_root / 'code',
-            )
-            _write_sync_marker(checkpoint_s3_prefix, 'success')
-            _record_sync_status(token_pull, 'success')
-            log_event('project_prefix_sync_complete', {'project_prefix': checkpoint_s3_prefix})
-        except Exception as exc:
-            _write_sync_marker(checkpoint_s3_prefix, 'error', str(exc))
-            _record_sync_status(token_pull, 'error', str(exc))
-            log_event('project_prefix_sync_error', {'error': str(exc), 'project_prefix': checkpoint_s3_prefix})
-            log_memory(f"s3_sync_worker: project prefix sync failed - {exc}", level="error")
-            print(f"⚠️  S3 sync failed for project_prefix={checkpoint_s3_prefix}: {exc}")
-
-    thread = threading.Thread(target=_worker, daemon=True)
-    thread.start()
 
 
 def clear_session_state() -> None:
@@ -5949,13 +4749,14 @@ def _session_debug_id() -> str | None:
 
 
 def _audit_chat_storage_scope() -> str:
-    """Return a stable storage scope for audit chat keyed by project + username."""
-    project_key = sanitize_field(
-        session.get('project_key_digest') or session.get('project_label') or 'project',
-        120,
+    """Return a stable local-storage scope for the active project."""
+    project = _active_project_record()
+    material = str(
+        (project or {}).get('id')
+        or session.get('v2_active_project_id')
+        or _get_project_config().get('checkpoint_dir')
+        or 'unresolved-project'
     )
-    username = sanitize_field(session.get('username') or 'anonymous', 120).lower()
-    material = f"{project_key}:{username}"
     return hashlib.sha256(material.encode('utf-8')).hexdigest()[:20]
 
 
@@ -7071,7 +5872,7 @@ def get_or_restore_generator() -> InteractiveHypothesisGenerator:
             checkpoint_path = cand.expanduser()
             if not checkpoint_path.is_absolute():
                 if not checkpoint_path.exists():
-                    # Try relative to DISK_PATH
+                    # Try relative to the one configured application data root.
                     disk_path = _get_disk_path()
                     cand_str = str(checkpoint_path)
                     disk_name = disk_path.name + os.sep
@@ -7147,7 +5948,7 @@ def get_or_restore_generator() -> InteractiveHypothesisGenerator:
 
 
 def _get_project_config() -> dict:
-    """Return config associated with the authenticated project key."""
+    """Return configuration for the active local or compatibility project."""
     cfg = session.get('project_config')
     if not isinstance(cfg, dict):
         cfg = {}
@@ -7270,14 +6071,8 @@ def _is_code_chat_available(code_dir: Path | None) -> bool:
 
 
 def _get_project_progress_payload() -> dict:
-    """Return submission count + disk-derived round number for the current session project."""
-    progress = get_project_progress(session.get('project_key_digest'))
-    submission_count = progress.get('submission_count', 0)
-    project_round = _get_project_round_from_disk()
-    return {
-        'project_submission_count': submission_count,
-        'project_round': project_round,
-    }
+    """Return disk-derived round progress for the current local project."""
+    return {'project_round': _get_project_round_from_disk()}
 
 
 # =====================================================================
@@ -7799,22 +6594,37 @@ def _v2_next_round_selection(completed_dir: Path) -> str | None:
 
     save_selection() writes the next round's hypothesis into the latest existing
     round dir (the just-completed one), and the next round_N dir is not created
-    until the backend runner starts it. A fresh next-round selection is therefore
-    a selected_hypothesis.md in completed_dir that is NEWER than that round's
-    round_report.md; an older file is that round's own launcher (written before it
-    ran) and is NOT a new selection. Returns the stripped hypothesis text or None.
+    until the backend runner starts it. Durable selection and completion events
+    prove ownership even when imported file mtimes were normalized; legacy trees
+    fall back to the established mtime rule. A historical launcher is not a new
+    selection. Returns the stripped hypothesis text or None.
     """
     completed_dir = Path(completed_dir)
     report = completed_dir / "round_report.md"
     selected = completed_dir / "selected_hypothesis.md"
     if not report.exists() or not selected.exists():
         return None
-    try:
-        if selected.stat().st_mtime <= report.stat().st_mtime:
-            return None  # this round's own launcher, not a fresh next-round selection
-    except OSError:
+    if not local_round_runner.selection_is_fresh_for_continuation(completed_dir):
         return None
     return _v2_selected_hypothesis_text(completed_dir)
+
+
+def _v2_continuation_start_issue(completed_dir: Path) -> str | None:
+    """Explain missing persisted metadata required by the continuation runner."""
+    completed_dir = Path(completed_dir)
+    if not (completed_dir / 'memory_report.md').is_file():
+        return 'The completed round is missing memory_report.md, which is required to start its continuation.'
+    config_path = completed_dir / 'config.json'
+    if not config_path.is_file():
+        return 'The completed round is missing config.json, which is required to start its continuation.'
+    try:
+        payload = json.loads(config_path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return 'The completed round has an invalid config.json and cannot start its continuation.'
+    config = payload.get('config', payload) if isinstance(payload, dict) else None
+    if not isinstance(config, dict):
+        return 'The completed round has an invalid config.json and cannot start its continuation.'
+    return None
 
 
 def _v2_round_status(info: dict) -> str:
@@ -7904,7 +6714,7 @@ def _v2_research_status(
             'cta_destination': studio_url,
         },
         'hypothesis_selected': {
-            'status_pill': 'Hypothesis selected',
+            'status_pill': 'Ready for investigation',
             'headline': 'Your hypothesis is ready for investigation.',
             'body': (
                 f'A hypothesis has been selected for Round {round_number}. Start '
@@ -7914,6 +6724,18 @@ def _v2_research_status(
             'cta_action': 'start_round',
             'cta_destination': None,
             'cta_round': round_number,
+        },
+        'hypothesis_start_blocked': {
+            'status_pill': 'Setup required',
+            'headline': f'Round {round_number} cannot start yet.',
+            'body': (
+                'A hypothesis is selected, but the completed round is missing '
+                'the persisted metadata required to start its continuation.'
+            ),
+            'cta_label': f'Inspect Round {max(0, round_number - 1)}',
+            'cta_destination': (
+                f'{workspace_url}{separator}round={max(0, round_number - 1)}&review=1'
+            ),
         },
         'research_in_progress': {
             'status_pill': f'Round {round_number} in progress',
@@ -8069,6 +6891,7 @@ def _v2_project_state_for(
     # directory and direct its exact successor. Existing helpers encode that
     # storage/product-round convention; Project Home does not infer it client-side.
     selected_round = None
+    continuation_issue = None
     status_round = active_index if active_index is not None else 0
     resumable = False
 
@@ -8096,9 +6919,13 @@ def _v2_project_state_for(
     elif completed_dir is not None:
         next_selection = _v2_next_round_selection(completed_dir) if completed_dir is not None else None
         if next_selection:
-            research_state = 'hypothesis_selected'
             selected_round = (completed_index + 1) if completed_index is not None else None
             status_round = selected_round if selected_round is not None else status_round
+            continuation_issue = _v2_continuation_start_issue(completed_dir)
+            research_state = (
+                'hypothesis_start_blocked' if continuation_issue
+                else 'hypothesis_selected'
+            )
         elif _v2_round_has_current_hypothesis_candidates(completed_dir):
             research_state = 'hypothesis_development'
             status_round = (completed_index + 1) if completed_index is not None else status_round
@@ -8113,7 +6940,8 @@ def _v2_project_state_for(
     # evidence above is never hidden by a stale lower-level artifact.
     if research_state not in {
         'research_in_progress', 'research_stopped', 'hypothesis_selected',
-        'hypothesis_development', 'round_ready_for_review',
+        'hypothesis_start_blocked', 'hypothesis_development',
+        'round_ready_for_review',
     } and _v2_no_round_has_started(rounds_root):
         research_state = 'start_first_round'
         status_round = 0
@@ -8129,6 +6957,9 @@ def _v2_project_state_for(
         'project_id': project_id,
         'run_id': runner_lifecycle.get('run_id'),
     })
+    if continuation_issue:
+        research_status['blocking_reason'] = continuation_issue
+        research_status['body'] = continuation_issue
 
     # --- Display mode: completed authoritative memory report exists? -----------
     mem_index, mem_dir = _v2_latest_round_dir_with_file(rounds_root, 'memory_report.md')
@@ -9012,6 +7843,18 @@ def _v2_studio_set_has_execution_binding(round_dir: Path) -> bool:
     return target_dir.is_dir()
 
 
+def _v2_studio_selection_applies_to_target(round_dir: Path) -> bool:
+    """Whether this set's selection is owned by its product-facing successor."""
+    round_dir = Path(round_dir)
+    if not (round_dir / 'selected_hypothesis.md').is_file():
+        return False
+    if _v2_studio_set_has_execution_binding(round_dir):
+        return True
+    return (round_dir / 'round_report.md').is_file() and (
+        local_round_runner.selection_is_fresh_for_continuation(round_dir)
+    )
+
+
 def _v2_target_runner_status(rounds_root: Path, storage_round_index: int) -> str | None:
     """Runner status only when it belongs to this Studio set's target round."""
     try:
@@ -9042,12 +7885,15 @@ def _v2_hypothesis_round_status(
     if execution['has_round_report']:
         return 'completed'
     source_dir = Path(rounds_root) / f'round_{storage_round_index}'
-    if _v2_studio_set_has_execution_binding(source_dir):
+    execution_bound = _v2_studio_set_has_execution_binding(source_dir)
+    if execution_bound:
         runner_status = _v2_target_runner_status(rounds_root, storage_round_index)
         if runner_status in {'interrupted', 'failed'}:
             return 'stopped'
         return 'running'
-    if set_info['has_selected_hypothesis']:
+    if _v2_studio_selection_applies_to_target(source_dir):
+        if _v2_continuation_start_issue(source_dir):
+            return 'setup_required'
         return 'selected'
     return 'exploring'
 
@@ -9194,14 +8040,21 @@ def _v2_history_round_entry(
         and bool(event.get('hypotheses'))
         for event in durable_events
     )
-    has_selected = info['has_selected_hypothesis'] or any(
+    has_recorded_selection = info['has_selected_hypothesis'] or any(
         event.get('type') == hypothesis_history.TYPE_HYPOTHESIS_SELECTED
         for event in durable_events
     )
+    selection_applies = _v2_studio_selection_applies_to_target(round_dir)
     target = _v2_target_round_number(index)
     rounds_root = Path(rounds_root) if rounds_root is not None else Path(round_dir).parent
     execution = _v2_target_execution_info(rounds_root, index)
-    status_info = dict(info, has_selected_hypothesis=has_selected)
+    status_info = dict(info, has_selected_hypothesis=selection_applies)
+    status = _v2_hypothesis_round_status(rounds_root, index, status_info)
+    start_issue = (
+        _v2_continuation_start_issue(round_dir)
+        if selection_applies and not _v2_studio_set_has_execution_binding(round_dir)
+        else None
+    )
     return {
         # Storage addressing key (the checkpoint round_* dir index). Kept for
         # backward compatibility: the detail endpoint is addressed by this.
@@ -9210,13 +8063,19 @@ def _v2_history_round_entry(
         # Product-facing autonomous round this cycle directs, and its label.
         'target_round_number': target,
         'label': f'Round {target}',
-        'status': _v2_hypothesis_round_status(rounds_root, index, status_info),
+        'status': status,
         'is_current': index == active_index,
         'has_generated': has_generated,
-        'has_selected': has_selected,
+        'has_selected': selection_applies,
+        'has_recorded_selection': has_recorded_selection,
+        'selection_scope': 'target_round' if selection_applies else (
+            'historical' if has_recorded_selection else None
+        ),
+        'ready_to_start': status == 'selected' and start_issue is None,
+        'start_blocked_reason': start_issue,
         # Additive: whether ANY chronology exists for this round (durable log or
         # reconstructable artifacts), and whether the autonomous round completed.
-        'has_history': has_durable or has_generated or has_selected,
+        'has_history': has_durable or has_generated or has_recorded_selection,
         'is_complete': execution['has_round_report'],
         'activity_signature': _v2_round_activity_signature(round_dir),
     }
@@ -9351,15 +8210,27 @@ def api_hypothesis_history_round(round_index):
                     sel_events[-1].get('hypothesis') or selected
                 )
 
+        selection_applies = _v2_studio_selection_applies_to_target(round_dir)
+        has_recorded_selection = bool(selected) or any(
+            event.get('type') == hypothesis_history.TYPE_HYPOTHESIS_SELECTED
+            for event in durable_events
+        )
         transcript = _v2_events_to_transcript(events)
+        for item in transcript:
+            if item.get('kind') == 'selection':
+                item['applies_to_target_round'] = selection_applies
 
         target = _v2_target_round_number(round_index)
         status_info = dict(
             info,
-            has_selected_hypothesis=info['has_selected_hypothesis'] or bool(selected),
+            has_selected_hypothesis=selection_applies,
         )
         status = _v2_hypothesis_round_status(root, round_index, status_info)
         execution_bound = _v2_studio_set_has_execution_binding(round_dir)
+        start_issue = (
+            _v2_continuation_start_issue(round_dir)
+            if selection_applies and not execution_bound else None
+        )
         return jsonify({
             'success': True,
             # Storage addressing key preserved (this endpoint is addressed by the
@@ -9376,6 +8247,13 @@ def api_hypothesis_history_round(round_index):
             'read_only': (not is_current) or execution_bound,
             'has_history': bool(durable_events) or bool(generated) or bool(selected),
             'partial_history': partial_history,
+            'has_selected': selection_applies,
+            'has_recorded_selection': has_recorded_selection,
+            'selection_scope': 'target_round' if selection_applies else (
+                'historical' if has_recorded_selection else None
+            ),
+            'ready_to_start': status == 'selected' and start_issue is None,
+            'start_blocked_reason': start_issue,
             # Internal stable thread ids stay server-side. The transcript uses
             # durable result-event identities to associate discussion safely.
             'events': _v2_public_history_events(events),
@@ -9393,17 +8271,19 @@ def api_hypothesis_history_round(round_index):
 # =====================================================================
 # V2 Projects — local project registry, listing, creation, activation
 # ---------------------------------------------------------------------
-# Additive layer above the existing single-project lifecycle. Projects live
-# New projects use the platform-aware managed store. An explicit DISK_PATH
-# remains an in-place compatibility source. The former checkout-local default
-# receives a bounded one-time migration into the durable legacy store.
+# Additive layer above the existing single-project lifecycle. Every project
+# record lives in <data-root>/projects.json. Managed roots live beneath the
+# canonical Projects directory; imported roots may remain external.
 # state/status is NEVER re-derived here — it reuses _v2_project_state_for()
 # (the Slice 1 canonical interpretation). The frontend infers nothing.
 # =====================================================================
 
 _V2_PROJECTS_LOCK = threading.RLock()
-_V2_LEGACY_MIGRATION_LOCK = threading.Lock()
 _V2_DATA_LIBRARY_PICKER_LOCK = threading.Lock()
+_V2_PROJECT_IMPORT_PREVIEW_LOCK = threading.Lock()
+_V2_PROJECT_IMPORT_PREVIEWS: dict[str, dict[str, object]] = {}
+_V2_PROJECT_IMPORT_PREVIEW_SESSION_KEY = 'v2_project_import_preview'
+_V2_PROJECT_IMPORT_PREVIEW_MAX_AGE_SECONDS = 10 * 60
 _V2_DATA_LIBRARY_PICKER_TIMEOUT_SECONDS = 60 * 60
 # Combined operations always acquire projects before the round-runner guard.
 # Project skill mutation/capture is serialized inside project_skills.py.
@@ -9412,6 +8292,82 @@ _V2_ACTIVITY_FILES = (
     'generated_hypotheses.json', 'selected_hypothesis.md',
     'round_report.md', 'memory_report.md', 'scientist_feedback.md',
 )
+
+
+def _v2_project_import_session_id() -> str:
+    session_id = str(getattr(session, 'sid', '') or '').strip()
+    if session_id:
+        return session_id
+    session_id = str(session.get('_v2_local_session_id') or '').strip()
+    if not session_id:
+        session_id = secrets.token_urlsafe(32)
+        session['_v2_local_session_id'] = session_id
+    return session_id
+
+
+def _v2_clear_project_import_preview() -> None:
+    token = session.pop(_V2_PROJECT_IMPORT_PREVIEW_SESSION_KEY, None)
+    if not isinstance(token, str):
+        return
+    with _V2_PROJECT_IMPORT_PREVIEW_LOCK:
+        _V2_PROJECT_IMPORT_PREVIEWS.pop(token, None)
+
+
+def _v2_issue_project_import_preview(root: Path, fingerprint: str) -> str:
+    _v2_clear_project_import_preview()
+    now = time.time()
+    token = secrets.token_urlsafe(32)
+    state = {
+        'session_id': _v2_project_import_session_id(),
+        'root': str(root),
+        'fingerprint': fingerprint,
+        'expires_at': now + _V2_PROJECT_IMPORT_PREVIEW_MAX_AGE_SECONDS,
+    }
+    with _V2_PROJECT_IMPORT_PREVIEW_LOCK:
+        expired = [
+            candidate
+            for candidate, preview in _V2_PROJECT_IMPORT_PREVIEWS.items()
+            if not isinstance(preview.get('expires_at'), (int, float))
+            or preview['expires_at'] <= now
+        ]
+        for candidate in expired:
+            _V2_PROJECT_IMPORT_PREVIEWS.pop(candidate, None)
+        _V2_PROJECT_IMPORT_PREVIEWS[token] = state
+    session[_V2_PROJECT_IMPORT_PREVIEW_SESSION_KEY] = token
+    return token
+
+
+def _v2_consume_project_import_preview(token: str, selected_root: str) -> str | None:
+    session_token = session.get(_V2_PROJECT_IMPORT_PREVIEW_SESSION_KEY)
+    if (
+        not isinstance(token, str)
+        or not re.fullmatch(r'[A-Za-z0-9_-]{43}', token)
+        or not isinstance(session_token, str)
+        or not hmac.compare_digest(session_token, token)
+    ):
+        return None
+    now = time.time()
+    session_id = _v2_project_import_session_id()
+    with _V2_PROJECT_IMPORT_PREVIEW_LOCK:
+        state = _V2_PROJECT_IMPORT_PREVIEWS.get(token)
+        if not isinstance(state, dict):
+            return None
+        valid = (
+            isinstance(state.get('session_id'), str)
+            and hmac.compare_digest(state['session_id'], session_id)
+            and isinstance(state.get('root'), str)
+            and hmac.compare_digest(state['root'], selected_root)
+            and isinstance(state.get('fingerprint'), str)
+            and isinstance(state.get('expires_at'), (int, float))
+            and state['expires_at'] > now
+        )
+        if not valid:
+            _V2_PROJECT_IMPORT_PREVIEWS.pop(token, None)
+            session.pop(_V2_PROJECT_IMPORT_PREVIEW_SESSION_KEY, None)
+            return None
+        _V2_PROJECT_IMPORT_PREVIEWS.pop(token, None)
+    session.pop(_V2_PROJECT_IMPORT_PREVIEW_SESSION_KEY, None)
+    return state['fingerprint']
 
 
 def _v2_data_root() -> Path:
@@ -9424,7 +8380,7 @@ def _v2_projects_root() -> Path:
 
 
 def _v2_projects_registry_path() -> Path:
-    return _v2_data_root() / "v2_projects.json"
+    return get_projects_registry_path()
 
 
 def _v2_read_projects_registry(path: Path) -> list[dict]:
@@ -9440,149 +8396,78 @@ def _v2_read_projects_registry(path: Path) -> list[dict]:
     return [p for p in projects if isinstance(p, dict)]
 
 
-_INTERACTION_MIGRATION_LOCK = threading.Lock()
-_INTERACTION_MIGRATION_STATE: dict[str, object] = {
-    'signature': None,
-    'result': None,
-}
-
-
-def _maybe_migrate_legacy_interactions(projects: list[dict]) -> dict:
-    """Run the bounded legacy partition when its inputs change."""
+def _v2_ensure_projects_registry() -> Path:
+    """Publish a complete empty registry exactly once without overwriting."""
+    path = _v2_projects_registry_path()
+    if os.path.lexists(path):
+        return path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(
+        f"{path.name}.initial.{os.getpid()}.{uuid.uuid4().hex[:8]}"
+    )
+    descriptor = None
     try:
-        legacy_stat = LEGACY_INTERACTION_LOG_PATH.stat()
-        legacy_signature = (legacy_stat.st_mtime_ns, legacy_stat.st_size)
-    except OSError:
-        legacy_signature = None
-    project_signature = tuple(sorted(
-        (
-            str(project.get('id') or ''),
-            str(project.get('project_root') or ''),
-            str(project.get('display_name') or ''),
-            str(project.get('url_slug') or ''),
-        )
-        for project in projects
-    ))
-    override = _interaction_log_override_root()
-    signature = (legacy_signature, project_signature, str(override or ''))
-    with _INTERACTION_MIGRATION_LOCK:
-        if _INTERACTION_MIGRATION_STATE.get('signature') == signature:
-            cached = _INTERACTION_MIGRATION_STATE.get('result')
-            return dict(cached) if isinstance(cached, dict) else {}
-        result = migrate_legacy_interactions(
-            LEGACY_INTERACTION_LOG_PATH,
-            projects,
-            override_root=override,
-        )
-        _INTERACTION_MIGRATION_STATE.update({
-            'signature': signature,
-            'result': dict(result),
-        })
-        migrated = sum(result.get('migrated_by_project', {}).values())
-        if migrated or result.get('ambiguous_records') or result.get('unmatched_records'):
-            print(
-                '[interaction migration] '
-                f"migrated={migrated} "
-                f"ambiguous={result.get('ambiguous_records', 0)} "
-                f"unmatched={result.get('unmatched_records', 0)}"
-            )
-        return result
-
-
-def _v2_load_managed_projects() -> list[dict]:
-    projects = _v2_read_projects_registry(_v2_projects_registry_path())
-    path_fields = ('project_root', 'code_dir', 'data_dir', 'checkpoint_dir', 'readme_path')
-    for project in projects:
-        project_id = str(project.get('id') or '')
-        if not project_id:
-            continue
-        raw_root = project.get('project_root')
-        root = get_project_root(project_id) if raw_root in (None, '', '.') else Path(raw_root)
-        project['project_root'] = str(root)
-        for field in path_fields:
-            raw = project.get(field)
-            if not raw:
-                continue
-            value = Path(raw)
-            if field == 'project_root':
-                value = root
-            elif not value.is_absolute():
-                value = root / value
-            project[field] = str(value)
-    _maybe_migrate_legacy_interactions(projects)
-    return projects
-
-
-def _v2_legacy_projects_registry_path() -> Path:
-    disk_root = _get_disk_path()
-    # Explicit legacy locations are user configuration, not obsolete defaults.
-    # Only bridge the checkout-local location when the durable default is active.
-    if not os.environ.get('DISK_PATH'):
-        with _V2_LEGACY_MIGRATION_LOCK:
-            result = migrate_checkout_legacy_store(
-                get_historical_checkout_legacy_disk_root(),
-                disk_root,
-            )
-        if result.get('moved') or result.get('conflicts'):
-            print(
-                '[legacy project migration] '
-                f"moved={len(result.get('moved', []))} "
-                f"merged={len(result.get('merged', []))} "
-                f"conflicts={len(result.get('conflicts', []))}"
-            )
-    return disk_root / 'v2_projects.json'
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, 'wb', closefd=True) as stream:
+            descriptor = None
+            stream.write(b'{\n  "projects": []\n}\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            pass
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        temporary.unlink(missing_ok=True)
+    return path
 
 
 def _v2_load_projects() -> list[dict]:
-    managed = _v2_load_managed_projects()
-    legacy_path = _v2_legacy_projects_registry_path()
-    if legacy_path.resolve() == _v2_projects_registry_path().resolve():
-        return managed
-    known = {p.get('id') for p in managed}
-    legacy = [p for p in _v2_read_projects_registry(legacy_path) if p.get('id') not in known]
-    return managed + legacy
+    registry_path = _v2_ensure_projects_registry()
+    return [
+        _v2_normalize_registered_project_for_resolution(
+            project, registry_parent=registry_path.parent,
+        )
+        for project in _v2_read_projects_registry(registry_path)
+    ]
 
 
 def _v2_locate_project(project_id: str) -> tuple[list[dict], dict | None, Path, bool]:
-    managed_path = _v2_projects_registry_path()
-    managed = _v2_load_managed_projects()
-    record = next((p for p in managed if p.get('id') == project_id), None)
-    if record is not None:
-        return managed, record, managed_path, True
-    legacy_path = _v2_legacy_projects_registry_path()
-    legacy = _v2_read_projects_registry(legacy_path)
-    record = next((p for p in legacy if p.get('id') == project_id), None)
-    return legacy, record, legacy_path, False
+    projects = _v2_load_projects()
+    record = next((p for p in projects if p.get('id') == project_id), None)
+    managed = bool(record is not None and record.get('imported_in_place') is not True)
+    return projects, record, _v2_projects_registry_path(), managed
 
 
-def _v2_save_projects(projects: list[dict], registry_path: Path | None = None, *, managed: bool = True) -> None:
-    """Atomic registry write (tmp file + rename). Callers hold _V2_PROJECTS_LOCK."""
-    path = registry_path or _v2_projects_registry_path()
+def _v2_save_projects(projects: list[dict]) -> None:
+    """Atomically publish the one project registry. Callers hold the lock."""
+    path = _v2_projects_registry_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex[:8]}")
-    if not managed:
-        tmp.write_text(json.dumps({'projects': projects}, indent=2, ensure_ascii=False), encoding='utf-8')
-        tmp.replace(path)
-        return
-    portable_projects = []
-    for project in projects:
-        portable = dict(project)
-        project_id = str(portable.get('id') or '')
-        raw_root = portable.get('project_root')
-        root = Path(raw_root).expanduser().absolute() if raw_root else (get_project_root(project_id) if project_id else None)
-        if root:
-            portable['project_root'] = '.' if root == get_project_root(project_id).absolute() else str(root)
-            for field in ('code_dir', 'data_dir', 'checkpoint_dir', 'readme_path'):
-                raw = portable.get(field)
-                if not raw:
-                    continue
-                try:
-                    portable[field] = Path(raw).resolve().relative_to(root.resolve()).as_posix()
-                except ValueError:
-                    pass
-        portable_projects.append(portable)
-    tmp.write_text(json.dumps({'projects': portable_projects}, indent=2, ensure_ascii=False), encoding='utf-8')
-    tmp.replace(path)
+    payload = json.dumps({'projects': projects}, indent=2, ensure_ascii=False).encode('utf-8')
+    descriptor = None
+    try:
+        descriptor = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, 'wb', closefd=True) as stream:
+            descriptor = None
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(tmp, path)
+        try:
+            directory = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        except OSError:
+            pass
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        tmp.unlink(missing_ok=True)
 
 
 def _v2_get_project(project_id: str) -> dict | None:
@@ -9608,7 +8493,7 @@ def _v2_normalized_project_name(name: str) -> str:
 
 def _v2_project_directory_slug(name: str) -> str:
     """Return a bounded, filesystem-safe Unicode project directory slug."""
-    normalized = unicodedata.normalize("NFKC", str(name or "")).lower()
+    normalized = unicodedata.normalize("NFKC", str(name or "")).casefold()
     parts: list[str] = []
     separator_pending = False
     for character in normalized:
@@ -9623,7 +8508,7 @@ def _v2_project_directory_slug(name: str) -> str:
             separator_pending = bool(parts)
     slug = "".join(parts).strip(" .-_")
     slug = slug[:_V2_PROJECT_DIRECTORY_SLUG_MAX_LENGTH].rstrip(" .-_")
-    return slug
+    return slug or 'project'
 
 
 def _v2_project_directory_name(display_name: str) -> str:
@@ -9725,12 +8610,16 @@ def _v2_duplicate_project_slug_response(slug: str):
 def _v2_new_project_id(display_name: str) -> str:
     for _ in range(50):
         candidate = new_project_id()
-        if not get_project_root(candidate).exists() and _v2_get_project(candidate) is None:
+        if _v2_get_project(candidate) is None:
             return candidate
     raise RuntimeError('Unable to allocate a unique project identity')
 
 
 _V2_PROJECT_ID_RE = re.compile(r'prj_[0-9a-f]{32}')
+# Pre-release projects created before opaque IDs used a normalized name plus a
+# six-digit identity suffix. Existing marker identity is authoritative, but
+# new pending IDs must continue to use the opaque format above.
+_LEGACY_PROJECT_ID_RE = re.compile(r'[a-z0-9]+(?:-[a-z0-9]+)*-[0-9]{6}')
 
 
 def _v2_validate_pending_project_id(value: str | None) -> str:
@@ -9872,13 +8761,107 @@ def _v2_tree_manifest(root: Path) -> dict[str, tuple]:
     return manifest
 
 
-def _v2_prepare_project_relocation(source: Path, destination: Path) -> dict | None:
-    if source.resolve() == destination.resolve():
+def _v2_rename_directory_exclusive(source: Path, destination: Path) -> None:
+    """Atomically rename a directory without replacing a destination entry."""
+    if os.path.lexists(destination):
+        raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), str(destination))
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    source_bytes = os.fsencode(source)
+    destination_bytes = os.fsencode(destination)
+    result = None
+    if sys.platform == 'darwin' and hasattr(libc, 'renamex_np'):
+        renamex_np = libc.renamex_np
+        renamex_np.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+        renamex_np.restype = ctypes.c_int
+        # RENAME_EXCL is defined by macOS sys/stdio.h as 0x00000004.
+        result = renamex_np(source_bytes, destination_bytes, 0x00000004)
+    elif sys.platform.startswith('linux') and hasattr(libc, 'renameat2'):
+        renameat2 = libc.renameat2
+        renameat2.argtypes = [
+            ctypes.c_int, ctypes.c_char_p,
+            ctypes.c_int, ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        renameat2.restype = ctypes.c_int
+        # Linux AT_FDCWD and RENAME_NOREPLACE.
+        result = renameat2(-100, source_bytes, -100, destination_bytes, 1)
+
+    if result is None:
+        # The supported macOS release and Linux CI paths use the atomic calls
+        # above. Keep other development platforms functional with the same
+        # precondition check, while preserving the directory-rename contract.
+        os.rename(source, destination)
+        return
+    if result == 0:
+        return
+
+    error_number = ctypes.get_errno()
+    if error_number in {errno.EEXIST, errno.ENOTEMPTY}:
+        raise FileExistsError(
+            error_number, os.strerror(error_number), str(destination),
+        )
+    raise OSError(error_number, os.strerror(error_number), str(destination))
+
+
+def _v2_prepare_project_relocation(
+    source: Path,
+    destination: Path,
+    *,
+    require_same_parent_rename: bool = False,
+) -> dict | None:
+    source = source.expanduser().absolute()
+    destination = destination.expanduser().absolute()
+    if source == destination:
         return None
     if not source.is_dir() or source.is_symlink():
         raise ValueError('The registered project folder is missing or unsafe to move.')
-    if destination.exists() or destination.is_symlink():
-        raise ValueError('The project destination already exists.')
+    if require_same_parent_rename and source.parent != destination.parent:
+        raise ValueError('A managed project rename must stay within its current parent folder.')
+
+    destination_is_source = False
+    if os.path.lexists(destination):
+        try:
+            destination_is_source = os.path.samefile(source, destination)
+        except OSError:
+            destination_is_source = False
+        if not destination_is_source:
+            raise FileExistsError(destination.name)
+
+    if require_same_parent_rename:
+        # On a case-insensitive filesystem, a case-only or Unicode-equivalent
+        # destination may resolve to the source entry. Rename through a private
+        # sibling so the requested canonical spelling is applied without ever
+        # copying project contents.
+        if destination_is_source:
+            temporary = source.parent / f'.{source.name}.renaming-{uuid.uuid4().hex}'
+            if os.path.lexists(temporary):  # pragma: no cover - UUID collision guard
+                raise OSError('Could not reserve a private project rename path.')
+            _v2_rename_directory_exclusive(source, temporary)
+            try:
+                if os.path.lexists(destination):
+                    raise FileExistsError(destination.name)
+                _v2_rename_directory_exclusive(temporary, destination)
+            except Exception as exc:
+                try:
+                    _v2_rename_directory_exclusive(temporary, source)
+                except Exception as rollback_exc:
+                    raise RuntimeError(
+                        'The project rename failed and its temporary folder could not be restored: '
+                        f'{rollback_exc}'
+                    ) from exc
+                raise
+        else:
+            _v2_rename_directory_exclusive(source, destination)
+        return {
+            'mode': 'rename',
+            'source': source,
+            'destination': destination,
+            'exclusive': True,
+        }
+
+    if source.resolve() == destination.resolve():
+        return None
     destination.parent.mkdir(parents=True, exist_ok=True)
     same_volume = source.stat().st_dev == destination.parent.stat().st_dev
     if same_volume:
@@ -9901,8 +8884,15 @@ def _v2_rollback_project_relocation(transaction: dict | None) -> None:
         return
     source, destination = transaction['source'], transaction['destination']
     if transaction['mode'] == 'rename':
-        if destination.exists() and not source.exists():
-            os.replace(destination, source)
+        if destination.exists():
+            if source.exists():
+                raise FileExistsError(
+                    'The original project path became occupied during rollback.'
+                )
+            if transaction.get('exclusive'):
+                _v2_rename_directory_exclusive(destination, source)
+            else:
+                os.replace(destination, source)
     else:
         shutil.rmtree(destination, ignore_errors=True)
 
@@ -9950,6 +8940,45 @@ def _v2_restore_project_edit_files(
             os.replace(temporary, target)
         finally:
             temporary.unlink(missing_ok=True)
+
+
+def _v2_rollback_project_edit(
+    *,
+    relocation: dict | None,
+    source_root: Path | None,
+    captured_files: dict[Path, bytes | None],
+    created_uploads: list[Path],
+    files_mutated: bool,
+    registry_path: Path,
+    registry_before: bytes | None,
+    registry_write_attempted: bool,
+) -> list[str]:
+    """Best-effort rollback for an Edit transaction, with explicit failures."""
+    errors: list[str] = []
+    try:
+        _v2_rollback_project_relocation(relocation)
+    except Exception as exc:  # pragma: no cover - exercised by fault injection
+        errors.append(f'folder rollback failed: {exc}')
+
+    if files_mutated and source_root is not None:
+        restoration_root = source_root
+        if not restoration_root.is_dir() and relocation is not None:
+            destination = Path(relocation['destination'])
+            if destination.is_dir():
+                restoration_root = destination
+        try:
+            _v2_restore_project_edit_files(
+                restoration_root, captured_files, created_uploads,
+            )
+        except Exception as exc:  # pragma: no cover - exercised by fault injection
+            errors.append(f'project metadata rollback failed: {exc}')
+
+    if registry_write_attempted:
+        try:
+            _v2_import_restore_registry(registry_path, registry_before)
+        except Exception as exc:  # pragma: no cover - exercised by fault injection
+            errors.append(f'registry rollback failed: {exc}')
+    return errors
 
 
 def _v2_sanitize_filename(filename: str) -> str | None:
@@ -10201,7 +9230,10 @@ def _v2_write_round_config(round_dir: Path, updates: dict) -> None:
     if not isinstance(config, dict):
         config = {}
     config.update(updates)
-    cfg_path.write_text(json.dumps({'config': config}, indent=2), encoding='utf-8')
+    serialized = json.dumps({'config': config}, indent=2)
+    if cfg_path.is_file() and cfg_path.read_text(encoding='utf-8') == serialized:
+        return
+    cfg_path.write_text(serialized, encoding='utf-8')
 
 
 def _v2_sync_project_round_config(record: dict) -> None:
@@ -10244,10 +9276,12 @@ def _v2_sync_active_project_session(record: dict) -> None:
     synced_cfg = dict(existing_cfg)
     settings = _v2_project_configuration(record)
     synced_cfg.update({
+        'checkpoint_dir': record.get('checkpoint_dir'),
         'code_dir': record.get('code_dir'),
         'data_dir': record.get('data_dir'),
         'data_sources': record.get('data_sources') or [],
         'readme_path': record.get('readme_path'),
+        'data_path': record.get('project_root'),
         'task_description': _v2_project_task_description(record),
         'reasoning_model': settings['reasoning_model'],
         'execution_model': settings['execution_model'],
@@ -10593,7 +9627,7 @@ def _v2_ensure_url_slugs_backfilled() -> None:
     touches created_at/updated_at/id/directories -- routing identity only.
     V1/legacy registries and .auth_submissions are untouched."""
     with _V2_PROJECTS_LOCK:
-        projects = _v2_load_managed_projects()
+        projects = _v2_load_projects()
         if all(p.get('url_slug') for p in projects):
             return
         taken = {p['url_slug'] for p in projects if p.get('url_slug')}
@@ -10631,22 +9665,16 @@ def _v2_canonical_context_path(value) -> Path | None:
 
 
 def _v2_normalize_registered_project_for_resolution(
-    project: dict, *, managed: bool, registry_parent: Path,
+    project: dict, *, registry_parent: Path,
 ) -> dict:
     """Return an in-memory, absolute-path copy of one registered project."""
     normalized = dict(project)
-    project_id = str(normalized.get('id') or '').strip()
     raw_root = normalized.get('project_root')
-    # Only the portable managed-root sentinel is expanded through
-    # get_project_root().  An absolute registered root is authoritative: a
-    # readable/custom directory basename is deliberately independent of the
-    # immutable project ID carried by the registry and marker.
-    if managed and project_id and raw_root in (None, '', '.'):
-        root_candidate = get_project_root(project_id)
-    else:
-        root_candidate = Path(str(raw_root)) if raw_root else registry_parent / project_id
-        if not root_candidate.is_absolute():
-            root_candidate = registry_parent / root_candidate
+    if not raw_root:
+        return normalized
+    root_candidate = Path(str(raw_root))
+    if not root_candidate.is_absolute():
+        root_candidate = registry_parent / root_candidate
     root = _v2_canonical_context_path(root_candidate)
 
     for field in _V2_PROJECT_CONTEXT_PATH_FIELDS:
@@ -10654,9 +9682,7 @@ def _v2_normalize_registered_project_for_resolution(
         if not raw:
             continue
         candidate = Path(str(raw))
-        if managed and field == 'project_root' and str(raw) == '.':
-            candidate = root or candidate
-        elif not candidate.is_absolute() and root is not None:
+        if not candidate.is_absolute() and root is not None:
             candidate = root / candidate
         canonical = _v2_canonical_context_path(candidate)
         if canonical is not None:
@@ -10667,30 +9693,8 @@ def _v2_normalize_registered_project_for_resolution(
 
 
 def _v2_registered_projects_for_resolution() -> list[dict]:
-    """Read both project registries without backfills, migrations, or writes."""
-    managed_path = _v2_projects_registry_path()
-    legacy_path = Path(_get_disk_path()) / 'v2_projects.json'
-    projects: list[dict] = []
-    known_ids: set[str] = set()
-
-    for record in _v2_read_projects_registry(managed_path):
-        normalized = _v2_normalize_registered_project_for_resolution(
-            record, managed=True, registry_parent=managed_path.parent,
-        )
-        projects.append(normalized)
-        project_id = str(normalized.get('id') or '').strip()
-        if project_id:
-            known_ids.add(project_id)
-
-    if legacy_path.resolve(strict=False) != managed_path.resolve(strict=False):
-        for record in _v2_read_projects_registry(legacy_path):
-            project_id = str(record.get('id') or '').strip()
-            if project_id and project_id in known_ids:
-                continue
-            projects.append(_v2_normalize_registered_project_for_resolution(
-                record, managed=False, registry_parent=legacy_path.parent,
-            ))
-    return projects
+    """Read the one project registry without backfills, migrations, or writes."""
+    return _v2_load_projects()
 
 
 def _v2_context_path_variants(field: str, value) -> set[Path]:
@@ -10926,12 +9930,9 @@ def _v2_activate_project(project: dict) -> dict:
     with _V2_PROJECTS_LOCK:
         projects, located, registry_path, managed = _v2_locate_project(str(project.get('id') or ''))
         record = located or project
-        # Managed projects own mutable V2 lifecycle metadata. Registered
-        # legacy projects remain read-compatible in place: opening one must
-        # not rewrite its legacy registry merely to stamp navigation time.
-        if located is not None and managed:
+        if located is not None:
             record['last_opened_at'] = datetime.now(tz=timezone.utc).isoformat()
-            _v2_save_projects(projects, registry_path, managed=managed)
+            _v2_save_projects(projects)
     _v2_activate_v2_project(record)
     return record
 
@@ -11098,30 +10099,22 @@ def _data_library_reconcile_missing_sources() -> list[dict]:
         if not invalid_ids:
             return data_library.list_sources()
 
-        managed = _v2_load_managed_projects()
-        managed_before = copy.deepcopy(managed)
-        legacy_path = _v2_legacy_projects_registry_path()
-        legacy = [] if legacy_path.resolve() == _v2_projects_registry_path().resolve() else _v2_read_projects_registry(legacy_path)
-        legacy_before = copy.deepcopy(legacy)
-        for collection in (managed, legacy):
-            for project in collection:
-                selected = project.get('data_sources')
-                if isinstance(selected, list):
-                    project['data_sources'] = [
-                        item for item in selected
-                        if not isinstance(item, dict) or item.get('dataset_id') not in invalid_ids
-                    ]
+        projects = _v2_load_projects()
+        projects_before = copy.deepcopy(projects)
+        for project in projects:
+            selected = project.get('data_sources')
+            if isinstance(selected, list):
+                project['data_sources'] = [
+                    item for item in selected
+                    if not isinstance(item, dict) or item.get('dataset_id') not in invalid_ids
+                ]
         try:
-            if managed != managed_before:
-                _v2_save_projects(managed)
-            if legacy != legacy_before:
-                _v2_save_projects(legacy, legacy_path, managed=False)
+            if projects != projects_before:
+                _v2_save_projects(projects)
             data_library.remove_sources(invalid_ids)
         except Exception:
-            if managed != managed_before:
-                _v2_save_projects(managed_before)
-            if legacy != legacy_before:
-                _v2_save_projects(legacy_before, legacy_path, managed=False)
+            if projects != projects_before:
+                _v2_save_projects(projects_before)
             raise
         return data_library.list_sources()
 
@@ -11334,36 +10327,26 @@ def api_data_library_remove(dataset_id):
                     'projects': references,
                 }), 409
 
-        managed = _v2_load_managed_projects()
-        managed_before = copy.deepcopy(managed)
-        legacy_path = _v2_legacy_projects_registry_path()
-        legacy = [] if legacy_path.resolve() == _v2_projects_registry_path().resolve() else _v2_read_projects_registry(legacy_path)
-        legacy_before = copy.deepcopy(legacy)
-        for collection in (managed, legacy):
-            for project in collection:
-                selected = project.get('data_sources')
-                if isinstance(selected, list):
-                    project['data_sources'] = [
-                        item for item in selected
-                        if not isinstance(item, dict) or item.get('dataset_id') != dataset_id
-                    ]
+        projects = _v2_load_projects()
+        projects_before = copy.deepcopy(projects)
+        for project in projects:
+            selected = project.get('data_sources')
+            if isinstance(selected, list):
+                project['data_sources'] = [
+                    item for item in selected
+                    if not isinstance(item, dict) or item.get('dataset_id') != dataset_id
+                ]
         try:
-            if managed != managed_before:
-                _v2_save_projects(managed)
-            if legacy != legacy_before:
-                _v2_save_projects(legacy, legacy_path, managed=False)
+            if projects != projects_before:
+                _v2_save_projects(projects)
             removed = data_library.remove_source(dataset_id)
         except data_library.DataLibraryError as exc:
-            if managed != managed_before:
-                _v2_save_projects(managed_before)
-            if legacy != legacy_before:
-                _v2_save_projects(legacy_before, legacy_path, managed=False)
+            if projects != projects_before:
+                _v2_save_projects(projects_before)
             return _data_library_error_response(exc)
         except Exception as exc:
-            if managed != managed_before:
-                _v2_save_projects(managed_before)
-            if legacy != legacy_before:
-                _v2_save_projects(legacy_before, legacy_path, managed=False)
+            if projects != projects_before:
+                _v2_save_projects(projects_before)
             return jsonify({'success': False, 'error': f'Could not remove the data source: {exc}'}), 500
     return jsonify({
         'success': True,
@@ -12097,8 +11080,7 @@ def legacy_project_round(project_slug, round_number):
 
 @app.route('/api/projects', methods=['GET'])
 def api_projects_list():
-    """List only V2 registry projects (v2_projects.json) — never demo fixtures
-    and never the V1/legacy login project."""
+    """List only projects.json records, never demo fixtures or login state."""
     try:
         # Backfill any pre-slug legacy records once (no-op / no write when
         # every record already has a url_slug).
@@ -12125,6 +11107,7 @@ def api_projects_list():
                     'location_available': availability['available'],
                     'registered_path': availability['registered_path'],
                     'location_error': availability.get('message'),
+                    'imported_in_place': p.get('imported_in_place') is True,
                 })
                 summaries.append(summary)
             except Exception:
@@ -12149,9 +11132,12 @@ def api_projects_create():
             if request.form.get('project_id') else None
         )
         project_parent = _v2_validate_project_parent(
-            request.form.get('project_parent_dir') or _v2_projects_root(),
+            _v2_projects_root(),
             allow_managed_default=True,
         )
+        requested_parent = str(request.form.get('project_parent_dir') or '').strip()
+        if requested_parent and Path(requested_parent).expanduser().absolute() != project_parent:
+            raise ValueError('Managed projects must use the DiscoveryAgent Projects folder.')
     except ValueError as exc:
         return jsonify({'success': False, 'code': 'invalid_project_location', 'error': str(exc)}), 400
     try:
@@ -12179,9 +11165,6 @@ def api_projects_create():
             'success': False,
             'error': 'Please complete the required fields: ' + ', '.join(missing_fields) + '.',
         }), 400
-    if not _v2_project_directory_slug(requested_project_name):
-        return _v2_invalid_project_name_response()
-
     external_data_folder: Path | None = None
     if (request.form.get('data_folder') or '').strip():
         try:
@@ -12200,8 +11183,8 @@ def api_projects_create():
 
     record: dict | None = None
     with _V2_PROJECTS_LOCK:
-        projects = _v2_load_managed_projects()
-        existing_projects = _v2_load_projects()
+        projects = _v2_load_projects()
+        existing_projects = projects
         project_name = requested_project_name or _v2_unique_default_project_name(existing_projects)
         if _v2_project_name_conflict(existing_projects, project_name):
             return _v2_duplicate_project_name_response(project_name)
@@ -12296,6 +11279,7 @@ def api_projects_create():
                 'created_at': now,
                 'updated_at': now,
                 'last_opened_at': now,
+                'imported_in_place': False,
             }
             write_project_metadata(root, project_id, project_name)
             projects.append(record)
@@ -12320,6 +11304,320 @@ def api_projects_create():
         # while the Create Project workflow returns to the canonical list.
         'destination': url_for('project_home_canonical', project_slug=record['url_slug']),
         'projects_url': url_for('projects'),
+    })
+
+
+def _v2_import_create_directory(
+    path: Path, created_dirs: list[tuple[Path, tuple[int, int]]],
+) -> None:
+    if os.path.lexists(path):
+        if _v2_path_has_symlink_component(path) or not path.is_dir():
+            raise ValueError(f'Existing project path is unsafe or not a directory: {path}')
+        if hasattr(os, 'getuid') and path.stat().st_uid != os.getuid():
+            raise ValueError(f'Existing project path is not owned by the current user: {path}')
+        return
+    if _v2_path_has_symlink_component(path.parent):
+        raise ValueError(f'Existing project path has an unsafe parent: {path}')
+    path.mkdir()
+    metadata = path.lstat()
+    created_dirs.append((path, (metadata.st_dev, metadata.st_ino)))
+
+
+def _v2_import_write_file(path: Path, text: str) -> tuple[int, int]:
+    """Publish one UTF-8 file without replacing any existing directory entry."""
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, 'wb', closefd=True) as stream:
+            descriptor = -1
+            stream.write(text.encode('utf-8'))
+            stream.flush()
+            os.fsync(stream.fileno())
+            metadata = os.fstat(stream.fileno())
+            identity = (metadata.st_dev, metadata.st_ino)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    return identity
+
+
+def _v2_import_remove_created_file(path: Path, identity: tuple[int, int]) -> None:
+    try:
+        metadata = path.lstat()
+    except OSError:
+        return
+    if stat_module.S_ISREG(metadata.st_mode) and (metadata.st_dev, metadata.st_ino) == identity:
+        path.unlink()
+
+
+def _v2_import_restore_registry(path: Path, before: bytes | None) -> None:
+    if before is None:
+        path.unlink(missing_ok=True)
+        return
+    temporary = path.with_name(f'{path.name}.import-rollback.{os.getpid()}.{uuid.uuid4().hex[:8]}')
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, 'wb', closefd=True) as stream:
+            descriptor = -1
+            stream.write(before)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(path)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        temporary.unlink(missing_ok=True)
+
+
+def _v2_import_rollback(
+    created_files: list[tuple[Path, tuple[int, int]]],
+    created_dirs: list[tuple[Path, tuple[int, int]]],
+) -> None:
+    for path, identity in reversed(created_files):
+        try:
+            _v2_import_remove_created_file(path, identity)
+        except OSError:
+            pass
+    for path, identity in reversed(created_dirs):
+        try:
+            metadata = path.lstat()
+            if stat_module.S_ISDIR(metadata.st_mode) and (
+                metadata.st_dev, metadata.st_ino
+            ) == identity:
+                path.rmdir()
+        except OSError:
+            pass
+
+
+@app.route('/api/projects/import', methods=['POST'])
+def api_projects_import():
+    """Register a legacy project in place after explicit confirmation."""
+    requested_name = (request.form.get('project_name') or '').strip()
+    task_description = _normalize_task_description(request.form.get('task_description'))
+    dataset_context = (request.form.get('dataset_context') or '').strip()
+    selected_root = (request.form.get('project_root') or '').strip()
+    preview_token = (request.form.get('preview_token') or '').strip()
+    missing_fields = []
+    if not requested_name:
+        missing_fields.append('project name')
+    if not task_description:
+        missing_fields.append('research objective')
+    if not dataset_context:
+        missing_fields.append('project context')
+    if missing_fields:
+        return jsonify({
+            'success': False,
+            'error': 'Please complete the required fields: ' + ', '.join(missing_fields) + '.',
+        }), 400
+    if not _v2_project_directory_slug(requested_name):
+        return _v2_invalid_project_name_response()
+    try:
+        project_settings = _v2_project_configuration_from_form()
+    except model_catalog.UnsupportedProjectModel as exc:
+        return jsonify({'success': False, 'code': 'unsupported_project_model', 'error': str(exc)}), 400
+    except ValueError as exc:
+        return jsonify({'success': False, 'code': 'invalid_project_settings', 'error': str(exc)}), 400
+    try:
+        selected_data_sources = data_library.validate_selection(
+            request.form.get('data_sources') or [], require_available=True,
+        )
+    except data_library.DataLibraryError as exc:
+        return _data_library_error_response(exc)
+    expected_fingerprint = _v2_consume_project_import_preview(preview_token, selected_root)
+    if expected_fingerprint is None:
+        return jsonify({
+            'success': False, 'code': 'invalid_import_preview',
+            'error': 'This import preview is invalid or expired. Choose the existing project folder again.',
+        }), 400
+
+    record: dict | None = None
+    with _V2_PROJECTS_LOCK, local_round_runner.round_state_guard(), data_library.registry_lock():
+        try:
+            managed_path = _v2_projects_registry_path()
+            projects = [
+                _v2_normalize_registered_project_for_resolution(
+                    candidate, registry_parent=managed_path.parent,
+                )
+                for candidate in _v2_import_read_registry_strict(managed_path)
+            ]
+            existing_projects = _v2_import_registered_projects_read_only()
+            root = _v2_validate_project_import_root(selected_root, existing_projects)
+            existing_marker = _v2_import_existing_marker(root, existing_projects)
+            # Repeat the bounded read so a changed or newly conflicting metadata
+            # file cannot pass on the picker-time preview alone.
+            current_metadata = inspect_project_metadata(root)
+            current_fingerprint = _v2_import_preview_fingerprint(
+                current_metadata['metadata_token'], existing_marker,
+            )
+            if not hmac.compare_digest(current_fingerprint, expected_fingerprint):
+                raise ValueError(
+                    'Recognized project metadata changed after selection. Choose the folder again and review it.'
+                )
+            layout = recognized_layout(root)
+        except _V2ProjectMarkerError as exc:
+            return jsonify({'success': False, 'code': exc.code, 'error': str(exc)}), 409
+        except ProjectImportMetadataError as exc:
+            return jsonify({'success': False, 'code': 'invalid_import_metadata', 'error': str(exc)}), 400
+        except ValueError as exc:
+            return jsonify({'success': False, 'code': 'invalid_project_import', 'error': str(exc)}), 400
+        if existing_marker is not None and requested_name != existing_marker['display_name']:
+            return jsonify({
+                'success': False,
+                'code': 'project_marker_name_mismatch',
+                'error': (
+                    'This project already has an immutable display name. '
+                    'Choose the folder again and keep that name unchanged.'
+                ),
+            }), 409
+        if _v2_project_name_conflict(existing_projects, requested_name):
+            return _v2_duplicate_project_name_response(requested_name)
+
+        known_ids = {str(candidate.get('id') or '') for candidate in existing_projects}
+        if existing_marker is not None:
+            project_id = existing_marker['project_id']
+        else:
+            for _attempt in range(50):
+                project_id = new_project_id()
+                if project_id not in known_ids:
+                    break
+            else:
+                return jsonify({
+                    'success': False, 'code': 'project_identity_unavailable',
+                    'error': 'DiscoveryAgent could not allocate a new project identity.',
+                }), 500
+        code_dir = Path(layout['code_dir'])
+        data_dir = Path(layout['data_dir'])
+        checkpoint_dir = layout['checkpoint_dir']
+        readme_path = layout['readme_path']
+        created_dirs: list[tuple[Path, tuple[int, int]]] = []
+        created_files: list[tuple[Path, tuple[int, int]]] = []
+        registry_path = _v2_projects_registry_path()
+        registry_before = registry_path.read_bytes() if registry_path.exists() else None
+        registry_write_attempted = False
+        try:
+            if existing_marker is not None:
+                checkpoint_dir, readme_path = _v2_validate_project_reregistration_layout(
+                    root, layout,
+                )
+            else:
+                _v2_import_create_directory(code_dir, created_dirs)
+                _v2_import_create_directory(data_dir, created_dirs)
+                if checkpoint_dir is None:
+                    checkpoint_root = root / 'checkpoint'
+                    checkpoints_root = checkpoint_root / 'checkpoints'
+                    checkpoint_dir = checkpoints_root / 'round_0'
+                    _v2_import_create_directory(checkpoint_root, created_dirs)
+                    _v2_import_create_directory(checkpoints_root, created_dirs)
+                    _v2_import_create_directory(checkpoint_dir, created_dirs)
+                else:
+                    checkpoint_dir = Path(checkpoint_dir)
+                    if _v2_path_has_symlink_component(checkpoint_dir):
+                        raise ValueError('Existing checkpoint metadata cannot be imported through a symbolic link.')
+
+                if readme_path is None:
+                    readme_path = data_dir / 'README.md'
+                    identity = _v2_import_write_file(
+                        readme_path, f'# {requested_name}\n\n{dataset_context}\n',
+                    )
+                    created_files.append((readme_path, identity))
+                else:
+                    readme_path = Path(readme_path)
+
+                config_path = checkpoint_dir / 'config.json'
+                if not os.path.lexists(config_path):
+                    initial_model_config = model_catalog.project_model_role_config(
+                        project_settings['reasoning_model'], project_settings['execution_model'],
+                    )
+                    config = {'config': {
+                        'working_directory': str(code_dir),
+                        'task_description': task_description,
+                        'dataset_name': requested_name,
+                        'num_queries': local_round_runner.EXPLORATORY_ROUND_QUERY_BUDGET,
+                        'omit_deepresearch': not project_settings['deep_research'],
+                        'omit_singlesearch': not project_settings['web_search'],
+                        **initial_model_config,
+                    }}
+                    identity = _v2_import_write_file(config_path, json.dumps(config, indent=2))
+                    created_files.append((config_path, identity))
+                elif _v2_path_has_symlink_component(config_path) or not config_path.is_file():
+                    raise ValueError('Existing round configuration is unsafe.')
+
+                marker_parent = root / '.discoveryagent'
+                marker_parent_existed = os.path.lexists(marker_parent)
+                if marker_parent_existed and (
+                    _v2_path_has_symlink_component(marker_parent) or not marker_parent.is_dir()
+                ):
+                    raise ValueError('Existing DiscoveryAgent metadata directory is unsafe.')
+                if (
+                    marker_parent_existed
+                    and hasattr(os, 'getuid')
+                    and marker_parent.stat().st_uid != os.getuid()
+                ):
+                    raise ValueError('Existing DiscoveryAgent metadata directory is not owned by the current user.')
+                marker_path, marker_identity = write_project_metadata_if_absent(
+                    root, project_id, requested_name, return_identity=True,
+                )
+                created_files.append((marker_path, marker_identity))
+                if not marker_parent_existed:
+                    marker_parent_stat = marker_parent.lstat()
+                    created_dirs.append((
+                        marker_parent,
+                        (marker_parent_stat.st_dev, marker_parent_stat.st_ino),
+                    ))
+
+            if existing_marker is not None:
+                _v2_require_unchanged_import_marker(root, existing_marker)
+
+            now = datetime.now(tz=timezone.utc).isoformat()
+            record = {
+                'id': project_id,
+                'url_slug': _v2_unique_url_slug(requested_name, existing_projects),
+                'display_name': requested_name,
+                'task_description': task_description,
+                'dataset_context': dataset_context,
+                'project_root': str(root),
+                'project_parent_dir': str(root.parent),
+                'code_dir': str(code_dir),
+                'data_dir': str(data_dir),
+                'external_data': False,
+                'data_sources': selected_data_sources,
+                'checkpoint_dir': str(checkpoint_dir),
+                'readme_path': str(readme_path),
+                **project_settings,
+                'created_at': now,
+                'updated_at': now,
+                'last_opened_at': now,
+                'imported_in_place': True,
+            }
+            projects.append(record)
+            registry_write_attempted = True
+            _v2_save_projects(projects)
+            availability = _v2_project_availability(record)
+            if not availability.get('available') or _v2_project_metadata_identity(root) != project_id:
+                raise ValueError('The imported project could not be validated after registration.')
+            if existing_marker is not None:
+                _v2_require_unchanged_import_marker(root, existing_marker)
+        except Exception as exc:
+            restore_error = None
+            if registry_write_attempted:
+                try:
+                    _v2_import_restore_registry(registry_path, registry_before)
+                except OSError as rollback_exc:
+                    restore_error = rollback_exc
+            _v2_import_rollback(created_files, created_dirs)
+            detail = f'Failed to import project: {exc}'
+            if restore_error is not None:
+                detail += f' Registry rollback also failed: {restore_error}'
+            return jsonify({'success': False, 'code': 'project_import_failed', 'error': detail}), 500
+
+    _v2_activate_v2_project(record)
+    return jsonify({
+        'success': True,
+        'project_id': record['id'],
+        # Keep the project-scoped destination for API consumers while the
+        # Import Existing Project UI returns to the refreshed Projects list.
+        'destination': url_for('project_home_canonical', project_slug=record['url_slug']),
+        'projects_url': url_for('projects'),
+        'files_moved': False,
     })
 
 
@@ -12705,12 +12003,12 @@ def api_projects_detail(project_id):
     except ValueError as exc:
         return jsonify({'success': False, 'code': 'invalid_project_settings', 'error': str(exc)}), 409
     location_availability = _v2_project_availability(project)
-    registered_root = Path(
-        project.get('project_root') or get_project_root(project_id)
-    ).expanduser().absolute()
+    raw_root = project.get('project_root')
+    registered_root = Path(str(raw_root or '')).expanduser().absolute()
     payload = {
         'id': project.get('id'),
         'display_name': project.get('display_name'),
+        'imported_in_place': project.get('imported_in_place') is True,
         'task_description': _v2_project_task_description(project),
         'dataset_context': project.get('dataset_context'),
         'data_sources': _v2_data_sources_payload(project, include_source_path=not selection_only),
@@ -12829,6 +12127,16 @@ def _v2_native_project_location_picker_command(platform_name: str | None = None)
     raise RuntimeError('Choosing a project location is currently supported only on macOS.')
 
 
+def _v2_native_project_import_picker_command(platform_name: str | None = None) -> list[str]:
+    platform_name = platform_name or sys.platform
+    if platform_name == 'darwin':
+        return [
+            'osascript', '-e',
+            'POSIX path of (choose folder with prompt "Choose the existing DiscoveryAgent project folder itself")',
+        ]
+    raise RuntimeError('Importing an existing project is currently supported only on macOS.')
+
+
 @app.route('/api/project-location/choose', methods=['POST'])
 def api_project_location_choose():
     """Choose, validate, and return a parent folder without mutating it."""
@@ -12848,6 +12156,52 @@ def api_project_location_choose():
     except ValueError as exc:
         return jsonify({'success': False, 'code': 'invalid_project_location', 'error': str(exc)}), 400
     return jsonify({'success': True, 'cancelled': False, 'parent': str(parent)})
+
+
+@app.route('/api/project-import/choose', methods=['POST'])
+def api_project_import_choose():
+    """Choose and inspect one existing root without changing project state."""
+    _v2_clear_project_import_preview()
+    try:
+        command = _v2_native_project_import_picker_command()
+    except RuntimeError as exc:
+        return jsonify({'success': False, 'code': 'native_picker_unavailable', 'error': str(exc)}), 501
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True, timeout=300, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return jsonify({
+            'success': False,
+            'code': 'native_picker_failed',
+            'error': f'Could not open the folder chooser: {exc}',
+        }), 500
+    chosen = (completed.stdout or '').strip()
+    if completed.returncode != 0 or not chosen:
+        return jsonify({'success': True, 'cancelled': True})
+    try:
+        with _V2_PROJECTS_LOCK:
+            projects = _v2_import_registered_projects_read_only()
+            target = _v2_validate_project_import_root(chosen, projects)
+            existing_marker = _v2_import_existing_marker(target, projects)
+            metadata = inspect_project_metadata(target)
+            if existing_marker is not None:
+                metadata['project_name'] = existing_marker['display_name']
+    except _V2ProjectMarkerError as exc:
+        return jsonify({'success': False, 'code': exc.code, 'error': str(exc)}), 409
+    except ProjectImportMetadataError as exc:
+        return jsonify({'success': False, 'code': 'invalid_import_metadata', 'error': str(exc)}), 400
+    except ValueError as exc:
+        return jsonify({'success': False, 'code': 'invalid_project_import', 'error': str(exc)}), 400
+    fingerprint = _v2_import_preview_fingerprint(
+        metadata.pop('metadata_token'), existing_marker,
+    )
+    preview_token = _v2_issue_project_import_preview(target, fingerprint)
+    return jsonify({
+        'success': True,
+        'cancelled': False,
+        'root': str(target),
+        'preview_token': preview_token,
+        'metadata': metadata,
+    })
 
 
 def _v2_data_library_picker_helper_paths() -> tuple[Path, Path]:
@@ -13027,7 +12381,7 @@ def _v2_delete_application_roots() -> tuple[Path, ...]:
 def _v2_delete_protected_roots() -> tuple[Path, ...]:
     """Canonical broad/application roots that can never be a project target."""
     candidates = [
-        Path('/'), Path.home(), _v2_data_root(), _v2_projects_root(), _get_disk_path(),
+        Path('/'), Path.home(), _v2_data_root(), _v2_projects_root(),
         *_v2_delete_application_roots(),
     ]
     roots: list[Path] = []
@@ -13076,8 +12430,7 @@ def _v2_project_metadata_identity(target: Path) -> str:
 
 def _v2_registered_project_path(record: dict) -> Path:
     """Return the registry-owned absolute root without resolving aliases."""
-    project_id = str(record.get('id') or '').strip()
-    raw = record.get('project_root') or (get_project_root(project_id) if project_id else None)
+    raw = record.get('project_root')
     if raw is None:
         raise ValueError('The registered project root is missing.')
     path = Path(str(raw)).expanduser()
@@ -13086,219 +12439,322 @@ def _v2_registered_project_path(record: dict) -> Path:
     return path.absolute()
 
 
-def _v2_project_registry_origin(record: dict) -> str | None:
-    """Return one record's unique registry origin without migrations or writes."""
-    project_id = str(record.get('id') or '').strip()
-    if not project_id:
-        return None
+_V2_IMPORT_REGISTRY_MAX_BYTES = 16 * 1024 * 1024
+
+
+def _v2_import_read_registry_strict(path: Path) -> list[dict]:
+    """Read one registry for import without silently accepting corruption."""
+    if not os.path.lexists(path):
+        return []
+    if _v2_path_has_symlink_component(path) or not path.is_file():
+        raise ValueError("The DiscoveryAgent project registry is unsafe.")
     try:
-        registered_root = _v2_registered_project_path(record)
-    except ValueError:
-        return None
-    managed_path = _v2_projects_registry_path()
-    legacy_path = _v2_legacy_projects_registry_path()
-    matches: list[str] = []
-    registries = [('managed', managed_path)]
-    if legacy_path.resolve(strict=False) != managed_path.resolve(strict=False):
-        registries.append(('legacy', legacy_path))
-    for origin, registry_path in registries:
-        for candidate in _v2_read_projects_registry(registry_path):
-            if str(candidate.get('id') or '').strip() != project_id:
-                continue
-            normalized = _v2_normalize_registered_project_for_resolution(
-                candidate,
-                managed=origin == 'managed',
-                registry_parent=registry_path.parent,
-            )
-            try:
-                candidate_root = _v2_registered_project_path(normalized)
-            except ValueError:
-                continue
-            if candidate_root == registered_root:
-                matches.append(origin)
-    return matches[0] if len(matches) == 1 else None
-
-
-def _v2_legacy_project_structure(
-    record: dict, target: Path, *, allow_registered_custom_root: bool = False,
-) -> None:
-    """Validate one unmarked project against the registered legacy contract.
-
-    The registry and its exact in-place root are the legacy identity anchor.
-    Configured paths must remain real, non-symlink descendants of that root;
-    no marker, migration, directory creation, or other write occurs here.
-    """
-    legacy_unresolved = Path(_get_disk_path()).expanduser().absolute()
-    if _v2_path_has_symlink_component(legacy_unresolved):
-        raise ValueError('The registered legacy storage root is unsafe.')
-    try:
-        legacy_root = legacy_unresolved.resolve(strict=True)
-    except OSError as exc:
-        raise ValueError('The registered legacy storage root is unavailable.') from exc
-    if target == legacy_root or not target.is_relative_to(legacy_root):
-        if not allow_registered_custom_root:
-            raise ValueError('The unmarked project is outside its registered legacy storage root.')
-        raw_parent = record.get('project_parent_dir')
-        if not raw_parent:
-            raise ValueError('The custom legacy project parent identity is missing.')
-        parent = Path(str(raw_parent)).expanduser()
-        if not parent.is_absolute() or '..' in parent.parts:
-            raise ValueError('The custom legacy project parent identity is unsafe.')
-        unresolved_parent = parent.absolute()
-        if _v2_path_has_symlink_component(unresolved_parent):
-            raise ValueError('The custom legacy project parent identity is unsafe.')
-        try:
-            canonical_parent = unresolved_parent.resolve(strict=True)
-        except OSError as exc:
-            raise ValueError('The custom legacy project parent is unavailable.') from exc
-        if canonical_parent != target.parent:
-            raise ValueError('The custom legacy project root does not match its registered parent.')
-
-    protected = _v2_delete_protected_roots()
-    if any(target == root or root.is_relative_to(target) for root in protected):
-        raise ValueError('The registered legacy path is a protected application or storage root.')
-    if any(
-        target.is_relative_to(root) or root.is_relative_to(target)
-        for root in _v2_delete_application_roots()
+        metadata = path.stat()
+        if metadata.st_size > _V2_IMPORT_REGISTRY_MAX_BYTES:
+            raise ValueError("The DiscoveryAgent project registry is too large to inspect safely.")
+        raw = path.read_bytes()
+        if len(raw) > _V2_IMPORT_REGISTRY_MAX_BYTES:
+            raise ValueError("The DiscoveryAgent project registry is too large to inspect safely.")
+        payload = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("The DiscoveryAgent project registry is unreadable or malformed.") from exc
+    projects = payload.get("projects") if isinstance(payload, dict) else None
+    if not isinstance(projects, list) or not all(isinstance(record, dict) for record in projects):
+        raise ValueError("The DiscoveryAgent project registry is malformed.")
+    project_ids = [record.get('id') for record in projects]
+    if (
+        any(not isinstance(project_id, str) or not project_id.strip() for project_id in project_ids)
+        or len(project_ids) != len(set(project_ids))
     ):
-        raise ValueError('The registered legacy path overlaps an application source or install root.')
-
-    def configured_path(field: str, fallback: Path) -> Path:
-        raw = record.get(field)
-        candidate = Path(str(raw)).expanduser() if raw else fallback
-        if not candidate.is_absolute():
-            candidate = target / candidate
-        unresolved = candidate.absolute()
-        if _v2_path_has_symlink_component(unresolved):
-            raise ValueError(f'The registered legacy {field} path is unsafe.')
-        try:
-            resolved = unresolved.resolve(strict=True)
-        except OSError as exc:
-            raise ValueError(f'The registered legacy {field} path is unavailable.') from exc
-        if resolved != unresolved or not resolved.is_relative_to(target):
-            raise ValueError(f'The registered legacy {field} path escapes the project root.')
-        return resolved
-
-    code_dir = configured_path('code_dir', target / 'code')
-    data_dir = configured_path('data_dir', code_dir / 'data')
-    checkpoint_dir = configured_path(
-        'checkpoint_dir', target / 'checkpoint' / 'checkpoints' / 'round_0',
-    )
-    if not code_dir.is_dir() or not data_dir.is_dir() or not checkpoint_dir.is_dir():
-        raise ValueError('The registered legacy project structure is incomplete.')
-    readme_raw = record.get('readme_path')
-    if readme_raw:
-        readme = configured_path('readme_path', data_dir / 'README.md')
-        if not readme.is_file():
-            raise ValueError('The registered legacy README path is unavailable.')
+        raise ValueError("The DiscoveryAgent project registry is malformed.")
+    return projects
 
 
-def _v2_validate_legacy_marker_backfill_eligibility(record: dict, target: Path) -> None:
-    """Require exact registry identity before creating legacy marker metadata."""
-    if _v2_project_registry_origin(record) != 'legacy':
-        raise ValueError('Only an authoritative legacy registry entry can be repaired.')
-    registered = _v2_registered_project_path(record)
-    if registered != target:
-        raise ValueError('The selected folder does not exactly match the registered legacy root.')
-    if _v2_path_has_symlink_component(registered):
-        raise ValueError('The registered legacy project root is unsafe.')
-    try:
-        canonical = registered.resolve(strict=True)
-    except OSError as exc:
-        raise ValueError('The registered legacy project root is unavailable.') from exc
-    if canonical != registered or canonical != target or not canonical.is_dir():
-        raise ValueError('The registered legacy project root is not canonical.')
-    project_id = str(record.get('id') or '').strip()
-    display_name = str(record.get('display_name') or '').strip()
-    if not project_id or not display_name:
-        raise ValueError('The legacy registry identity is incomplete.')
-    if hasattr(os, 'getuid') and canonical.stat().st_uid != os.getuid():
-        raise ValueError('The registered legacy project is not owned by the current user.')
-    metadata_parent = canonical / '.discoveryagent'
-    if os.path.lexists(metadata_parent):
-        if _v2_path_has_symlink_component(metadata_parent) or not metadata_parent.is_dir():
-            raise ValueError('The project metadata directory is unsafe.')
-        if hasattr(os, 'getuid') and metadata_parent.stat().st_uid != os.getuid():
-            raise ValueError('The project metadata directory is not owned by the current user.')
-    _v2_legacy_project_structure(
-        record, canonical, allow_registered_custom_root=True,
-    )
-    for other in _v2_registered_projects_for_resolution():
-        if str(other.get('id') or '').strip() == project_id:
-            continue
-        try:
-            other_root = _v2_registered_project_path(other).resolve(strict=False)
-        except (OSError, ValueError):
-            continue
-        if canonical == other_root or canonical.is_relative_to(other_root) or other_root.is_relative_to(canonical):
-            raise ValueError('The registered legacy root overlaps another project.')
-    # Inspect the registry bytes directly. Eligibility checks must not invoke
-    # Data Library's compatibility repair path, which can rewrite a malformed
-    # presentation-only display name while loading otherwise valid records.
-    data_registry_path = data_library.registry_path()
-    try:
-        data_registry = (
-            json.loads(data_registry_path.read_text(encoding='utf-8'))
-            if data_registry_path.exists()
-            else {'datasets': []}
+def _v2_import_registered_projects_read_only() -> list[dict]:
+    """Read the one project registry without migrations or writes."""
+    registry_path = _v2_projects_registry_path()
+    return [
+        _v2_normalize_registered_project_for_resolution(
+            record, registry_parent=registry_path.parent,
         )
-    except (OSError, ValueError) as exc:
-        raise ValueError('DiscoveryAgent Data could not be inspected safely.') from exc
-    data_sources = data_registry.get('datasets') if isinstance(data_registry, dict) else None
-    if not isinstance(data_sources, list):
+        for record in _v2_import_read_registry_strict(registry_path)
+    ]
+
+
+def _v2_import_data_source_roots() -> tuple[Path, ...]:
+    """Read Data Library roots without invoking compatibility writes."""
+    path = data_library.registry_path()
+    if not os.path.lexists(path):
+        return ()
+    if _v2_path_has_symlink_component(path) or not path.is_file():
         raise ValueError('DiscoveryAgent Data could not be inspected safely.')
-    for source in data_sources:
+    try:
+        metadata = path.stat()
+        if metadata.st_size > _V2_IMPORT_REGISTRY_MAX_BYTES:
+            raise ValueError('DiscoveryAgent Data could not be inspected safely.')
+        raw = path.read_bytes()
+        if len(raw) > _V2_IMPORT_REGISTRY_MAX_BYTES:
+            raise ValueError('DiscoveryAgent Data could not be inspected safely.')
+        payload = json.loads(raw.decode('utf-8'))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError('DiscoveryAgent Data could not be inspected safely.') from exc
+    datasets = payload.get('datasets') if isinstance(payload, dict) else None
+    if not isinstance(datasets, list):
+        raise ValueError('DiscoveryAgent Data could not be inspected safely.')
+    roots: list[Path] = []
+    for source in datasets:
         if not isinstance(source, dict):
             raise ValueError('DiscoveryAgent Data could not be inspected safely.')
-        raw_source = source.get('canonical_path') or source.get('source_path')
-        source_path = Path(str(raw_source or '')).expanduser()
-        if not raw_source or not source_path.is_absolute() or '..' in source_path.parts:
+        raw = source.get('canonical_path') or source.get('source_path')
+        candidate = Path(str(raw or '')).expanduser()
+        if not raw or not candidate.is_absolute() or '..' in candidate.parts:
             raise ValueError('DiscoveryAgent Data could not be inspected safely.')
-        unresolved_source = source_path.absolute()
-        if _v2_path_has_symlink_component(unresolved_source):
+        unresolved = candidate.absolute()
+        if _v2_path_has_symlink_component(unresolved):
             raise ValueError('DiscoveryAgent Data could not be inspected safely.')
         try:
-            source_root = unresolved_source.resolve(strict=True)
+            canonical = unresolved.resolve(strict=False)
         except OSError:
-            continue
-        if canonical == source_root or canonical.is_relative_to(source_root) or source_root.is_relative_to(canonical):
-            raise ValueError('The registered legacy root overlaps DiscoveryAgent Data.')
+            raise ValueError('DiscoveryAgent Data could not be inspected safely.')
+        if canonical != unresolved:
+            raise ValueError('DiscoveryAgent Data could not be inspected safely.')
+        if canonical not in roots:
+            roots.append(canonical)
+    return tuple(roots)
 
 
-def _v2_backfill_exact_registered_legacy_marker(record: dict, target: Path) -> bool:
-    """Atomically backfill one exact trusted legacy root; never replace metadata."""
-    with _V2_PROJECTS_LOCK:
-        target = Path(target).expanduser().absolute()
-        _v2_validate_legacy_marker_backfill_eligibility(record, target)
-        project_id = str(record.get('id') or '').strip()
-        display_name = str(record.get('display_name') or '').strip()
-        marker = target / '.discoveryagent' / 'project.json'
-        if os.path.lexists(marker):
-            embedded_id = _v2_project_metadata_identity(target)
-            if embedded_id != project_id:
-                raise _V2ProjectMarkerError(
-                    'project_marker_mismatch',
-                    'The project at the registered location has a different identity.',
-                )
-            return False
-        created = False
+def _v2_validate_project_import_root(
+    raw: str | os.PathLike,
+    registered_projects: list[dict],
+) -> Path:
+    """Validate one selected existing root without scanning or changing it."""
+    text = str(raw or '').strip()
+    if not text or '\x00' in text:
+        raise ValueError('Choose the existing project folder itself.')
+    expanded = Path(text).expanduser()
+    if not expanded.is_absolute() or '..' in expanded.parts:
+        raise ValueError('The selected project folder must be a canonical absolute path.')
+    unresolved = expanded.absolute()
+    if _v2_path_has_symlink_component(unresolved):
+        raise ValueError('An existing project cannot be imported through a symbolic link or alias.')
+    try:
+        target = unresolved.resolve(strict=True)
+    except OSError as exc:
+        raise ValueError('The selected project folder is unavailable or unreadable.') from exc
+    if target != unresolved or not target.is_dir():
+        raise ValueError('Select the real project directory itself.')
+    if not os.access(target, os.R_OK | os.W_OK | os.X_OK):
+        raise ValueError('The selected project folder must be readable and writable.')
+    if hasattr(os, 'getuid') and target.stat().st_uid != os.getuid():
+        raise ValueError('The selected project folder must be owned by the current user.')
+
+    if any(
+        target == protected or protected.is_relative_to(target)
+        for protected in _v2_delete_protected_roots()
+    ):
+        raise ValueError('The selected path is a protected application or storage root.')
+    for application_root in _v2_delete_application_roots():
+        if (
+            target == application_root
+            or target.is_relative_to(application_root)
+            or application_root.is_relative_to(target)
+        ):
+            raise ValueError('Application source or install folders cannot be imported as projects.')
+
+    for record in registered_projects:
         try:
-            write_project_metadata_if_absent(target, project_id, display_name)
-            created = True
-        except FileExistsError:
-            # Another process won the no-overwrite publication race. Validate
-            # its complete marker rather than replacing or trusting it.
-            pass
-        embedded_id = _v2_project_metadata_identity(target)
-        if embedded_id != project_id:
+            other_root = _v2_registered_project_path(record).resolve(strict=False)
+        except (OSError, ValueError):
+            continue
+        if target == other_root:
+            availability = _v2_project_availability(record)
+            if availability.get('available'):
+                raise _V2ProjectMarkerError(
+                    'project_already_registered',
+                    'This project folder is already registered and available in DiscoveryAgent.',
+                )
+            raise _V2ProjectMarkerError(
+                'project_registered_unavailable',
+                'This folder matches an existing unavailable registration. '
+                'Repair or Locate that project instead of importing a duplicate.',
+            )
+        if target.is_relative_to(other_root) or other_root.is_relative_to(target):
+            raise ValueError('The selected folder overlaps another registered DiscoveryAgent project.')
+    for source_root in _v2_import_data_source_roots():
+        if (
+            target == source_root
+            or target.is_relative_to(source_root)
+            or source_root.is_relative_to(target)
+        ):
+            raise ValueError('A DiscoveryAgent Data source cannot be imported as a project folder.')
+    return target
+
+
+_V2_IMPORT_MARKER_MAX_BYTES = 64 * 1024
+_V2_IMPORT_MARKER_MAX_NAME_CHARS = 20_000
+
+
+def _v2_read_import_marker(target: Path) -> dict | None:
+    """Read a bounded, immutable import marker without following aliases."""
+    marker = target / '.discoveryagent' / 'project.json'
+    if not os.path.lexists(marker):
+        return None
+    marker_parent = marker.parent
+    if (
+        _v2_path_has_symlink_component(marker_parent)
+        or not marker_parent.is_dir()
+        or _v2_path_has_symlink_component(marker)
+    ):
+        raise _V2ProjectMarkerError(
+            'project_marker_unsafe', 'The project identity metadata is unsafe.',
+        )
+    try:
+        parent_stat = marker_parent.stat()
+        marker_stat = marker.lstat()
+    except OSError as exc:
+        raise _V2ProjectMarkerError(
+            'project_marker_unsafe', 'The project identity metadata is unsafe.',
+        ) from exc
+    if (
+        not stat_module.S_ISREG(marker_stat.st_mode)
+        or marker_stat.st_nlink != 1
+        or marker_stat.st_size <= 0
+        or marker_stat.st_size > _V2_IMPORT_MARKER_MAX_BYTES
+        or (
+            hasattr(os, 'getuid')
+            and (parent_stat.st_uid != os.getuid() or marker_stat.st_uid != os.getuid())
+        )
+    ):
+        raise _V2ProjectMarkerError(
+            'project_marker_unsafe', 'The project identity metadata is unsafe.',
+        )
+    try:
+        raw = marker.read_bytes()
+        if len(raw) > _V2_IMPORT_MARKER_MAX_BYTES:
+            raise OSError('marker grew while being read')
+        payload = json.loads(raw.decode('utf-8'))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise _V2ProjectMarkerError(
+            'project_marker_malformed',
+            'The project identity metadata could not be validated.',
+        ) from exc
+    project_id = payload.get('project_id') if isinstance(payload, dict) else None
+    display_name = payload.get('display_name') if isinstance(payload, dict) else None
+    if (
+        not isinstance(project_id, str)
+        or not (
+            _V2_PROJECT_ID_RE.fullmatch(project_id)
+            or _LEGACY_PROJECT_ID_RE.fullmatch(project_id)
+        )
+        or not isinstance(display_name, str)
+        or display_name != display_name.strip()
+        or not display_name
+        or '\x00' in display_name
+        or len(display_name) > _V2_IMPORT_MARKER_MAX_NAME_CHARS
+        or not _v2_project_directory_slug(display_name)
+    ):
+        raise _V2ProjectMarkerError(
+            'project_marker_malformed',
+            'The project identity metadata is incomplete or malformed.',
+        )
+    return {
+        'project_id': project_id,
+        'display_name': display_name,
+        'sha256': hashlib.sha256(raw).hexdigest(),
+        'identity': (marker_stat.st_dev, marker_stat.st_ino),
+    }
+
+
+def _v2_import_existing_marker(
+    target: Path, registered_projects: list[dict],
+) -> dict | None:
+    """Allow only an unregistered valid marker; direct conflicts to Locate."""
+    marker = _v2_read_import_marker(target)
+    if marker is None:
+        return None
+    embedded_id = marker['project_id']
+    matching = [
+        record for record in registered_projects
+        if str(record.get('id') or '').strip() == embedded_id
+    ]
+    if matching:
+        if any(_v2_project_availability(record).get('available') for record in matching):
             raise _V2ProjectMarkerError(
                 'project_marker_mismatch',
-                'The project at the registered location has a different identity.',
+                'This folder copies an identity that is already available at another registered location.',
             )
-        return created
+        raise _V2ProjectMarkerError(
+            'project_requires_locate',
+            'This project identity is already registered. Use Locate Project to reconnect its existing record.',
+        )
+    return marker
 
 
-def _v2_project_availability(record: dict, *, managed: bool | None = None) -> dict:
+def _v2_import_preview_fingerprint(metadata_token: str, marker: dict | None) -> str:
+    """Bind an import preview to both recognized metadata and marker identity."""
+    payload = {
+        'metadata_token': metadata_token,
+        'marker_project_id': marker.get('project_id') if marker else None,
+        'marker_display_name': marker.get('display_name') if marker else None,
+        'marker_sha256': marker.get('sha256') if marker else None,
+        'marker_identity': marker.get('identity') if marker else None,
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(',', ':')).encode('utf-8')
+    ).hexdigest()
+
+
+def _v2_require_unchanged_import_marker(target: Path, expected: dict) -> None:
+    current = _v2_read_import_marker(target)
+    if current is None or any(
+        current.get(key) != expected.get(key)
+        for key in ('project_id', 'display_name', 'sha256', 'identity')
+    ):
+        raise ValueError(
+            'The existing project identity changed during registration. '
+            'Choose the folder again and review it.'
+        )
+
+
+def _v2_validate_project_reregistration_layout(
+    root: Path, layout: dict[str, Path | None],
+) -> tuple[Path, Path]:
+    """Validate the post-import layout without creating or changing any file."""
+    required_directories = [
+        Path(layout['code_dir']),
+        Path(layout['data_dir']),
+        Path(layout['checkpoint_dir']) if layout['checkpoint_dir'] is not None else None,
+    ]
+    if required_directories[-1] is None:
+        raise ValueError('The existing registered project is missing its round-zero configuration.')
+    for path in required_directories:
+        assert path is not None
+        if (
+            not os.path.lexists(path)
+            or _v2_path_has_symlink_component(path)
+            or not path.is_dir()
+            or not path.resolve(strict=True).is_relative_to(root)
+            or (hasattr(os, 'getuid') and path.stat().st_uid != os.getuid())
+        ):
+            raise ValueError('The existing registered project layout is unsafe or incomplete.')
+    checkpoint_dir = required_directories[-1]
+    assert checkpoint_dir is not None
+    readme_path = Path(layout['readme_path']) if layout['readme_path'] is not None else None
+    config_path = checkpoint_dir / 'config.json'
+    for path in (readme_path, config_path):
+        if (
+            path is None
+            or not os.path.lexists(path)
+            or _v2_path_has_symlink_component(path)
+            or not path.is_file()
+            or not path.resolve(strict=True).is_relative_to(root)
+            or (hasattr(os, 'getuid') and path.stat().st_uid != os.getuid())
+        ):
+            raise ValueError('The existing registered project layout is unsafe or incomplete.')
+    return checkpoint_dir, readme_path
+
+
+def _v2_project_availability(record: dict) -> dict:
     """Derive live availability from the registered root and project identity.
 
     This result is deliberately never persisted: reconnecting a volume or
@@ -13334,30 +12790,18 @@ def _v2_project_availability(record: dict, *, managed: bool | None = None) -> di
     ):
         result['message'] = 'The registered path overlaps a protected application source or install root.'
         return result
-    origin = ('managed' if managed else 'legacy') if managed is not None else _v2_project_registry_origin(record)
     metadata = target / '.discoveryagent' / 'project.json'
-    marker_present = os.path.lexists(metadata)
-    if marker_present:
-        try:
-            embedded_id = _v2_project_metadata_identity(target)
-        except ValueError as exc:
-            result['message'] = str(exc)
-            return result
-        if embedded_id != project_id:
-            result['message'] = 'The project at the saved location has a different identity.'
-            return result
-    elif origin == 'managed':
+    if not os.path.lexists(metadata):
         result['message'] = 'The project identity metadata is missing or unsafe.'
         return result
-    elif origin != 'legacy':
-        result['message'] = 'The registered project origin could not be validated.'
+    try:
+        embedded_id = _v2_project_metadata_identity(target)
+    except ValueError as exc:
+        result['message'] = str(exc)
         return result
-    else:
-        try:
-            _v2_legacy_project_structure(record, target)
-        except ValueError as exc:
-            result['message'] = str(exc)
-            return result
+    if embedded_id != project_id:
+        result['message'] = 'The project at the saved location has a different identity.'
+        return result
     result.update({'available': True, 'root': str(target), 'message': None})
     return result
 
@@ -13466,7 +12910,7 @@ def _v2_validate_project_recovery_root(
 
     protected_exact = {
         Path('/').resolve(), Path.home().resolve(), _v2_data_root().resolve(strict=False),
-        _v2_projects_root().resolve(strict=False), _get_disk_path().resolve(strict=False),
+        _v2_projects_root().resolve(strict=False),
     }
     if target in protected_exact:
         raise ValueError('The selected path is a protected application or storage root.')
@@ -13477,35 +12921,21 @@ def _v2_validate_project_recovery_root(
     try:
         embedded_id = _v2_project_metadata_identity(target)
     except _V2ProjectMarkerError as exc:
-        repaired = False
-        if exc.code == 'project_marker_missing' and recovery_record is not None:
-            try:
-                registered = _v2_registered_project_path(recovery_record)
-            except ValueError:
-                registered = None
-            if (
-                registered == target
-                and _v2_project_registry_origin(recovery_record) == 'legacy'
-            ):
-                _v2_backfill_exact_registered_legacy_marker(recovery_record, target)
-                embedded_id = _v2_project_metadata_identity(target)
-                repaired = True
-        if not repaired:
-            if exc.code == 'project_marker_missing':
-                raise _V2ProjectMarkerError(
-                    exc.code,
-                    'The selected folder is not a DiscoveryAgent project. '
-                    'Select the project folder itself, not its parent.',
-                ) from exc
-            if exc.code == 'project_marker_unsafe':
-                raise _V2ProjectMarkerError(
-                    exc.code,
-                    'The selected folder contains unsafe DiscoveryAgent project metadata.',
-                ) from exc
+        if exc.code == 'project_marker_missing':
             raise _V2ProjectMarkerError(
                 exc.code,
-                'The selected folder contains invalid DiscoveryAgent project metadata.',
+                'The selected folder is not a DiscoveryAgent project. '
+                'Select the project folder itself, not its parent.',
             ) from exc
+        if exc.code == 'project_marker_unsafe':
+            raise _V2ProjectMarkerError(
+                exc.code,
+                'The selected folder contains unsafe DiscoveryAgent project metadata.',
+            ) from exc
+        raise _V2ProjectMarkerError(
+            exc.code,
+            'The selected folder contains invalid DiscoveryAgent project metadata.',
+        ) from exc
     if embedded_id != project_id:
         raise _V2ProjectMarkerError(
             'project_marker_mismatch',
@@ -13581,6 +13011,10 @@ def api_project_location_recover(project_id):
                 _v2_load_projects(),
                 recovery_record=record,
             )
+            if managed and target.parent.resolve() != _v2_projects_root().resolve(strict=False):
+                raise ValueError(
+                    'Managed projects must be located inside the DiscoveryAgent Projects folder.'
+                )
             old_root = _v2_registered_project_path(record)
             updated = _v2_rebased_project_record(record, old_root, target)
             updated['project_parent_dir'] = str(target.parent)
@@ -13592,7 +13026,7 @@ def api_project_location_recover(project_id):
                 }), 409
             index = next(i for i, item in enumerate(projects) if item.get('id') == project_id)
             projects[index] = updated
-            _v2_save_projects(projects, registry_path, managed=managed)
+            _v2_save_projects(projects)
         except _V2ProjectMarkerError as exc:
             return jsonify({'success': False, 'code': exc.code, 'error': str(exc)}), 400
         except ValueError as exc:
@@ -13613,14 +13047,15 @@ def api_project_location_recover(project_id):
 
 
 def _v2_project_delete_root(
-    record: dict, *, managed: bool, registered_projects: list[dict] | None = None,
+    record: dict, *, registered_projects: list[dict] | None = None,
 ) -> Path:
     """Resolve an identity-bound project root before moving it to Trash."""
     project_id = str(record.get('id') or '').strip()
     if not project_id:
         raise ValueError('The registered project identity is missing.')
-    default_root = get_project_root(project_id) if managed else (_get_disk_path() / project_id)
-    root_raw = record.get('project_root') or str(default_root)
+    root_raw = record.get('project_root')
+    if not root_raw:
+        raise ValueError('The registered project root is missing.')
     root = Path(str(root_raw)).expanduser()
     if not root.is_absolute() or '..' in root.parts:
         raise ValueError('The registered project root is not a canonical absolute path.')
@@ -13633,10 +13068,10 @@ def _v2_project_delete_root(
         raise ValueError('The registered project folder is unavailable. Reconnect its volume and try again.') from exc
     if target != registered_root or not target.is_dir():
         raise ValueError('The registered project root is not a canonical real directory.')
-    default_target = Path(default_root).expanduser().resolve(strict=False)
+    managed_parent = _v2_projects_root().expanduser().resolve(strict=False)
+    if target.parent != managed_parent:
+        raise ValueError('Managed projects must remain in the DiscoveryAgent Projects folder.')
     registered_parent = record.get('project_parent_dir')
-    if target != default_target and not registered_parent:
-        raise ValueError('The custom project parent identity is missing from the registry.')
     if registered_parent:
         parent = Path(str(registered_parent)).expanduser()
         if not parent.is_absolute() or '..' in parent.parts or _v2_path_has_symlink_component(parent.absolute()):
@@ -13657,11 +13092,8 @@ def _v2_project_delete_root(
     ):
         raise ValueError('The registered path overlaps a protected application source or install root.')
 
-    legacy_root = Path(_get_disk_path()).expanduser().resolve(strict=False)
-    legacy_in_place = not managed and target.is_relative_to(legacy_root) and target != legacy_root
-    if managed or not legacy_in_place:
-        if _v2_project_metadata_identity(target) != project_id:
-            raise ValueError('The project metadata does not match the registered project identity.')
+    if _v2_project_metadata_identity(target) != project_id:
+        raise ValueError('The project metadata does not match the registered project identity.')
 
     for other in registered_projects or _v2_load_projects():
         if str(other.get('id') or '') == project_id:
@@ -13687,31 +13119,21 @@ def _v2_project_delete_root(
 
 
 def _v2_locate_unique_project_for_delete(project_id: str) -> tuple[list[dict], dict | None, Path, bool]:
-    """Require a project ID to occur in exactly one managed or legacy registry."""
-    managed_path = _v2_projects_registry_path()
-    managed_projects = _v2_load_managed_projects()
-    legacy_path = _v2_legacy_projects_registry_path()
-    legacy_projects = (
-        [] if legacy_path.resolve() == managed_path.resolve()
-        else _v2_read_projects_registry(legacy_path)
-    )
-    matches = [
-        (managed_projects, project, managed_path, True)
-        for project in managed_projects if project.get('id') == project_id
-    ] + [
-        (legacy_projects, project, legacy_path, False)
-        for project in legacy_projects if project.get('id') == project_id
-    ]
+    """Require a project ID to occur at most once in the one registry."""
+    registry_path = _v2_projects_registry_path()
+    projects = _v2_load_projects()
+    matches = [project for project in projects if project.get('id') == project_id]
     if len(matches) > 1:
-        raise ValueError('The project identity appears more than once in the project registries.')
+        raise ValueError('The project identity appears more than once in the project registry.')
     if not matches:
-        return managed_projects, None, managed_path, True
-    return matches[0]
+        return projects, None, registry_path, True
+    record = matches[0]
+    return projects, record, registry_path, record.get('imported_in_place') is not True
 
 
 @app.route('/api/projects/<project_id>', methods=['DELETE'])
 def api_projects_delete(project_id):
-    """Remove a V2 project after moving its complete local root to OS Trash."""
+    """Remove an imported registration or Trash a managed project's root."""
 
     was_active = session.get('v2_active_project_id') == project_id
     with _V2_PROJECTS_LOCK, local_round_runner.round_state_guard(), data_library.registry_lock():
@@ -13730,8 +13152,9 @@ def api_projects_delete(project_id):
                 'code': 'project_delete_locked_while_running',
                 'error': 'Stop the active round before deleting this project.',
             }), 409
-        availability = _v2_project_availability(record, managed=managed)
-        if not availability['available']:
+        availability = _v2_project_availability(record)
+        imported_in_place = record.get('imported_in_place') is True
+        if not availability['available'] and not imported_in_place:
             if request.args.get('confirm_unavailable', '').lower() != 'true':
                 return jsonify({
                     'success': False,
@@ -13742,24 +13165,37 @@ def api_projects_delete(project_id):
                     ),
                     'registered_path': availability.get('registered_path'),
                 }), 409
+        projects_before = copy.deepcopy(projects)
+        registry_before = registry_path.read_bytes() if registry_path.exists() else None
+        if imported_in_place or not availability['available']:
             del projects[index]
             try:
-                _v2_save_projects(projects, registry_path, managed=managed)
+                _v2_save_projects(projects)
             except Exception as exc:
+                restore_error = None
+                try:
+                    _v2_import_restore_registry(registry_path, registry_before)
+                except OSError as rollback_exc:
+                    restore_error = rollback_exc
+                message = (
+                    'Could not remove the project registration; no project files were changed: '
+                    f'{exc}'
+                )
+                if restore_error is not None:
+                    message += f' Registry rollback also failed: {restore_error}'
                 return jsonify({
                     'success': False,
-                    'error': f'Could not remove the unavailable project from DiscoveryAgent: {exc}',
+                    'error': message,
                 }), 500
             removal_mode = 'registry_only'
         else:
             removal_mode = 'trash'
-        projects_before = copy.deepcopy(projects)
         moved_to_trash = False
         trash_receipt = None
         if removal_mode == 'trash':
             try:
                 project_root = _v2_project_delete_root(
-                    record, managed=managed, registered_projects=_v2_load_projects(),
+                    record, registered_projects=_v2_load_projects(),
                 )
             except ValueError as exc:
                 return jsonify({
@@ -13776,7 +13212,7 @@ def api_projects_delete(project_id):
                     trash_receipt['trash_path'] = Path(move_result)
                 moved_to_trash = True
                 del projects[index]
-                _v2_save_projects(projects, registry_path, managed=managed)
+                _v2_save_projects(projects)
             except Exception as exc:
                 import traceback
                 traceback.print_exc()
@@ -13788,7 +13224,7 @@ def api_projects_delete(project_id):
                     except Exception as rollback_exc:
                         restore_error = rollback_exc
                     try:
-                        _v2_save_projects(projects_before, registry_path, managed=managed)
+                        _v2_save_projects(projects_before)
                     except Exception as rollback_exc:
                         registry_error = rollback_exc
                     if restore_error or registry_error:
@@ -13820,7 +13256,7 @@ def api_projects_delete(project_id):
         clear_session_state()
         for key in (
             'project_config', 'project_label', 'v2_active_project_id',
-            'v2_active_project_slug', 'checkpoint_s3_prefix', 'cleanup_ready',
+            'v2_active_project_slug', 'checkpoint_s3_prefix',
         ):
             session.pop(key, None)
     _v2_clear_project_runtime_caches()
@@ -13848,7 +13284,29 @@ def api_projects_edit(project_id):
         if record is None:
             return jsonify({'success': False, 'error': 'Project not found.'}), 404
 
-        availability = _v2_project_availability(record, managed=managed)
+        raw_matches = [
+            candidate for candidate in _v2_import_read_registry_strict(registry_path)
+            if candidate.get('id') == project_id
+        ]
+        try:
+            raw_registered_root = (
+                _v2_registered_project_path(raw_matches[0])
+                if len(raw_matches) == 1 else None
+            )
+        except ValueError:
+            raw_registered_root = None
+        if (
+            raw_registered_root is None
+            or _v2_path_has_symlink_component(raw_registered_root)
+        ):
+            return jsonify({
+                'success': False,
+                'code': 'project_location_recovery_required',
+                'error': 'The saved project location is unsafe. Locate the real project folder before saving changes.',
+                'registered_path': str(raw_registered_root or record.get('project_root') or ''),
+            }), 409
+
+        availability = _v2_project_availability(record)
         if not availability['available']:
             return jsonify({
                 'success': False,
@@ -13862,13 +13320,39 @@ def api_projects_edit(project_id):
 
         record_index = next(index for index, item in enumerate(projects) if item.get('id') == project_id)
         record_before = copy.deepcopy(record)
+        registry_before = registry_path.read_bytes() if registry_path.exists() else None
         relocation = None
         source_root: Path | None = None
         captured_files: dict[Path, bytes | None] = {}
         created_uploads: list[Path] = []
+        files_mutated = False
+        registry_write_attempted = False
+
+        def rollback_failure_response():
+            rollback_errors = _v2_rollback_project_edit(
+                relocation=relocation,
+                source_root=source_root,
+                captured_files=captured_files,
+                created_uploads=created_uploads,
+                files_mutated=files_mutated,
+                registry_path=registry_path,
+                registry_before=registry_before,
+                registry_write_attempted=registry_write_attempted,
+            )
+            if not rollback_errors:
+                return None
+            return jsonify({
+                'success': False,
+                'code': 'project_edit_rollback_failed',
+                'error': (
+                    'DiscoveryAgent could not restore the project after the edit failed: '
+                    + '; '.join(rollback_errors)
+                ),
+            }), 500
+
         project_name = requested_project_name or _v2_unique_default_project_name(projects, exclude_id=project_id)
-        if not _v2_project_directory_slug(project_name):
-            return _v2_invalid_project_name_response()
+        previous_display_name = str(record.get('display_name') or '')
+        display_name_changed = project_name != previous_display_name
         previous_normalized_name = _v2_normalized_project_name(record.get('display_name') or '')
         requested_normalized_name = _v2_normalized_project_name(project_name)
         if (
@@ -13877,42 +13361,54 @@ def api_projects_edit(project_id):
         ):
             return _v2_duplicate_project_name_response(project_name)
         try:
-            source_candidate = Path(
-                record.get('project_root') or get_project_root(project_id)
-            ).expanduser().absolute()
+            raw_source = raw_registered_root
+            if not raw_source:
+                raise ValueError('The registered project root is missing.')
+            source_candidate = Path(raw_source).expanduser().absolute()
             if source_candidate.is_symlink():
                 raise ValueError(
                     'This legacy project uses a symbolic-link root and cannot be relocated safely.'
                 )
             source_root = source_candidate.resolve(strict=True)
             captured_files = _v2_capture_project_edit_files(record, source_root)
-            requested_parent = request.form.get('project_parent_dir')
-            requested_parent_path = Path(requested_parent).expanduser().absolute() if requested_parent else None
-            if requested_parent_path is not None and requested_parent_path == source_root.parent:
-                project_parent = source_root.parent
-            else:
-                project_parent = (
-                    _v2_validate_project_parent(requested_parent, allow_managed_default=True)
-                    if requested_parent is not None
-                    else source_root.parent
-                )
             use_canonical_default_location = (
                 request.form.get('use_canonical_default_location', '').lower() == 'true'
             )
+            managed_parent = _v2_validate_project_parent(
+                _v2_projects_root(), allow_managed_default=True,
+            )
+            requested_parent = request.form.get('project_parent_dir')
+            requested_parent_path = (
+                Path(requested_parent).expanduser().absolute()
+                if requested_parent else source_root.parent
+            )
             if use_canonical_default_location:
-                managed_parent = _v2_projects_root().expanduser().absolute().resolve()
-                if project_parent.resolve() != managed_parent:
+                if requested_parent and requested_parent_path != managed_parent:
                     return jsonify({
                         'success': False,
                         'code': 'invalid_project_location',
                         'error': 'Use Default requires the managed DiscoveryAgent Projects location.',
                     }), 400
+                project_parent = managed_parent
+            else:
+                if requested_parent_path != source_root.parent:
+                    return jsonify({
+                        'success': False,
+                        'code': 'invalid_project_location',
+                        'error': 'Projects may move only into the managed DiscoveryAgent Projects location.',
+                    }), 400
+                project_parent = source_root.parent
+            automatic_managed_rename = bool(
+                managed and display_name_changed and not use_canonical_default_location
+            )
             try:
                 destination_root = _v2_project_destination(
                     project_parent,
                     project_name,
                     current_root=source_root,
-                    preserve_current_root=not use_canonical_default_location,
+                    preserve_current_root=(
+                        not use_canonical_default_location and not automatic_managed_rename
+                    ),
                 )
             except FileExistsError:
                 raise
@@ -13920,7 +13416,7 @@ def api_projects_edit(project_id):
                 return jsonify({
                     'success': False, 'code': 'invalid_project_location', 'error': str(exc),
                 }), 400
-            relocating = destination_root.resolve() != source_root.resolve()
+            relocating = destination_root.absolute() != source_root.absolute()
             if relocating:
                 if _v2_project_is_running(record):
                     return jsonify({
@@ -13928,47 +13424,57 @@ def api_projects_edit(project_id):
                         'code': 'project_location_locked_while_running',
                         'error': 'Stop the active round before moving this project.',
                     }), 409
-                if request.form.get('confirm_project_relocation', '').lower() != 'true':
+                if automatic_managed_rename:
+                    if source_root.parent != managed_parent:
+                        raise ValueError(
+                            'A managed project folder must remain in the DiscoveryAgent Projects folder.'
+                        )
+                    registered_parent = record.get('project_parent_dir')
+                    if registered_parent:
+                        registered_parent_path = Path(str(registered_parent)).expanduser()
+                        if (
+                            not registered_parent_path.is_absolute()
+                            or '..' in registered_parent_path.parts
+                            or registered_parent_path.absolute().resolve(strict=True) != source_root.parent
+                        ):
+                            raise ValueError(
+                                'The managed project root does not match its registered parent identity.'
+                            )
+                elif request.form.get('confirm_project_relocation', '').lower() != 'true':
                     return jsonify({
                         'success': False,
                         'code': 'project_relocation_confirmation_required',
                         'error': 'Confirm the project move before saving changes.',
                     }), 409
-                if not managed:
-                    # Legacy projects originally had no identity marker. Add
-                    # it only at their exact authoritative registered root so
-                    # it travels with the relocation. The pre-edit snapshot
-                    # records the marker as absent, allowing every later
-                    # failure path to restore the original markerless state.
-                    try:
-                        legacy_marker_id = _v2_project_metadata_identity(source_root)
-                    except _V2ProjectMarkerError as exc:
-                        if exc.code != 'project_marker_missing':
-                            raise
-                        _v2_backfill_exact_registered_legacy_marker(record, source_root)
-                    else:
-                        if legacy_marker_id != project_id:
-                            raise _V2ProjectMarkerError(
-                                'project_marker_mismatch',
-                                'The project identity does not match its registry entry.',
-                            )
-                relocation = _v2_prepare_project_relocation(source_root, destination_root)
-                if not managed:
-                    relocated_id = _v2_project_metadata_identity(destination_root)
-                    if relocated_id != project_id:
-                        raise _V2ProjectMarkerError(
-                            'project_marker_mismatch',
-                            'The relocated project identity does not match its registry entry.',
-                        )
+                existing_marker = _v2_read_import_marker(source_root)
+                if existing_marker is None or existing_marker['project_id'] != project_id:
+                    raise _V2ProjectMarkerError(
+                        'project_marker_mismatch',
+                        'The project identity does not match its registry entry.',
+                    )
+                relocation = _v2_prepare_project_relocation(
+                    source_root,
+                    destination_root,
+                    require_same_parent_rename=automatic_managed_rename,
+                )
+                if _v2_project_metadata_identity(destination_root) != project_id:
+                    raise _V2ProjectMarkerError(
+                        'project_marker_mismatch',
+                        'The relocated project identity does not match its registry entry.',
+                    )
                 record = _v2_rebased_project_record(record, source_root, destination_root)
+                if destination_root.parent.resolve() == managed_parent.resolve():
+                    record['imported_in_place'] = False
                 projects[record_index] = record
             record['project_parent_dir'] = str(project_parent)
             project_settings = _v2_project_configuration_from_form(record)
+            data_sources_changed = False
             if 'data_sources' in request.form:
                 selected_data_sources = data_library.validate_selection(
                     request.form.get('data_sources') or [], require_available=True,
                 )
                 current_data_sources = data_library.normalize_selection(record.get('data_sources') or [])
+                data_sources_changed = selected_data_sources != current_data_sources
                 if selected_data_sources != current_data_sources and _v2_project_is_running(record):
                     return jsonify({
                         'success': False,
@@ -13978,14 +13484,36 @@ def api_projects_edit(project_id):
                 record['data_sources'] = selected_data_sources
             # An external data folder is scientist-owned, so its managed
             # Project Context README stays in the project's code directory.
+            imported_in_place_edit = bool(
+                record_before.get('imported_in_place') is True and relocation is None
+            )
+            display_only_edit = bool(
+                display_name_changed
+                and task_description == _v2_project_task_description(record_before)
+                and dataset_context == str(record_before.get('dataset_context') or '')
+                and project_settings == _v2_project_configuration(record_before)
+                and not data_sources_changed
+                and not any(
+                    storage and storage.filename
+                    for storage in files
+                )
+            )
+            imported_display_only_edit = bool(imported_in_place_edit and display_only_edit)
+            artifact_project_name = (
+                previous_display_name if display_only_edit else project_name
+            )
             readme_path = _v2_project_readme_path(record)
             if dataset_context:
                 if not readme_path:
                     raise ValueError('Project data directory is not configured.')
-                readme_path.write_text(f"# {project_name}\n\n{dataset_context}\n", encoding='utf-8')
+                desired_readme = f"# {artifact_project_name}\n\n{dataset_context}\n".encode('utf-8')
+                if not readme_path.is_file() or readme_path.read_bytes() != desired_readme:
+                    files_mutated = True
+                    readme_path.write_bytes(desired_readme)
                 record['readme_path'] = str(readme_path)
             else:
                 if readme_path and readme_path.exists():
+                    files_mutated = True
                     readme_path.unlink()
                 record['readme_path'] = None
 
@@ -13996,6 +13524,7 @@ def api_projects_edit(project_id):
                     continue
                 saved_upload, created_upload = _v2_save_project_upload(record, storage)
                 if created_upload:
+                    files_mutated = True
                     active_root = Path(record.get('project_root') or source_root).expanduser().absolute()
                     try:
                         relative_upload = saved_upload.absolute().relative_to(active_root)
@@ -14022,55 +13551,96 @@ def api_projects_edit(project_id):
             record.pop('hypothesis_model', None)
             record.pop('num_queries', None)
             record['updated_at'] = datetime.now(tz=timezone.utc).isoformat()
-            if managed:
-                project_root = Path(record.get('project_root') or get_project_root(project_id))
+            if record.get('imported_in_place') is not True:
+                project_root = Path(record['project_root'])
+                files_mutated = True
                 write_project_metadata(project_root, project_id, project_name)
-            _v2_sync_project_round_config(record)
-            _v2_save_projects(projects, registry_path, managed=managed)
+                marker = _v2_read_import_marker(project_root)
+                if (
+                    marker is None
+                    or marker['project_id'] != project_id
+                    or marker['display_name'] != project_name
+                ):
+                    raise _V2ProjectMarkerError(
+                        'project_marker_mismatch',
+                        'The updated project identity metadata could not be validated.',
+                    )
+            config_record = record
+            if imported_in_place_edit and display_name_changed:
+                config_record = copy.deepcopy(record)
+                config_record['display_name'] = previous_display_name
+            if not imported_display_only_edit:
+                files_mutated = True
+                _v2_sync_project_round_config(config_record)
+            registry_write_attempted = True
+            _v2_save_projects(projects)
+            persisted = [
+                candidate for candidate in _v2_import_read_registry_strict(registry_path)
+                if candidate.get('id') == project_id
+            ]
+            if len(persisted) != 1 or any(
+                persisted[0].get(field) != record.get(field)
+                for field in ('id', 'display_name', 'project_root', 'url_slug')
+            ):
+                raise RuntimeError('The updated project registry record could not be validated.')
+            persisted_availability = _v2_project_availability(persisted[0])
+            if not persisted_availability.get('available'):
+                raise RuntimeError(
+                    'The updated project could not be resolved from its registered root.'
+                )
             if relocation and relocation['mode'] == 'copy':
                 try:
                     shutil.rmtree(relocation['source'])
                 except Exception:
-                    projects[record_index] = record_before
-                    _v2_save_projects(projects, registry_path, managed=managed)
-                    _v2_rollback_project_relocation(relocation)
                     raise
         except FileExistsError:
-            _v2_rollback_project_relocation(relocation)
-            if source_root is not None:
-                _v2_restore_project_edit_files(source_root, captured_files, created_uploads)
+            rollback_failure = rollback_failure_response()
+            if rollback_failure is not None:
+                return rollback_failure
             return _v2_duplicate_project_slug_response(_v2_project_directory_slug(project_name))
         except data_library.DataLibraryError as exc:
-            _v2_rollback_project_relocation(relocation)
-            if source_root is not None:
-                _v2_restore_project_edit_files(source_root, captured_files, created_uploads)
+            rollback_failure = rollback_failure_response()
+            if rollback_failure is not None:
+                return rollback_failure
             return _data_library_error_response(exc)
         except model_catalog.UnsupportedProjectModel as exc:
-            _v2_rollback_project_relocation(relocation)
-            if source_root is not None:
-                _v2_restore_project_edit_files(source_root, captured_files, created_uploads)
+            rollback_failure = rollback_failure_response()
+            if rollback_failure is not None:
+                return rollback_failure
             return jsonify({
                 'success': False,
                 'code': 'unsupported_project_model',
                 'error': str(exc),
             }), 400
+        except _V2ProjectMarkerError as exc:
+            rollback_failure = rollback_failure_response()
+            if rollback_failure is not None:
+                return rollback_failure
+            return jsonify({
+                'success': False,
+                'code': exc.code,
+                'error': str(exc),
+            }), 409
         except ValueError as exc:
-            _v2_rollback_project_relocation(relocation)
-            if source_root is not None:
-                _v2_restore_project_edit_files(source_root, captured_files, created_uploads)
+            rollback_failure = rollback_failure_response()
+            if rollback_failure is not None:
+                return rollback_failure
             return jsonify({'success': False, 'code': 'invalid_project_settings', 'error': str(exc)}), 400
         except Exception as exc:  # pragma: no cover - defensive guard
-            try:
-                _v2_rollback_project_relocation(relocation)
-                if source_root is not None:
-                    _v2_restore_project_edit_files(source_root, captured_files, created_uploads)
-            except Exception:
-                pass
+            rollback_failure = rollback_failure_response()
+            if rollback_failure is not None:
+                return rollback_failure
             import traceback
             traceback.print_exc()
             return jsonify({'success': False, 'error': f'Failed to save changes: {exc}'}), 500
 
     _v2_sync_active_project_session(record)
+    if relocation is not None:
+        _v2_clear_project_runtime_caches()
+        if session.get('v2_active_project_id') == project_id:
+            session_id = session.get('session_id')
+            if session_id:
+                GENERATORS.pop(session_id, None)
     generator = get_generator()
     if generator and session.get('v2_active_project_id') == project_id:
         generator.task_description = _v2_project_task_description(record)
@@ -14080,7 +13650,12 @@ def api_projects_edit(project_id):
         if record.get('readme_path'):
             generator.dataset_readme_path = Path(record['readme_path'])
 
-    return jsonify({'success': True, 'project_id': project_id})
+    return jsonify({
+        'success': True,
+        'project_id': project_id,
+        'display_name': record.get('display_name'),
+        'project_root': record.get('project_root'),
+    })
 
 
 @app.route('/api/project_objective', methods=['POST'])
@@ -14108,7 +13683,7 @@ def api_project_objective():
         record['task_description'] = task_description
         record['updated_at'] = datetime.now(tz=timezone.utc).isoformat()
         _v2_sync_project_round_config(record)
-        _v2_save_projects(projects, registry_path, managed=managed)
+        _v2_save_projects(projects)
 
     _v2_sync_active_project_session(record)
     generator = get_generator()
@@ -14867,8 +14442,8 @@ def audit_home():
     if not _is_valid_unresolved_remote_audit_context():
         abort(404)
 
-    # A valid session-only/remote Audit context that is not represented in either
-    # registered project store still needs its legacy sync and initialization UI.
+    # A valid session-only Audit context that is not represented in either
+    # registered project store still needs its compatibility initialization UI.
     project_cfg = _get_project_config()
     github_url = project_cfg.get('github_url') or CLI_GITHUB_URL
     checkpoint_dir = project_cfg.get('checkpoint_dir') or CLI_CHECKPOINT_DIR
@@ -14888,7 +14463,6 @@ def audit_home():
         'checkpoint_dir': checkpoint_dir,
         'code_dir': code_dir,
     })
-    log_event('audit_session_start', {'checkpoint_dir': checkpoint_dir})
 
     return render_template(
         'audit_home.html',
@@ -17421,8 +16995,8 @@ def api_round_feedback_delete():
 
 
 @app.route('/background_report/assets/<path:filename>')
-def background_report_asset(filename):
-    """Serve assets (images) referenced by the research paper."""
+def legacy_background_report_asset(filename):
+    """Serve a historical stored-report image through a project-bounded path."""
 
     checkpoint_dir = _resolve_report_asset_base_dir('checkpoint')
     if not checkpoint_dir:
@@ -17742,7 +17316,7 @@ def _sanitize_restored_chat_messages(messages) -> list[dict]:
 
 
 def _stringify_chat_content(value) -> str:
-    """Normalize chat content to a string without truncation for telemetry snapshots."""
+    """Normalize chat content without truncating project-local history."""
     if isinstance(value, str):
         return value
     if value is None:
@@ -17754,7 +17328,7 @@ def _stringify_chat_content(value) -> str:
 
 
 def _full_chat_messages_for_logging(messages) -> list[dict]:
-    """Build a full chat message list suitable for durable telemetry exports."""
+    """Build a full message list for durable project-local interaction history."""
     if not isinstance(messages, list):
         return []
     normalized = []
@@ -17832,202 +17406,8 @@ def _extract_relevant_snippets(question: str, texts: dict, max_snippets: int = 4
     return "Here are relevant excerpts I found:\n\n" + "\n\n".join(lines)
 
 
-def _removed_api_login():
-    """Authenticate a user via username + project key."""
-    if not is_project_key_configured():
-        return jsonify({'success': False, 'error': 'Server not configured for logins'}), 503
-
-    data = request.get_json(silent=True) or {}
-    username = sanitize_field(data.get('username'), 80)
-    project_key = sanitize_field(data.get('project_key'), 256)
-    requested_mode = APP_MODE_SELECTION
-
-    if not username or not project_key:
-        return jsonify({'success': False, 'error': 'Username and project key are required'}), 400
-
-    digest = verify_project_key(project_key)
-    if not digest:
-        return jsonify({'success': False, 'error': 'Invalid project key'}), 401
-
-    registered, registration_error = is_username_registered(username)
-    if registration_error:
-        return jsonify({'success': False, 'error': 'Registration system unavailable. Please try again later.'}), 503
-    if not registered:
-        return jsonify({
-            'success': False,
-            'error': 'Username not registered. Please submit the registration form before logging in.',
-            'registration_required': True,
-            'suggested_username': username,
-        }), 403
-
-    registry_entry = PROJECT_KEY_REGISTRY.get(digest)
-    clear_session_state()
-    session.clear()
-    session['authenticated'] = True
-    session['username'] = username
-    session['project_config'] = registry_entry.get('config', {}) if registry_entry else {}
-    session['project_label'] = registry_entry.get('label') if registry_entry else None
-    session['checkpoint_s3_prefix'] = registry_entry.get('checkpoint_s3_prefix') if registry_entry else None
-    session['project_key_digest'] = digest
-    forced_mode = None
-    if registry_entry and isinstance(registry_entry.get('config'), dict):
-        forced_mode = registry_entry['config'].get('app_mode')
-        if not forced_mode and registry_entry['config'].get('audit'):
-            forced_mode = APP_MODE_AUDIT
-    if forced_mode in (APP_MODE_SELECTION, APP_MODE_AUDIT, APP_MODE_AUDIT_ONLY):
-        requested_mode = forced_mode
-    session['app_mode'] = requested_mode
-    # Force a fresh per-login session id to avoid reusing prior cookie-bound state.
-    session['session_id'] = os.urandom(16).hex()
-    session['generation_id'] = 0
-    progress = get_project_progress(digest)
-    session['project_submission_count'] = progress.get('submission_count', 0)
-    session['project_round'] = _get_project_round_from_disk()
-    session.permanent = True
-
-    # Ensure disk paths for code/checkpoints are bound to the project prefix.
-    checkpoint_s3_prefix = session.get('checkpoint_s3_prefix')
-    if checkpoint_s3_prefix:
-        existing_cfg = session.get('project_config', {})
-        github_remote_path = existing_cfg.get('github_remote_path')
-        readme_path = existing_cfg.get('readme_path')
-        derived = _derive_project_config(
-            checkpoint_s3_prefix,
-            github_remote_path,
-            readme_path=readme_path,
-        )
-        session['project_config'].update(derived)
-        os.makedirs(Path(derived['checkpoint_dir']), exist_ok=True)
-        os.makedirs(Path(derived['code_dir']), exist_ok=True)
-        os.makedirs(_checkpoint_sync_root(checkpoint_s3_prefix), exist_ok=True)
-
-    checkpoint_s3_prefix = session.get('project_config', {}).get('checkpoint_s3_prefix')
-    if checkpoint_s3_prefix:
-        session['checkpoint_sync_requested_at'] = _utcnow_iso()
-        target_root = str(_checkpoint_sync_root(checkpoint_s3_prefix))
-        start_sequential_checkpoint_sync(digest, checkpoint_s3_prefix, target_root=target_root)
-
-    _write_interaction_log('login', {'username': username, 'app_mode': requested_mode})
-    log_event('login', {'username': username, 'project_key_digest': digest})
-
-    redirect_target = url_for('audit_home') if requested_mode == APP_MODE_AUDIT else url_for('projects')
-    return jsonify({'success': True, 'redirect': redirect_target})
 
 
-def _compute_s3_sync_status() -> dict:
-    """Compatibility result for local projects; remote sync is unavailable."""
-    return {'success': True, 'required': False, 'state': 'not_required'}
-    """Compute S3 sync status for the current session."""
-    project_cfg = _get_project_config()
-    checkpoint_s3_prefix = (
-        project_cfg.get('checkpoint_s3_prefix')
-        or session.get('checkpoint_s3_prefix')
-    )
-    digest = session.get('project_key_digest')
-    if not checkpoint_s3_prefix or not digest:
-        return {'success': True, 'required': False, 'state': 'not_required'}
-    if DISABLE_S3_SYNC:
-        return {'success': True, 'required': False, 'state': 'not_required'}
-
-    requested_at = session.get('checkpoint_sync_requested_at')
-    assets_ready = _project_assets_ready(project_cfg)
-    completion_seen = _sync_completion_seen_after(checkpoint_s3_prefix, requested_at)
-    marker_payload = _read_sync_marker(checkpoint_s3_prefix)
-    marker_updated = _parse_utc_iso(marker_payload.get('updated_at'))
-    requested_dt = _parse_utc_iso(requested_at)
-    marker_matches_request = bool(
-        requested_dt
-        and marker_updated
-        and marker_updated >= requested_dt
-    )
-    sync_needs_wait = (bool(requested_at) and not (completion_seen and assets_ready)) or not assets_ready
-
-    tokens = [digest, f"{digest}:pull_s3"]
-    with S3_SYNC_LOCK:
-        statuses = {token: S3_SYNC_STATUS.get(token) or {} for token in tokens}
-
-    if all(not statuses[token] for token in tokens):
-        if not sync_needs_wait:
-            session.pop('checkpoint_sync_requested_at', None)
-            return {'success': True, 'required': False, 'state': 'not_required'}
-        if requested_at and marker_matches_request:
-            marker_state = marker_payload.get('state')
-            if marker_state == 'error':
-                return {
-                    'success': True,
-                    'required': True,
-                    'state': 'error',
-                    'error': marker_payload.get('error') or 'Unknown error',
-                    'statuses': statuses,
-                }
-            if marker_state == 'running':
-                return {
-                    'success': True,
-                    'required': True,
-                    'state': 'running',
-                    'error': None,
-                    'statuses': statuses,
-                }
-            return {
-                'success': True,
-                'required': True,
-                'state': 'pending',
-                'error': None,
-                'statuses': statuses,
-            }
-        if boto3 is None:
-            return {
-                'success': True,
-                'required': True,
-                'state': 'error',
-                'error': 'boto3 not installed',
-                'statuses': statuses,
-            }
-        if checkpoint_s3_prefix:
-            target_root = str(_checkpoint_sync_root(checkpoint_s3_prefix))
-            start_sequential_checkpoint_sync(digest, checkpoint_s3_prefix, target_root=target_root)
-        with S3_SYNC_LOCK:
-            statuses = {token: S3_SYNC_STATUS.get(token) or {} for token in tokens}
-
-    def _state(value: dict) -> str:
-        return value.get('state') or 'pending'
-
-    states = [_state(statuses[token]) for token in tokens]
-    error_message = None
-    for token in tokens:
-        if statuses[token].get('state') == 'error':
-            error_message = statuses[token].get('error') or 'Unknown error'
-            break
-
-    if error_message:
-        overall_state = 'error'
-    elif all(state == 'success' for state in states):
-        overall_state = 'success'
-    elif any(state == 'running' for state in states):
-        overall_state = 'running'
-    else:
-        overall_state = 'pending'
-
-    if not error_message and (
-        (all(state == 'success' for state in states) and assets_ready)
-        or (completion_seen and assets_ready)
-    ):
-        session.pop('checkpoint_sync_requested_at', None)
-        return {
-            'success': True,
-            'required': False,
-            'state': 'not_required',
-            'error': None,
-            'statuses': statuses,
-        }
-
-    return {
-        'success': True,
-        'required': True if sync_needs_wait or overall_state != 'success' else False,
-        'state': overall_state,
-        'error': error_message,
-        'statuses': statuses,
-    }
 
 
 @app.route('/api/memory_status', methods=['GET'])
@@ -18072,141 +17452,12 @@ def api_memory_status():
         })
 
 
-def _removed_api_logout():
-    """Clear the current session and any attached generators."""
-    log_event('logout')
-    cleanup_prefix = session.get('checkpoint_s3_prefix')
-    if cleanup_prefix and session.get('cleanup_ready'):
-        try:
-            cleaned, cleanup_error = _cleanup_disk_cache(cleanup_prefix)
-            if cleaned:
-                log_event('checkpoint_cache_cleared', {
-                    'checkpoint_s3_prefix': cleanup_prefix,
-                    'source': 'logout',
-                })
-            else:
-                log_event('checkpoint_cache_clear_skipped', {
-                    'checkpoint_s3_prefix': cleanup_prefix,
-                    'reason': cleanup_error,
-                    'source': 'logout',
-                })
-        except Exception as exc:
-            log_event('checkpoint_cache_clear_failed', {
-                'checkpoint_s3_prefix': cleanup_prefix,
-                'error': str(exc),
-                'source': 'logout',
-            })
-    clear_session_state()
-    session.clear()
-    response = jsonify({'success': True})
-    return _clear_session_cookie(response)
 
 
-@app.route('/api/cleanup', methods=['POST'])
-def api_cleanup():
-    """Best-effort cleanup for downloaded checkpoint/code data."""
-    if not AUTO_CLEANUP_ENABLED:
-        return jsonify({'success': False, 'error': 'Cleanup disabled'}), 403
-    if not session.get('cleanup_ready'):
-        return jsonify({'success': False, 'error': 'Cleanup not armed'}), 403
-    cleanup_prefix = session.get('checkpoint_s3_prefix')
-    try:
-        cleaned, cleanup_error = _cleanup_disk_cache(cleanup_prefix)
-        if cleaned:
-            log_event('checkpoint_cache_cleared', {
-                'checkpoint_s3_prefix': cleanup_prefix,
-                'source': 'cleanup',
-            })
-        else:
-            log_event('checkpoint_cache_clear_skipped', {
-                'checkpoint_s3_prefix': cleanup_prefix,
-                'reason': cleanup_error,
-                'source': 'cleanup',
-            })
-        clear_session_state()
-        session['cleanup_ready'] = False
-        return jsonify({'success': True, 'cleaned': cleaned, 'reason': cleanup_error})
-    except Exception as exc:
-        log_event('checkpoint_cache_clear_failed', {
-            'checkpoint_s3_prefix': cleanup_prefix,
-            'error': str(exc),
-            'source': 'cleanup',
-        })
-        return jsonify({'success': False, 'error': str(exc)}), 500
 
 
-def _removed_api_register():
-    """Collect metadata for provisioning a new username."""
-    data = request.get_json(silent=True) or {}
-
-    name = sanitize_field(data.get('name'), 120)
-    email = sanitize_field(data.get('email'), 160)
-    username = sanitize_field(data.get('username'), 80)
-    confirm_username = sanitize_field(data.get('confirm_username'), 80)
-    affiliation = sanitize_field(data.get('affiliation'), 160)
-
-    errors = {}
-    if not name:
-        errors['name'] = 'Name is required'
-    if not email:
-        errors['email'] = 'Email is required'
-    if not username:
-        errors['username'] = 'Username is required'
-    if not confirm_username:
-        errors['confirm_username'] = 'Please confirm your username'
-    elif username and username != confirm_username:
-        errors['confirm_username'] = 'Usernames do not match'
-
-    if errors:
-        return jsonify({'success': False, 'errors': errors, 'error': 'Please correct the highlighted fields'}), 400
-
-    submission = {
-        'name': name,
-        'affiliation': affiliation,
-        'email': email,
-        'username': username,
-    }
-
-    try:
-        record_registration_submission(submission)
-    except OSError as exc:
-        return jsonify({'success': False, 'error': f'Failed to persist registration: {exc}'}), 500
-
-    session['registration_name'] = name
-    log_event('registration_submitted', {'username': username})
-    return jsonify({
-        'success': True,
-        'message': 'Thanks! Your username is registered for project activity logging.',
-        'name': name,
-    })
 
 
-@app.route('/api/log_event', methods=['POST'])
-def api_log_event():
-    """Accept client-side telemetry events."""
-    content_length = request.content_length or 0
-    if content_length > CLIENT_EVENT_MAX_BYTES:
-        return jsonify({'success': False, 'error': 'Payload too large'}), 413
-
-    data = request.get_json(silent=True) or {}
-    event_type = sanitize_field(data.get('event_type'), 80)
-    payload = data.get('payload') if isinstance(data.get('payload'), dict) else {}
-
-    if not event_type:
-        return jsonify({'success': False, 'error': 'event_type is required'}), 400
-    if event_type not in ALLOWED_CLIENT_EVENT_TYPES:
-        return jsonify({'success': False, 'error': 'Unsupported event_type'}), 400
-
-    identity = _client_event_identity()
-    if _client_event_rate_limited(identity):
-        return jsonify({'success': False, 'error': 'Rate limit exceeded'}), 429
-
-    safe_payload = _sanitize_event_payload(payload, max_depth=3, max_items=30, max_str=300)
-    if len(json.dumps(safe_payload, ensure_ascii=True, default=str)) > CLIENT_EVENT_MAX_BYTES:
-        return jsonify({'success': False, 'error': 'Payload too large'}), 413
-
-    log_event(event_type, safe_payload)
-    return jsonify({'success': True})
 
 
 @app.route('/api/generation_status', methods=['GET'])
@@ -18290,9 +17541,6 @@ def api_initialize():
     if not checkpoint_dir:
         return jsonify({'success': False, 'error': 'No checkpoint directory provided'})
     checkpoint_dir = str(_v2_resolve_current_studio_checkpoint_dir(Path(checkpoint_dir)))
-    if project_cfg.get('checkpoint_s3_prefix') and not Path(checkpoint_dir).exists():
-        return jsonify({'success': False, 'error': 'Checkpoint sync in progress. Please try again shortly.'})
-
     try:
         # Create generator instance
         generator = create_generator(
@@ -18353,11 +17601,6 @@ def api_initialize():
             runtime_cfg['data_dir'] = project_cfg.get('data_dir')
         session['project_config'] = runtime_cfg
 
-        log_event('initialize', {
-            'checkpoint_dir': checkpoint_dir,
-            'code_dir': code_dir,
-            'hypothesis_model': hypothesis_model,
-        })
         return jsonify({
             'success': True,
             'n_hypotheses': generator.hypothesis_config.n_candidate_hypotheses,
@@ -19188,17 +18431,6 @@ def api_generate():
                 ),
             })
 
-        log_full_event_to_s3(
-            'hypothesis_generate',
-            {
-                'model': model_name,
-                'count': len(parsed_hypotheses),
-                'hypotheses': parsed_hypotheses,
-                'guidance': guidance_payload or None,
-                'citations': getattr(generator, 'last_generation_citations', []),
-                'documents': getattr(generator, 'citation_documents', []),
-            },
-        )
 
         generation_id = _increment_generation_id()
         # Append this generated set exactly as the scientist saw it.
@@ -19330,17 +18562,6 @@ def api_ask():
                 'answer': response,
                 'conversation_messages': conversation_snapshot,
             })
-            log_full_event_to_s3(
-                'ask',
-                {
-                    'question': question,
-                    'answer': response,
-                    'citations': getattr(generator, 'last_answer_citations', []),
-                    'documents': getattr(generator, 'citation_documents', []),
-                    'conversation_messages': conversation_snapshot,
-                },
-            )
-            log_event('ask', {'question': question})
             return jsonify({
                 'success': True,
                 'answer': response,
@@ -20132,28 +19353,6 @@ def api_chat():
             'response_time_ms': timing_payload['response_time_ms'],
         })
 
-        log_full_event_to_s3(
-            'chat',
-            {
-                'mode': mode,
-                'source': source,
-                'chat_scope': active_report_key or ('hypothesis' if source == 'agent' else mode),
-                'message': message,
-                'reply': reply_text,
-                'thinking': thinking,
-                'citations': getattr(generator.hypothesis_gen_agent, 'last_response_citations', []) if source == 'agent' else [],
-                'documents': getattr(generator, 'citation_documents', []),
-                'conversation_messages': full_conversation_messages,
-                'response_time_ms': timing_payload['response_time_ms'],
-            },
-            source=source,
-        )
-        log_event('chat', {
-            'mode': mode,
-            'source': source,
-            'message': message,
-            'reply': (reply_text or '')[:2000],  # truncated for DB column safety
-        })
         # Durable chronology: record post-generation hypothesis-mode Q&A only.
         # This is the non-mutating ask path (source == 'agent'); code/audit chat
         # is not part of the Hypothesis Studio conversation and is never recorded.
@@ -20255,21 +19454,7 @@ def api_audit_chat_restore():
         'message_count': len(conversation_snapshot),
         'conversation_messages': conversation_snapshot,
     })
-    log_full_event_to_s3(
-        'audit_chat_restore',
-        {
-            'report_key': report_key,
-            'force': force_restore,
-            'message_count': len(conversation_snapshot),
-            'conversation_messages': conversation_snapshot,
-        },
-        source='restore',
-    )
 
-    log_event('audit_chat_restored', {
-        'message_count': len(conversation_snapshot),
-        'force': force_restore,
-    })
 
     return jsonify({
         'success': True,
@@ -20307,15 +19492,6 @@ def api_reset_chat_context():
             'message_count': len(conversation_snapshot),
             'conversation_messages': conversation_snapshot,
         })
-        log_full_event_to_s3(
-            'chat_reset',
-            {
-                'scope': 'hypothesis',
-                'message_count': len(conversation_snapshot),
-                'conversation_messages': conversation_snapshot,
-            },
-            source='system',
-        )
         if getattr(generator, 'hypothesis_gen_agent', None):
             try:
                 generator.reset_hypothesis_chat_context(reason='api_reset_chat_context')
@@ -20324,7 +19500,6 @@ def api_reset_chat_context():
                 generator.hypothesis_gen_agent.reset_conversation()
         generator.qa_history = []
         generator.last_answer_citations = []
-        log_event('chat_reset', {'scope': 'hypothesis', 'message_count': len(conversation_snapshot)})
         return jsonify({'success': True})
 
     if scope == 'report':
@@ -20340,16 +19515,6 @@ def api_reset_chat_context():
             'message_count': len(conversation_snapshot),
             'conversation_messages': conversation_snapshot,
         })
-        log_full_event_to_s3(
-            'chat_reset',
-            {
-                'scope': 'report',
-                'report_type': report_type,
-                'message_count': len(conversation_snapshot),
-                'conversation_messages': conversation_snapshot,
-            },
-            source='system',
-        )
         report_text, report_label, _ = _get_persistent_report_text_for_chat(generator, report_type)
         if _is_audit_only_mode():
             research_paper_text = _load_research_paper_text(generator)
@@ -20375,7 +19540,6 @@ def api_reset_chat_context():
         if report_text and report_label:
             generator._get_report_chat_agent(report_key, report_label, report_text)
 
-        log_event('chat_reset', {'scope': 'report', 'report_type': report_type, 'message_count': len(conversation_snapshot)})
         return jsonify({
             'success': True,
             'project_id': audit_project.get('id') if audit_project else None,
@@ -20708,29 +19872,7 @@ def api_edit():
                 if edit_regeneration_version
                 else ('manual' if manual_hypothesis and not feedback else 'llm_edit')
             )
-            log_full_event_to_s3(
-                'hypothesis_edit',
-                {
-                    'index': idx,
-                    'feedback': feedback,
-                    'manual_hypothesis': manual_hypothesis,
-                    'combined_feedback': combined_feedback,
-                    'result': {
-                        'title': sections.get('title'),
-                        'full_text': edited_hypothesis,
-                        'hypothesis': sections['hypothesis'],
-                        'justification': sections['justification'],
-                        'interpretation': sections['interpretation'],
-                        'plan': sections.get('plan'),
-                    },
-                    'citations': getattr(generator.hypothesis_gen_agent, 'last_response_citations', []),
-                    'documents': getattr(generator, 'citation_documents', []),
-                },
-                hypothesis_index=idx,
-                source=source,
-            )
 
-            log_event('edit_hypothesis', {'index': idx})
             _end_hypothesis_thread_request(session_id, thread_request_id)
             response_payload = {
                 'success': True,
@@ -20943,29 +20085,7 @@ def api_regenerate():
                 request_thread_id=prior_thread_id,
             )
             source = 'manual_regenerate' if manual_hypothesis and not feedback else 'llm_regenerate'
-            log_full_event_to_s3(
-                'hypothesis_regenerate',
-                {
-                    'index': idx,
-                    'feedback': feedback,
-                    'manual_hypothesis': manual_hypothesis,
-                    'combined_feedback': combined_feedback,
-                    'result': {
-                        'title': sections.get('title'),
-                        'full_text': new_hypothesis,
-                        'hypothesis': sections['hypothesis'],
-                        'justification': sections['justification'],
-                        'interpretation': sections['interpretation'],
-                        'plan': sections.get('plan'),
-                    },
-                    'citations': getattr(generator.hypothesis_gen_agent, 'last_response_citations', []),
-                    'documents': getattr(generator, 'citation_documents', []),
-                },
-                hypothesis_index=idx,
-                source=source,
-            )
 
-            log_event('regenerate_hypothesis', {'index': idx})
             return jsonify({
                 'success': True,
                 'hypothesis': {
@@ -21180,30 +20300,7 @@ def api_regenerate_guidance():
                 if manual_hypothesis and not feedback and not guidance_payload
                 else 'llm_regenerate'
             )
-            log_full_event_to_s3(
-                'hypothesis_regenerate',
-                {
-                    'index': idx,
-                    'feedback': base_feedback,
-                    'manual_hypothesis': manual_hypothesis,
-                    'combined_feedback': combined_feedback,
-                    'guidance': guidance_payload or None,
-                    'result': {
-                        'title': sections.get('title'),
-                        'full_text': new_hypothesis,
-                        'hypothesis': sections['hypothesis'],
-                        'justification': sections['justification'],
-                        'interpretation': sections['interpretation'],
-                        'plan': sections.get('plan'),
-                    },
-                    'citations': getattr(generator.hypothesis_gen_agent, 'last_response_citations', []),
-                    'documents': getattr(generator, 'citation_documents', []),
-                },
-                hypothesis_index=idx,
-                source=source,
-            )
 
-            log_event('regenerate_hypothesis', {'index': idx})
             return jsonify({
                 'success': True,
                 'hypothesis': {
@@ -21343,16 +20440,6 @@ def api_remove_hypothesis():
         )
         generation_id = _increment_generation_id()
 
-        log_full_event_to_s3(
-            'hypothesis_remove',
-            {
-                'index': idx,
-                'removed': removed_snapshot,
-                'remaining': parsed_hypotheses,
-            },
-            hypothesis_index=idx,
-        )
-        log_event('remove_hypothesis', {'index': idx})
 
         return jsonify({
             'success': True,
@@ -21385,7 +20472,6 @@ def api_get_report():
         if report_type == 'background':
             # Use CLI method to build combined background
             combined = generator._build_combined_background()
-            log_event('get_report', {'type': report_type})
             return jsonify({
                 'success': True,
                 'report': combined,
@@ -21398,7 +20484,6 @@ def api_get_report():
                     'error': 'Background literature not enabled for this session'
                 })
             if generator.deep_research_background:
-                log_event('get_report', {'type': report_type})
                 return jsonify({
                     'success': True,
                     'report': generator.deep_research_background,
@@ -21418,7 +20503,6 @@ def api_get_report():
                 print(f"Round Report: using latest completed round report: {_report_dir / 'round_report.md'}")
             round_content = _full or getattr(generator, 'round_report', None)
             if round_content:
-                log_event('get_report', {'type': report_type})
                 return jsonify({
                     'success': True,
                     'report': round_content,
@@ -21533,8 +20617,6 @@ def api_select():
     base_hypothesis_state_id = sanitize_field(data.get('base_hypothesis_state_id'), 128)
     base_hypothesis_index_raw = data.get('base_hypothesis_index')
     request_id = (getattr(g, 'operation_debug', {}) or {}).get('request_id')
-    session['finalize_feedback'] = feedback or ''
-
     generator = get_or_restore_generator()
     if not generator:
         return jsonify({'success': False, 'error': 'No active session'})
@@ -21713,20 +20795,17 @@ def api_select():
             output_path = "[DRY RUN - Not Saved]"
             log_path = "[DRY RUN - Not Saved]"
             guidance_path = "[DRY RUN - Not Saved]" if agent_guidance else None
-            selected_hypothesis_s3_uri = None
         else:
             if final_text:
                 output_path = generator.save_selection_raw(
                     final_text,
                     agent_guidance,
-                    username=session.get('username'),
                 )
             else:
                 output_path = generator.save_selection(
                     selection_value,
                     feedback_for_save,
                     agent_guidance,
-                    username=session.get('username'),
                 )
             guidance_path = None
             timestamped_output_path = None
@@ -21734,54 +20813,6 @@ def api_select():
                 guidance_path = generator.final_selection.get('agent_guidance_path')
                 timestamped_output_path = generator.final_selection.get('timestamped_output_path')
             log_path = generator.save_session_log()
-            selected_hypothesis_s3_uri = None
-            checkpoint_s3_prefix = (
-                session.get('checkpoint_s3_prefix')
-                or session.get('project_label')
-                or session.get('project_key_digest')
-                or ''
-            )
-            try:
-                selected_hypothesis_s3_uri = upload_selected_hypothesis_to_s3(
-                    output_path, checkpoint_s3_prefix
-                )
-                if selected_hypothesis_s3_uri:
-                    log_event('selected_hypothesis_uploaded', {
-                        's3_uri': selected_hypothesis_s3_uri,
-                        'output_path': output_path,
-                    })
-                else:
-                    log_event('selected_hypothesis_upload_skipped', {
-                        'output_path': output_path,
-                        'checkpoint_s3_prefix': checkpoint_s3_prefix,
-                    })
-            except Exception as exc:
-                log_event('selected_hypothesis_upload_failed', {
-                    'output_path': output_path,
-                    'checkpoint_s3_prefix': checkpoint_s3_prefix,
-                    'error': str(exc),
-                })
-            if timestamped_output_path:
-                try:
-                    timestamped_s3_uri = upload_selected_hypothesis_to_s3(
-                        timestamped_output_path, checkpoint_s3_prefix
-                    )
-                    if timestamped_s3_uri:
-                        log_event('selected_hypothesis_timestamped_uploaded', {
-                            's3_uri': timestamped_s3_uri,
-                            'output_path': timestamped_output_path,
-                        })
-                    else:
-                        log_event('selected_hypothesis_timestamped_upload_skipped', {
-                            'output_path': timestamped_output_path,
-                            'checkpoint_s3_prefix': checkpoint_s3_prefix,
-                        })
-                except Exception as exc:
-                    log_event('selected_hypothesis_timestamped_upload_failed', {
-                        'output_path': timestamped_output_path,
-                        'checkpoint_s3_prefix': checkpoint_s3_prefix,
-                        'error': str(exc),
-                    })
 
         # Get final hypothesis content
         if final_text:
@@ -21800,12 +20831,6 @@ def api_select():
         if not final_text:
             hypothesis_text = generator._sanitize_hypothesis_text(hypothesis_text)
 
-        progress = increment_project_submission(
-            session.get('project_key_digest'),
-            username=session.get('username'),
-            label=session.get('project_label'),
-        )
-        session['project_submission_count'] = progress.get('submission_count', session.get('project_submission_count', 0))
         session['project_round'] = _get_project_round_from_disk()
 
         # Parse to get formatted output
@@ -21832,67 +20857,6 @@ def api_select():
                 + "\n"
             )
 
-        log_full_event_to_s3(
-            'hypothesis_finalized',
-            {
-                'selection': selection,
-                'selection_value': selection_value,
-                'selection_state_id': selection_state_id or None,
-                'custom_source': custom_source or None,
-                'base_hypothesis_index': base_hypothesis_index,
-                'base_hypothesis_state_id': base_hypothesis_state_id or None,
-                'bypassed_stale_guard': bypassed_stale_guard,
-                'regeneration_result_id': regeneration_result_id,
-                'feedback': feedback,
-                'agent_guidance': agent_guidance,
-                'custom_hypothesis': selection_value if isinstance(selection_value, str) else None,
-                'full_text': hypothesis_text,
-                'formatted_output': output_content,
-                'citations': getattr(generator.hypothesis_gen_agent, 'last_response_citations', []),
-                'documents': getattr(generator, 'citation_documents', []),
-            },
-            hypothesis_index=selection_value if isinstance(selection_value, int) else None,
-            source='finalize',
-        )
-
-        log_event('select_hypothesis', {
-            'selection': selection,
-            'hypothesis_index': selection_value if isinstance(selection_value, int) else None,
-            'title': sections.get('title'),
-            'has_feedback': bool(feedback),
-            'has_agent_guidance': bool(agent_guidance),
-            'has_selection_state_id': bool(selection_state_id),
-            'custom_source': custom_source or None,
-            'base_hypothesis_index': base_hypothesis_index,
-            'has_base_hypothesis_state_id': bool(base_hypothesis_state_id),
-        })
-        admin_notification_status = None
-        if not CLI_DRY_RUN:
-            admin_notification_status = send_admin_selection_notification(
-                username=session.get('username'),
-                project_prefix=checkpoint_s3_prefix or 'unknown',
-                hypothesis_text=output_content,
-                s3_uri=selected_hypothesis_s3_uri,
-                round_num=progress.get('submission_count'),
-            )
-        s3_uri = None
-        if not CLI_DRY_RUN and log_path:
-            checkpoint_s3_prefix = (
-                session.get('checkpoint_s3_prefix')
-                or session.get('project_label')
-                or session.get('project_key_digest')
-                or 'unknown'
-            )
-            round_num = progress.get('submission_count', 0)
-            try:
-                s3_uri = upload_session_log_to_s3(log_path, checkpoint_s3_prefix, round_num)
-                if s3_uri:
-                    log_event('session_log_uploaded', {'s3_uri': s3_uri, 'log_path': log_path})
-                else:
-                    log_event('session_log_upload_failed', {'log_path': log_path})
-            except Exception as exc:
-                log_event('session_log_upload_failed', {'log_path': log_path, 'error': str(exc)})
-
         # Durable chronology: the selection is the round's closing substantive
         # event. Snapshot the exact final scientific artifact the scientist
         # selected (hypothesis/justification/optional plan). Only reached after
@@ -21910,9 +20874,12 @@ def api_select():
                 'source_result_event_id': regeneration_result_id,
             })
 
-        # Arm cleanup for when the user closes the site after final selection.
-        session['cleanup_ready'] = not CLI_DRY_RUN
-        log_event('cleanup_armed', {'enabled': bool(session.get('cleanup_ready'))})
+        start_issue = None
+        if session.get('v2_active_project_id'):
+            selection_round_dir = Path(generator.checkpoint_dir)
+            if (selection_round_dir / 'round_report.md').is_file():
+                start_issue = _v2_continuation_start_issue(selection_round_dir)
+
         return jsonify({
             'success': True,
             'output_path': output_path,
@@ -21922,8 +20889,6 @@ def api_select():
                 else "[DRY RUN - Not Saved]"
             ),
             'log_path': log_path,
-            'session_log_s3_uri': s3_uri,
-            'selected_hypothesis_s3_uri': selected_hypothesis_s3_uri,
             'hypothesis': output_content,
             'plan': sections.get('plan'),
             'full_text': hypothesis_text,
@@ -21931,10 +20896,9 @@ def api_select():
             'documents': getattr(generator, 'citation_documents', []),
             'agent_guidance': agent_guidance,
             'guidance_path': guidance_path,
-            'admin_notification': admin_notification_status,
-            'project_submission_count': session.get('project_submission_count', progress.get('submission_count', 0)),
             'project_round': _get_project_round_from_disk(),
-            'cleanup_ready': bool(session.get('cleanup_ready')),
+            'ready_to_start': start_issue is None,
+            'start_blocked_reason': start_issue,
         })
 
     except Exception as e:
@@ -21943,92 +20907,6 @@ def api_select():
         return jsonify({'success': False, 'error': str(e)})
 
 
-@app.route('/api/post_selection_actions', methods=['POST'])
-def api_post_selection_actions():
-    """Store post-selection activity log entries."""
-    if _is_audit_only_mode():
-        return _reject_audit_only('Post-selection logging')
-    generator = get_or_restore_generator()
-
-    data = request.json or {}
-    raw_actions = data.get('post_selection_actions') or ''
-    post_selection_actions = sanitize_field(raw_actions, 2000)
-
-    try:
-        if generator:
-            if post_selection_actions and hasattr(generator, 'log_interaction'):
-                generator.log_interaction('post_selection_actions', {
-                    'details': post_selection_actions
-                })
-            if generator.final_selection is not None:
-                generator.final_selection['post_selection_actions'] = post_selection_actions or None
-
-        log_path = "[DRY RUN - Not Saved]"
-        s3_uri = None
-        if not CLI_DRY_RUN and generator:
-            log_path = generator.save_session_log()
-            if log_path:
-                checkpoint_s3_prefix = (
-                    session.get('checkpoint_s3_prefix')
-                    or session.get('project_label')
-                    or session.get('project_key_digest')
-                    or 'unknown'
-                )
-                round_num = session.get('project_submission_count', 0)
-                try:
-                    s3_uri = upload_session_log_to_s3(log_path, checkpoint_s3_prefix, round_num)
-                    if s3_uri:
-                        log_event('session_log_uploaded', {'s3_uri': s3_uri, 'log_path': log_path})
-                    else:
-                        log_event('session_log_upload_failed', {'log_path': log_path})
-                except Exception as exc:
-                    log_event('session_log_upload_failed', {'log_path': log_path, 'error': str(exc)})
-
-        log_event('post_selection_actions', {
-            'has_post_selection_actions': bool(post_selection_actions),
-        })
-
-        # Best-effort cleanup after activity log submission (user is done).
-        cleanup_prefix = session.get('checkpoint_s3_prefix')
-        cleanup_result = None
-        cleanup_reason = None
-        if AUTO_CLEANUP_ENABLED and cleanup_prefix:
-            try:
-                cleaned, cleanup_error = _cleanup_disk_cache(cleanup_prefix)
-                cleanup_result = cleaned
-                cleanup_reason = cleanup_error
-                if cleaned:
-                    log_event('checkpoint_cache_cleared', {
-                        'checkpoint_s3_prefix': cleanup_prefix,
-                        'source': 'post_selection_actions',
-                    })
-                else:
-                    log_event('checkpoint_cache_clear_skipped', {
-                        'checkpoint_s3_prefix': cleanup_prefix,
-                        'reason': cleanup_error,
-                        'source': 'post_selection_actions',
-                    })
-            except Exception as exc:
-                cleanup_reason = str(exc)
-                log_event('checkpoint_cache_clear_failed', {
-                    'checkpoint_s3_prefix': cleanup_prefix,
-                    'error': str(exc),
-                    'source': 'post_selection_actions',
-                })
-            session['cleanup_ready'] = False
-
-        return jsonify({
-            'success': True,
-            'log_path': log_path,
-            'session_log_s3_uri': s3_uri,
-            'cleanup': {
-                'attempted': bool(cleanup_prefix and AUTO_CLEANUP_ENABLED),
-                'cleaned': cleanup_result,
-                'reason': cleanup_reason,
-            },
-        })
-    except Exception as exc:
-        return jsonify({'success': False, 'error': str(exc)})
 
 
 def _render_error_page(status_code, heading, message, *, show_retry=False):
@@ -22347,8 +21225,8 @@ def _get_checkpoint_base() -> Path | None:
 
 
 @app.route('/checkpoint_assets/<path:filename>')
-def checkpoint_browser_asset(filename):
-    """Serve files from the checkpoint browser tree."""
+def round_workspace_checkpoint_asset(filename):
+    """Serve a visible Round Workspace checkpoint artifact."""
 
     base = _get_checkpoint_base()
     if not base or not base.is_dir():
@@ -22465,7 +21343,7 @@ def _prepare_round_workspace_report_figures(
                 )
                 if target is not None:
                     resolved_url = url_for(
-                        'checkpoint_browser_asset',
+                        'round_workspace_checkpoint_asset',
                         filename=f'round_{round_index}/{candidate.as_posix()}',
                         **project_query,
                     )

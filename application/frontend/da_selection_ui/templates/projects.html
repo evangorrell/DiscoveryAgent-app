@@ -7,6 +7,14 @@
 </button>
 {%- endmacro %}
 
+{% macro project_actions(create_label, import_id, error_id) -%}
+<div class="v2-project-create-actions">
+    {{ new_project_button(create_label) }}
+    <button type="button" class="v2-import-project-action" id="{{ import_id }}">Import Existing Project</button>
+</div>
+<p class="v2-project-import-inline-error" id="{{ error_id }}" role="alert" hidden></p>
+{%- endmacro %}
+
 {% block title %}Projects &middot; DiscoveryAgent{% endblock %}
 
 {% block content %}
@@ -37,7 +45,7 @@
                 <h1 class="v2-title v2-app-page-title v2-onboarding-title">Welcome to DiscoveryAgent!</h1>
                 <p class="v2-onboarding-support">Give DiscoveryAgent your data and scientific context. Develop hypotheses
                     with the agent system. Then let DiscoveryAgent autonomously perform the research and present the evidence to you.</p>
-                <div class="v2-onboarding-cta">{{ new_project_button('Create Your First Project') }}</div>
+                <div class="v2-onboarding-cta">{{ project_actions('Create Your First Project', 'open-import-project-empty', 'pj-import-error-empty') }}</div>
             </div>
 
             <div class="v2-onboarding-how">
@@ -68,7 +76,7 @@
 
     {% if not projects_empty %}
     <div class="v2-app-page-action v2-sticky-action-tray" id="projects-primary-action" hidden>
-        {{ new_project_button() }}
+        {{ project_actions('New Project', 'open-import-project', 'pj-import-error') }}
     </div>
     {% endif %}
 </div>
@@ -84,6 +92,8 @@
             <p class="v2-confirm-copy" id="delete-project-description">
                 <span id="delete-project-normal-copy"><strong id="delete-project-name"></strong> and its complete DiscoveryAgent project workspace
                     will be moved to Trash. External DiscoveryAgent Data sources will remain in their original locations.</span>
+                <span id="delete-project-imported-copy" hidden>Removing this imported project removes only its DiscoveryAgent registration.
+                    Its folder and every file inside it will remain unchanged.</span>
                 <span id="delete-project-unavailable-copy" hidden>DiscoveryAgent cannot find this project&rsquo;s folder.
                     Removing it will remove the project from DiscoveryAgent, but it will not delete files that may exist at another location.</span>
             </p>
@@ -112,6 +122,13 @@
             <form class="v2-modal-form" id="np-form" novalidate
                   data-pending-project-id="{{ pending_project_id }}"
                   data-default-project-parent="{{ default_project_parent }}">
+            <div class="v2-import-project-summary" id="np-import-summary" hidden>
+                <p class="v2-field-label">SELECTED PROJECT FOLDER</p>
+                <code class="v2-project-location-path" id="np-import-root"></code>
+                <p class="v2-field-help">This folder is the project root. Existing files remain in place and are not copied or relocated.</p>
+                <ul class="v2-import-project-warnings" id="np-import-warnings" aria-live="polite"></ul>
+            </div>
+
             <div class="v2-field">
                 <label class="v2-field-label" for="np-name">PROJECT NAME<span class="v2-required" aria-hidden="true">*</span></label>
                 <p class="v2-field-help">Create a unique name to identify this project later.</p>
@@ -122,7 +139,7 @@
             <div class="v2-field">
                 <label class="v2-field-label" for="np-objective">RESEARCH OBJECTIVE<span class="v2-required" aria-hidden="true">*</span></label>
                 <p class="v2-field-help">
-                    Describe the scientific question or goal this project should pursue at a high-level. 
+                    Describe the scientific question or goal this project should pursue at a high-level.
                     DiscoveryAgent will use it to generate hypotheses and guide research across rounds.
                 </p>
                 <textarea class="v2-textarea" id="np-objective" name="task_description" rows="4" required aria-required="true"
@@ -225,7 +242,7 @@
                         <p class="v2-field-help">Choose where DiscoveryAgent stores this project&rsquo;s rounds, code, reports, memory, and generated files.</p>
                         <code class="v2-project-location-path" id="np-project-location-path"></code>
                         <p class="v2-field-help v2-project-location-status" id="np-project-location-status" role="status" aria-live="polite" aria-atomic="true"></p>
-                        <div class="v2-project-location-actions">
+                        <div class="v2-project-location-actions" id="np-project-location-actions">
                             <button type="button" class="v2-btn v2-btn-secondary v2-compact-secondary" id="np-locate-project" hidden>Locate Project</button>
                             <button type="button" class="v2-btn v2-btn-secondary v2-compact-secondary" id="np-choose-location">Choose Location</button>
                             <button type="button" class="v2-btn v2-btn-secondary v2-compact-secondary" id="np-use-default-location">Use Default</button>
@@ -373,5 +390,5 @@
 {% block scripts %}
 <script src="{{ url_for('static', filename='data_tree.js') }}?v=20260822-data-tree-row-geometry-1"></script>
 <script src="{{ url_for('static', filename='app_page_action.js') }}?v=20260822-sticky-action-tray-1"></script>
-<script src="{{ url_for('static', filename='projects.js') }}?v=20260823-first-run-welcome-1"></script>
+<script src="{{ url_for('static', filename='projects.js') }}?v=20260826-import-project-list-navigation-1"></script>
 {% endblock %}

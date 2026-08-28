@@ -106,8 +106,6 @@ def _build_client(monkeypatch, generator):
     monkeypatch.setattr(app_module, "get_generator", lambda: generator)
     monkeypatch.setattr(app_module, "get_or_restore_generator", lambda: generator)
     monkeypatch.setattr(app_module, "_is_audit_only_mode", lambda: False)
-    monkeypatch.setattr(app_module, "log_full_event_to_s3", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app_module, "log_event", lambda *args, **kwargs: None)
     client = app_module.app.test_client()
     with client.session_transaction() as flask_session:
         flask_session["authenticated"] = True
@@ -121,8 +119,6 @@ def test_api_edit_restores_generator_and_seeds_missing_hypothesis_from_request(m
     generator.hypothesis_state_ids = []
     monkeypatch.setattr(app_module, "get_or_restore_generator", lambda: generator)
     monkeypatch.setattr(app_module, "_is_audit_only_mode", lambda: False)
-    monkeypatch.setattr(app_module, "log_full_event_to_s3", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app_module, "log_event", lambda *args, **kwargs: None)
     client = app_module.app.test_client()
     with client.session_transaction() as flask_session:
         flask_session["authenticated"] = True
@@ -302,11 +298,6 @@ def test_api_select_accepts_final_text_after_generator_restore(monkeypatch):
     generator.hypothesis_state_ids = []
     client = _build_client(monkeypatch, generator)
     monkeypatch.setattr(app_module, "CLI_DRY_RUN", True)
-    monkeypatch.setattr(
-        app_module,
-        "increment_project_submission",
-        lambda *args, **kwargs: {"submission_count": 1},
-    )
     monkeypatch.setattr(app_module, "_get_project_round_from_disk", lambda: 1)
 
     response = client.post(

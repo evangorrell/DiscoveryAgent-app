@@ -32,7 +32,7 @@ def _project_record(tmp_path: Path) -> dict:
 
 def _client(monkeypatch, tmp_path, rounds=(0, 1, 2, 3, 4)):
     record = _project_record(tmp_path)
-    registry = tmp_path / "v2_projects.json"
+    registry = tmp_path / "projects.json"
     registry.write_text(json.dumps({"projects": [record]}), encoding="utf-8")
     rounds_root = Path(record["checkpoint_dir"]) / "checkpoints"
     for round_number in rounds:

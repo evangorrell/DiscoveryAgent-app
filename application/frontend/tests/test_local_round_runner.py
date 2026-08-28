@@ -1014,6 +1014,63 @@ def test_continuation_requires_fresh_selection(project, backend):
     assert error.value.code == "selected_hypothesis_missing"
 
 
+def _write_continuation_chronology(source, *, selected_at, report_at):
+    source.joinpath("hypothesis_studio_history.json").write_text(json.dumps({
+        "version": 1,
+        "events": [{
+            "id": "selection", "sequence": 1,
+            "timestamp": selected_at,
+            "type": "hypothesis_selected",
+            "hypothesis": {"hypothesis": "Continue locally."},
+        }],
+    }), encoding="utf-8")
+    source.joinpath("round_activity.jsonl").write_text(json.dumps({
+        "timestamp": report_at,
+        "event_type": "round_report_saved",
+    }) + "\n", encoding="utf-8")
+
+
+def test_durable_chronology_rejects_historical_selection_despite_newer_mtime(
+    project, backend,
+):
+    source, selection = make_continuation(project)
+    os.utime(selection, (200, 200))
+    _write_continuation_chronology(
+        source,
+        selected_at="2026-01-15T10:03:00+00:00",
+        report_at="2026-01-15T10:08:00+00:00",
+    )
+
+    with pytest.raises(runner.RoundLaunchError) as error:
+        runner.start_round(project, env=launch_env(backend))
+
+    assert error.value.code == "selected_hypothesis_missing"
+
+
+def test_durable_chronology_allows_upcoming_selection_with_normalized_mtimes(
+    monkeypatch, project, backend,
+):
+    source, selection = make_continuation(project)
+    report = source / "round_report.md"
+    os.utime(selection, (100, 100))
+    os.utime(report, (100, 100))
+    _write_continuation_chronology(
+        source,
+        selected_at="2026-01-15T10:09:00+00:00",
+        report_at="2026-01-15T10:08:00+00:00",
+    )
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess())
+    monkeypatch.setattr(runner.threading, "Thread", NoopThread)
+
+    result = runner.start_round(project, env=launch_env(backend))
+
+    assert result["round"] == 4
+    target_config = json.loads(
+        source.parent.joinpath("round_4", "config.json").read_text(encoding="utf-8")
+    )["config"]
+    assert target_config["selected_hypothesis_file"] == str(selection)
+
+
 def test_incomplete_native_next_round_uses_backend_resume(monkeypatch, project, backend):
     _source, _selection = make_continuation(project, target_incomplete=True)
     captured = {}

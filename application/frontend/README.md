@@ -110,16 +110,43 @@ Default locations include:
 | macOS | `~/Library/Application Support/DiscoveryAgent` |
 | Linux | `${XDG_DATA_HOME}/discoveryagent`, or `~/.local/share/discoveryagent` |
 
-Managed projects use a structure similar to:
+DiscoveryAgent uses one project registry. Managed directory names come from
+the normalized display name and remain stable across ordinary display-name edits:
 
 ```text
-<data-root>/projects/<project-id>/
-├── .discoveryagent/
-├── code/
-│   ├── data/
-│   └── .claude/
-│       └── skills/
-└── checkpoint/
+<data-root>/
+├── projects.json
+├── data_library.json
+└── projects/
+    └── <normalized-project-name>/
+        ├── .discoveryagent/
+        ├── code/
+        │   ├── data/
+        │   └── .claude/
+        │       └── skills/
+        └── checkpoint/
 ```
 
-Project context and scientific inputs live under `code/data/`. Checkpoints, reports, generated code, interactions, and imported Skills remain within the managed local project.
+Immutable project IDs live in `projects.json`, project markers, and internal
+identity references—not in managed folder names. Imported-in-place projects
+are recorded in the same `projects.json` while retaining their external roots.
+Project context and scientific inputs live under `code/data/`. Checkpoints,
+reports, generated code, interactions, and imported Skills remain within the
+managed local project.
+
+## Import an older HPC project
+
+**Import Existing Project** registers a project folder that is not already known to this DiscoveryAgent installation. It is separate from **Locate Project**, which only reconnects an already registered V2 project to the same immutable project identity.
+
+1. Copy the entire project folder from the HPC system to the Mac using your institution's supported transfer method.
+2. Do not copy it into DiscoveryAgent's application installation directory.
+3. Open DiscoveryAgent.
+4. Click **Import Existing Project** on the Projects page.
+5. Select the copied project folder itself.
+6. Review the prepopulated fields and complete anything missing.
+7. Click **Import project**.
+8. Existing artifacts remain in that folder; DiscoveryAgent registers the project in place.
+
+Do not manually edit `projects.json` or create `.discoveryagent/project.json`. Use **Locate Project** instead when DiscoveryAgent already lists the project but reports that its saved location is unavailable.
+
+Import recognizes legacy round artifacts at either `checkpoint/checkpoints/round_0` or `checkpoints/round_0`, project code beneath `code/`, Skills beneath `code/.claude/skills/`, and project context at `code/data/README.md` or `code/README.md`. Other checkpoint, code, or metadata layouts are not inferred or recursively scanned; reorganize an unsupported copy separately before importing it.

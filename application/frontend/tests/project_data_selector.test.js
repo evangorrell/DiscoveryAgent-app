@@ -556,7 +556,7 @@ test('removal focus and status behavior is predictable, including the final sour
     assert.match(focus, /target\.focus\(\{ preventScroll: true \}\)/);
     assert.match(template, /id="np-project-data-status" role="status"[\s\S]*aria-live="polite" aria-atomic="true"/);
     assert.match(style, /\.v2-project-data-status\s*\{[^}]*position:\s*absolute[^}]*clip-path:\s*inset\(50%\)/s);
-    assert.equal((source.match(/els\.projectDataStatus\.textContent = ''/g) || []).length, 3);
+    assert.equal((source.match(/els\.projectDataStatus\.textContent = ''/g) || []).length, 4);
 });
 
 

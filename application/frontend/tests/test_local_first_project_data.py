@@ -57,6 +57,21 @@ def test_creation_finishes_before_add_data_and_preserves_metadata(monkeypatch, t
     assert "Step 2 of 2" not in template
 
 
+def test_creation_returns_to_projects_and_new_project_is_listed(monkeypatch, tmp_path):
+    client = _client(monkeypatch, tmp_path)
+
+    created = _create(client, name="Listed After Create")
+
+    assert created["projects_url"] == "/projects"
+    assert created["destination"] == "/projects/listed-after-create"
+    listed = client.get("/api/projects")
+    assert listed.status_code == 200
+    rows = listed.get_json()["projects"]
+    assert [(row["id"], row["display_name"], row["home_url"]) for row in rows] == [
+        (created["project_id"], "Listed After Create", "/projects/listed-after-create")
+    ]
+
+
 def test_project_context_is_canonical_root_data_readme(monkeypatch, tmp_path):
     client = _client(monkeypatch, tmp_path)
     created = _create(client, context="Do not lose this context.")
@@ -99,7 +114,7 @@ def test_open_data_folder_only_launches_selected_canonical_root(monkeypatch, tmp
     assert launched[0][1]["stdout"] is app_module.subprocess.DEVNULL
     assert launched[0][1]["stderr"] is app_module.subprocess.DEVNULL
 
-    registry_path = tmp_path / "v2_projects.json"
+    registry_path = tmp_path / "projects.json"
     registry = json.loads(registry_path.read_text(encoding="utf-8"))
     record = next(p for p in registry["projects"] if p["id"] == first["project_id"])
     record["data_dir"] = "elsewhere"
@@ -221,7 +236,7 @@ def test_continue_route_still_reaches_project_home_without_duplicate_creation(mo
 
     assert response.status_code == 200
     assert response.get_json()["destination"] == created["destination"] == "/projects/local-data"
-    projects = json.loads((tmp_path / "v2_projects.json").read_text(encoding="utf-8"))["projects"]
+    projects = json.loads((tmp_path / "projects.json").read_text(encoding="utf-8"))["projects"]
     assert len(projects) == 1
 
 
@@ -288,7 +303,7 @@ def test_closing_the_create_modal_before_submitting_creates_nothing(monkeypatch,
     close_flow = source[source.index("function closeModal(options)"):source.index("function setFormError")]
 
     assert "fetch(" not in close_flow
-    assert not (tmp_path / "v2_projects.json").exists()
+    assert not (tmp_path / "projects.json").exists()
 
 
 def test_create_page_keeps_one_stable_modal_scroll_boundary():
@@ -367,7 +382,7 @@ def test_project_modal_always_opens_at_the_top_of_its_scroll_boundary():
     assert "els.name.focus({ preventScroll: true })" in source
     assert show_rule.count("resetProjectModalScroll()") == 2
     assert "setTimeout(focusProjectNameAtTop, 30)" in show_rule
-    assert "projects.js') }}?v=20260823-first-run-welcome-1" in template
+    assert "projects.js') }}?v=20260826-import-project-list-navigation-1" in template
 
 
 def test_closing_the_modal_never_removes_a_created_project(monkeypatch, tmp_path):
@@ -381,7 +396,7 @@ def test_closing_the_modal_never_removes_a_created_project(monkeypatch, tmp_path
     assert "fetch(" not in close_flow
     assert "DELETE" not in close_flow
 
-    projects = json.loads((tmp_path / "v2_projects.json").read_text(encoding="utf-8"))["projects"]
+    projects = json.loads((tmp_path / "projects.json").read_text(encoding="utf-8"))["projects"]
     assert len(projects) == 1
     assert projects[0]["id"] == project_id
     assert (_project_root(project_id) / "code" / "data" / "README.md").is_file()
@@ -398,7 +413,7 @@ def test_editing_updates_the_existing_project_instead_of_creating_another(monkey
         "dataset_context": "Revised cohort context.",
     })
     assert response.status_code == 200
-    projects = json.loads((tmp_path / "v2_projects.json").read_text(encoding="utf-8"))["projects"]
+    projects = json.loads((tmp_path / "projects.json").read_text(encoding="utf-8"))["projects"]
     assert len(projects) == 1
     assert projects[0]["id"] == project_id
     assert projects[0]["display_name"] == "Revised Local Data"

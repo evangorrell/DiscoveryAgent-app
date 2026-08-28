@@ -174,8 +174,6 @@ def _wire(monkeypatch, gen):
     monkeypatch.setattr(app_module, "get_or_restore_generator", lambda: gen)
     monkeypatch.setattr(app_module, "_is_audit_only_mode", lambda: False)
     monkeypatch.setattr(app_module, "_is_audit_mode", lambda: False)
-    monkeypatch.setattr(app_module, "log_event", lambda *a, **k: None)
-    monkeypatch.setattr(app_module, "log_full_event_to_s3", lambda *a, **k: None)
     monkeypatch.setattr(app_module, "_write_interaction_log", lambda *a, **k: None)
     monkeypatch.setattr(app_module, "log_memory", lambda *a, **k: 0.0)
     monkeypatch.setattr(app_module, "_check_project_readiness",
@@ -741,10 +739,6 @@ def test_selection_appends_exact_hypothesis(monkeypatch, tmp_path):
     gen = FakeGenerator(rd)
     gen.hypotheses = [HYP1]
     client = _wire(monkeypatch, gen)
-    monkeypatch.setattr(app_module, "upload_selected_hypothesis_to_s3", lambda *a, **k: None)
-    monkeypatch.setattr(app_module, "upload_session_log_to_s3", lambda *a, **k: None)
-    monkeypatch.setattr(app_module, "send_admin_selection_notification", lambda *a, **k: None)
-    monkeypatch.setattr(app_module, "increment_project_submission", lambda *a, **k: {"submission_count": 1})
     monkeypatch.setattr(app_module, "_get_project_round_from_disk", lambda: 0)
     monkeypatch.setattr(app_module, "CLI_DRY_RUN", False)
 
@@ -1216,10 +1210,6 @@ def test_selection_is_final_substantive_event(monkeypatch, tmp_path):
     gen.hypotheses = [HYP1]
     client = _wire(monkeypatch, gen)
     _wire_generate(monkeypatch)
-    monkeypatch.setattr(app_module, "upload_selected_hypothesis_to_s3", lambda *a, **k: None)
-    monkeypatch.setattr(app_module, "upload_session_log_to_s3", lambda *a, **k: None)
-    monkeypatch.setattr(app_module, "send_admin_selection_notification", lambda *a, **k: None)
-    monkeypatch.setattr(app_module, "increment_project_submission", lambda *a, **k: {"submission_count": 1})
     monkeypatch.setattr(app_module, "_get_project_round_from_disk", lambda: 0)
     monkeypatch.setattr(app_module, "CLI_DRY_RUN", False)
 
@@ -1574,8 +1564,6 @@ def test_cancelled_generation_releases_retry_and_late_result_is_discarded(monkey
         "_check_project_readiness",
         lambda gen=None: {"task_description": "Objective", "project_context": "Ctx", "missing": None},
     )
-    monkeypatch.setattr(app_module, "log_event", lambda *a, **k: None)
-    monkeypatch.setattr(app_module, "log_full_event_to_s3", lambda *a, **k: None)
     monkeypatch.setattr(
         app_module,
         "_persist_generated_hypotheses",
@@ -2783,6 +2771,92 @@ def _seed_selected_round_one_cycle(tmp_path):
     return root, source
 
 
+def _write_round_chronology(source, *, selected_at, report_at):
+    source.joinpath("hypothesis_studio_history.json").write_text(json.dumps({
+        "version": 1,
+        "events": [
+            {
+                "id": "set-event", "sequence": 1,
+                "timestamp": selected_at,
+                "type": "hypothesis_set_generated",
+                "phase": "hypothesis_discussion",
+                "hypotheses": [{"index": 1, "state_id": "s1", "full_text": HYP1}],
+            },
+            {
+                "id": "selection-event", "sequence": 2,
+                "timestamp": selected_at,
+                "type": "hypothesis_selected",
+                "phase": "hypothesis_discussion",
+                "hypothesis": {"index": 1, "state_id": "s1", "full_text": HYP1},
+            },
+        ],
+    }), encoding="utf-8")
+    source.joinpath("round_activity.jsonl").write_text(json.dumps({
+        "timestamp": report_at,
+        "event_type": "round_report_saved",
+    }) + "\n", encoding="utf-8")
+
+
+def test_completed_round_candidates_keep_historical_selection_out_of_round_one(
+    monkeypatch, tmp_path,
+):
+    client = _project_client(monkeypatch, tmp_path)
+    _root, source = _seed_selected_round_one_cycle(tmp_path)
+    _write_round_chronology(
+        source,
+        selected_at="2026-01-15T10:03:00+00:00",
+        report_at="2026-01-15T10:08:00+00:00",
+    )
+
+    listing = client.get("/api/hypothesis_history").get_json()
+    current = listing["rounds"][0]
+    assert current["status"] == "exploring"
+    assert current["has_selected"] is False
+    assert current["has_recorded_selection"] is True
+    assert current["selection_scope"] == "historical"
+    assert current["ready_to_start"] is False
+
+    detail = client.get("/api/hypothesis_history/0").get_json()
+    assert detail["selected_hypothesis"]["full_text"] == HYP1
+    assert detail["selection_scope"] == "historical"
+    assert detail["transcript"][-1]["applies_to_target_round"] is False
+
+
+def test_post_completion_selection_is_ready_for_round_one(monkeypatch, tmp_path):
+    client = _project_client(monkeypatch, tmp_path)
+    _root, source = _seed_selected_round_one_cycle(tmp_path)
+    _write_round_chronology(
+        source,
+        selected_at="2026-01-15T10:09:00+00:00",
+        report_at="2026-01-15T10:08:00+00:00",
+    )
+
+    current = client.get("/api/hypothesis_history").get_json()["rounds"][0]
+    assert current["status"] == "selected"
+    assert current["selection_scope"] == "target_round"
+    assert current["ready_to_start"] is True
+    assert current["start_blocked_reason"] is None
+
+
+def test_selected_continuation_with_missing_config_is_actionably_blocked(
+    monkeypatch, tmp_path,
+):
+    client = _project_client(monkeypatch, tmp_path)
+    _root, source = _seed_selected_round_one_cycle(tmp_path)
+    _write_round_chronology(
+        source,
+        selected_at="2026-01-15T10:09:00+00:00",
+        report_at="2026-01-15T10:08:00+00:00",
+    )
+    source.joinpath("config.json").unlink()
+
+    current = client.get("/api/hypothesis_history").get_json()["rounds"][0]
+    assert current["status"] == "setup_required"
+    assert current["has_selected"] is True
+    assert current["ready_to_start"] is False
+    assert "config.json" in current["start_blocked_reason"]
+
+
 def _write_project_run_state(tmp_path, *, status, round_number):
     project = app_module._v2_load_projects()[0]
     state_path = Path(project["project_root"]) / "checkpoint" / "run_state.json"
@@ -2940,7 +3014,9 @@ def test_legacy_session_restores_only_the_single_displayed_selected_hypothesis(m
     listing = client.get("/api/hypothesis_history").get_json()
     assert [item["round_index"] for item in listing["rounds"]] == [0]
     assert listing["rounds"][0]["has_generated"] is False
-    assert listing["rounds"][0]["has_selected"] is True
+    assert listing["rounds"][0]["has_selected"] is False
+    assert listing["rounds"][0]["has_recorded_selection"] is True
+    assert listing["rounds"][0]["selection_scope"] == "historical"
 
     response = client.get("/api/hypothesis_history/0")
     assert response.status_code == 200
@@ -3086,10 +3162,6 @@ def _seed_current_version_history(rd, gen):
 
 
 def _allow_test_selection(monkeypatch):
-    monkeypatch.setattr(app_module, "upload_selected_hypothesis_to_s3", lambda *a, **k: None)
-    monkeypatch.setattr(app_module, "upload_session_log_to_s3", lambda *a, **k: None)
-    monkeypatch.setattr(app_module, "send_admin_selection_notification", lambda *a, **k: None)
-    monkeypatch.setattr(app_module, "increment_project_submission", lambda *a, **k: {"submission_count": 1})
     monkeypatch.setattr(app_module, "_get_project_round_from_disk", lambda: 0)
     monkeypatch.setattr(app_module, "CLI_DRY_RUN", False)
 
@@ -3868,10 +3940,6 @@ def test_selecting_historical_regeneration_finalizes_exact_text(monkeypatch, tmp
     ])
     historical_result_id = history["events"][0]["id"]
     client = _wire(monkeypatch, gen)
-    monkeypatch.setattr(app_module, "upload_selected_hypothesis_to_s3", lambda *a, **k: None)
-    monkeypatch.setattr(app_module, "upload_session_log_to_s3", lambda *a, **k: None)
-    monkeypatch.setattr(app_module, "send_admin_selection_notification", lambda *a, **k: None)
-    monkeypatch.setattr(app_module, "increment_project_submission", lambda *a, **k: {"submission_count": 1})
     monkeypatch.setattr(app_module, "_get_project_round_from_disk", lambda: 0)
     monkeypatch.setattr(app_module, "CLI_DRY_RUN", False)
 
@@ -3965,10 +4033,6 @@ def test_repeated_llm_edits_preserve_chronology_as_versions(monkeypatch, tmp_pat
 
 def test_selection_follows_newest_revision(monkeypatch, tmp_path):
     rd, gen, client = _guided_client(monkeypatch, tmp_path)
-    monkeypatch.setattr(app_module, "upload_selected_hypothesis_to_s3", lambda *a, **k: None)
-    monkeypatch.setattr(app_module, "upload_session_log_to_s3", lambda *a, **k: None)
-    monkeypatch.setattr(app_module, "send_admin_selection_notification", lambda *a, **k: None)
-    monkeypatch.setattr(app_module, "increment_project_submission", lambda *a, **k: {"submission_count": 1})
     monkeypatch.setattr(app_module, "_get_project_round_from_disk", lambda: 0)
     monkeypatch.setattr(app_module, "CLI_DRY_RUN", False)
 

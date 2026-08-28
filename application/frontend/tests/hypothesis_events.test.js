@@ -449,6 +449,23 @@ test('generation command parsing only catches explicit structured-generation req
     assert.equal(HSE.parseGenerationRequest('I do not want to generate hypotheses'), null);
 });
 
+test('historical selection chronology does not select the upcoming-round card', () => {
+    let n = 0;
+    const events = HSE.normalizeHistoryEvents({
+        transcript: [
+            { kind: 'hypotheses', hypotheses: [{ index: 1, hypothesis: 'Candidate' }] },
+            {
+                kind: 'selection',
+                hypothesis: { index: 1, hypothesis: 'Candidate' },
+                applies_to_target_round: false,
+            },
+        ],
+    }, () => 'e' + (++n));
+
+    assert.equal(HSE.latestSelection(events), null);
+    assert.equal(events[1].appliesToTargetRound, false);
+});
+
 test('history normalization preserves generated sets as hypothesis events after chat turns', () => {
     let n = 0;
     const events = HSE.normalizeHistoryEvents({

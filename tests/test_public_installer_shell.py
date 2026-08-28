@@ -83,6 +83,38 @@ class PublicInstallerShellTests(unittest.TestCase):
             text=True,
         )
 
+    def install_fake_authenticated_gh(self, environment: dict[str, str]) -> Path:
+        gh = self.root / "poison" / "gh"
+        log = self.root / "gh-invocations.txt"
+        gh.write_text(
+            """#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >> "$DISCOVERYAGENT_TEST_GH_LOG"
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+    exit 0
+fi
+if [ "$1" = "release" ] && [ "$2" = "download" ]; then
+    output=
+    while [ "$#" -gt 0 ]; do
+        if [ "$1" = "--output" ]; then
+            output=$2
+            break
+        fi
+        shift
+    done
+    [ -n "$output" ]
+    cp "$DISCOVERYAGENT_TEST_PRIVATE_ARTIFACT" "$output"
+    exit 0
+fi
+exit 2
+""",
+            encoding="utf-8",
+        )
+        gh.chmod(0o755)
+        environment["DISCOVERYAGENT_TEST_GH_LOG"] = str(log)
+        environment["DISCOVERYAGENT_TEST_PRIVATE_ARTIFACT"] = str(self.artifact)
+        return log
+
     def colocated_installer(self, artifact: Path | None = None) -> Path:
         directory = self.root / "release-download"
         directory.mkdir(exist_ok=True)
@@ -236,6 +268,22 @@ exit 2
         script = self.colocated_installer()
         result = self.run_installer(self.environment(), script=script)
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.home / ".local/bin/discoveryagent").is_file())
+        self.assert_no_installer_temporary_directories()
+
+    def test_default_private_download_uses_authenticated_github_cli(self) -> None:
+        environment = self.environment()
+        environment.pop("DISCOVERYAGENT_INTERNAL_ARTIFACT_URL")
+        log = self.install_fake_authenticated_gh(environment)
+
+        result = self.run_installer(environment)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        invocations = log.read_text(encoding="utf-8")
+        self.assertIn("auth status --hostname github.com", invocations)
+        self.assertIn("release download v0.3.0-beta.1", invocations)
+        self.assertIn("--repo evangorrell/DiscoveryAgent-app", invocations)
+        self.assertIn(f"--pattern {self.artifact_name}", invocations)
         self.assertTrue((self.home / ".local/bin/discoveryagent").is_file())
         self.assert_no_installer_temporary_directories()
 

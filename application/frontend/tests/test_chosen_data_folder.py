@@ -236,7 +236,7 @@ def test_registry_records_survive_a_reload(monkeypatch, tmp_path):
     project_id = created.get_json()["project_id"]
 
     registry = json.loads(
-        (app_module._v2_projects_root().parent / "v2_projects.json").read_text(encoding="utf-8")
+        (app_module._v2_projects_root().parent / "projects.json").read_text(encoding="utf-8")
     )
     stored = next(entry for entry in registry["projects"] if entry["id"] == project_id)
 

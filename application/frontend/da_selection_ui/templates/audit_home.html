@@ -26,9 +26,6 @@
                 {% endif %}
             </div>
         </div>
-        <div style="display:flex;align-items:center;gap:8px;">
-            <button id="audit-logout-btn" class="audit-topbar-btn" type="button">Log out</button>
-        </div>
     </div>
 
     <!-- Main container -->
@@ -76,7 +73,6 @@
     <script>
         (function () {
             const config = window.auditHomeConfig || {};
-            const logoutBtn = document.getElementById('audit-logout-btn');
             const mainInterfaceEl = document.getElementById('main-interface');
             const chatMessagesEl = document.getElementById('chat-messages');
             const chatInputEl = document.getElementById('chat-input');
@@ -110,7 +106,7 @@
             }
 
             // Rewrite <img> src attributes produced by marked.parse so they route
-            // through the authenticated /api/serve_asset endpoint.
+            // through the project-scoped /api/serve_asset endpoint.
             // Only rewrites paths that are not already absolute HTTP URLs or data URIs.
             function rewriteImagePaths(el) {
                 el.querySelectorAll('img').forEach(function(img) {
@@ -337,36 +333,6 @@
                 return content;
             }
 
-            // ── S3 sync polling ───────────────────────────────────────────────
-            // Preserve the legacy Audit session's sync readiness check.
-            // Returns true when ready to proceed, false if sync failed.
-            async function waitForS3Sync() {
-                try {
-                    const res = await fetch('/api/s3_sync_status', { credentials: 'include' });
-                    if (!res.ok) return true;
-                    const status = await res.json();
-                    if (!status.success || !status.required || status.state === 'success') return true;
-
-                    showBootOverlay('Pulling checkpoints and code for your session.\nThis can take a few minutes.');
-
-                    while (true) {
-                        await new Promise(function(r) { setTimeout(r, 2000); });
-                        let s = null;
-                        try {
-                            const r2 = await fetch('/api/s3_sync_status', { credentials: 'include' });
-                            if (r2.ok) s = await r2.json();
-                        } catch (_) {}
-                        if (!s || !s.success || !s.required || s.state === 'success') return true;
-                        if (s.state === 'error') {
-                            showBootError(`Checkpoint download failed: ${s.error || 'unknown error'}`);
-                            return false;
-                        }
-                    }
-                } catch (_) {
-                    return true; // not configured or network error — let initialize try
-                }
-            }
-
             // ── Session initialization ────────────────────────────────────────
             async function initSession() {
                 concealMainInterface();
@@ -375,9 +341,6 @@
                 chatSendBtn.disabled = true;
                 showBootOverlay('Checking session data...');
                 try {
-                    const syncReady = await waitForS3Sync();
-                    if (!syncReady) return;
-
                     showBootOverlay('Initializing session...');
 
                     const res = await fetch('/api/initialize', {
@@ -523,13 +486,6 @@
             bootRetryBtn && bootRetryBtn.addEventListener('click', function () {
                 bootRetryBtn.disabled = true;
                 initSession();
-            });
-
-            // ── Logout ────────────────────────────────────────────────────────
-            logoutBtn && logoutBtn.addEventListener('click', async () => {
-                logoutBtn.disabled = true;
-                try { await fetch('/api/logout', { method: 'POST', credentials: 'include' }); } catch (_) {}
-                window.location.href = '/';
             });
 
             window.addEventListener('beforeunload', function () {

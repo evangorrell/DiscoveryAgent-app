@@ -21,8 +21,12 @@
         retry: $('pj-retry'), empty: $('pj-empty'), list: $('pj-list'),
         pageRoot: $('projects-root'), pageContent: $('projects-content'),
         primaryAction: $('projects-primary-action'), openBtn: $('open-new-project'),
+        importBtn: $('open-import-project'), importEmptyBtn: $('open-import-project-empty'),
+        importError: $('pj-import-error'), importEmptyError: $('pj-import-error-empty'),
         overlay: $('np-overlay'), modal: $('np-modal'), modalBody: $('np-modal-body'), close: $('np-close'),
         cancel: $('np-cancel'), form: $('np-form'), name: $('np-name'), objective: $('np-objective'),
+        importSummary: $('np-import-summary'), importRoot: $('np-import-root'),
+        importWarnings: $('np-import-warnings'),
         reasoningModel: $('np-reasoning-model'), executionModel: $('np-execution-model'),
         queryCount: $('np-query-count'), deepResearch: $('np-deep-research'), webSearch: $('np-web-search'),
         context: $('np-context'),
@@ -30,6 +34,7 @@
         advancedSettingsPanel: $('np-advanced-settings-panel'),
         projectLocationPath: $('np-project-location-path'),
         projectLocationStatus: $('np-project-location-status'),
+        projectLocationActions: $('np-project-location-actions'),
         locateProject: $('np-locate-project'), chooseLocation: $('np-choose-location'),
         useDefaultLocation: $('np-use-default-location'),
         formError: $('np-form-error'), submit: $('np-submit'),
@@ -47,6 +52,7 @@
         deleteOverlay: $('delete-project-overlay'), deleteTitle: $('delete-project-title'),
         deleteDescription: $('delete-project-description'),
         deleteName: $('delete-project-name'), deleteNormalCopy: $('delete-project-normal-copy'),
+        deleteImportedCopy: $('delete-project-imported-copy'),
         deleteUnavailableCopy: $('delete-project-unavailable-copy'),
         deleteError: $('delete-project-error'), deleteCancel: $('delete-project-cancel'),
         deleteConfirm: $('delete-project-confirm'),
@@ -69,6 +75,7 @@
 
     let pendingDeleteProject = null;
     let pendingDeleteUnavailable = false;
+    let pendingDeleteImported = false;
     let deleteLastFocused = null;
     let pageActionLayout = null;
     const initialProjectsEmpty = Boolean(
@@ -124,7 +131,7 @@
         return item;
     }
 
-    // Every project row menu contains Edit and Delete actions.
+    // Every project row menu contains Edit and its ownership-appropriate removal action.
     const DOTS_SVG = '<svg class="v2-dots" viewBox="0 0 4 18" width="4" height="18" aria-hidden="true">'
         + '<circle cx="2" cy="2" r="1.8"/><circle cx="2" cy="9" r="1.8"/><circle cx="2" cy="16" r="1.8"/></svg>';
 
@@ -139,7 +146,10 @@
         menu.setAttribute('role', 'menu');
 
         menu.appendChild(menuItem('Edit', () => openEdit(project)));
-        menu.appendChild(dangerMenuItem('Delete', () => openDeleteConfirmation(project)));
+        menu.appendChild(dangerMenuItem(
+            project.imported_in_place ? 'Remove Project' : 'Delete',
+            () => openDeleteConfirmation(project),
+        ));
 
         btn.addEventListener('click', (e) => {
             e.stopPropagation();
@@ -169,7 +179,7 @@
         const title = el('a', 'v2-project-title', esc(p.display_name || 'Untitled project'));
         title.href = homeUrl;
         head.appendChild(title);
-        head.appendChild(buildMenu(p));  // Edit + Delete (every project is editable)
+        head.appendChild(buildMenu(p));
         row.appendChild(head);
 
         if (p.overview) row.appendChild(el('p', 'v2-project-overview', esc(p.overview)));
@@ -287,6 +297,7 @@
     let selectorLastFocused = null;
     let modalMode = 'create';
     let editingProjectId = null;
+    let editingProjectImportedInPlace = false;
     let pendingEditProjectId = null;
     let pendingRecoveryProjectId = null;
     let selectedDataSources = [];
@@ -307,6 +318,10 @@
     let persistedEditSnapshot = null;
     let unsavedCloseInvoker = null;
     let unsavedProcessing = false;
+    let importProjectRoot = '';
+    let importPreviewToken = '';
+    let importInvoker = null;
+    let projectImportRunning = false;
     let projectSubmissionRunning = false;
 
     // ---- app-wide input data selector ---------------------------------------
@@ -636,12 +651,19 @@
         els.projectState.hidden = false;
         els.projectFooter.hidden = false;
         const isEdit = modalMode === 'edit';
+        const isImport = modalMode === 'import';
         els.title.textContent = isEdit
             ? 'Edit DiscoveryAgent project'
+            : isImport
+            ? 'Import existing project'
             : 'Create a new DiscoveryAgent project';
         els.submit.innerHTML = isEdit
             ? 'Save'
+            : isImport
+            ? 'Import project <span class="v2-arrow" aria-hidden="true">&rarr;</span>'
             : 'Create project <span class="v2-arrow" aria-hidden="true">&rarr;</span>';
+        els.importSummary.hidden = !isImport;
+        els.projectLocationActions.hidden = isImport;
     }
 
     // ADVANCED_SETTINGS_SCROLL_BEGIN
@@ -798,7 +820,7 @@
         if (!parent) return '';
         if (
             modalMode === 'edit' && currentProjectRoot && parent === currentProjectParent &&
-            !useCanonicalLeaf
+            !useCanonicalLeaf && editingProjectImportedInPlace
         ) {
             return currentProjectRoot;
         }
@@ -808,16 +830,32 @@
     }
 
     function renderProjectLocation() {
+        if (modalMode === 'import') {
+            els.projectLocationPath.textContent = importProjectRoot;
+            els.projectLocationStatus.textContent = 'This existing folder remains the exact project root.';
+            els.projectLocationStatus.classList.remove('is-error');
+            els.projectLocationStatus.setAttribute('role', 'status');
+            els.locateProject.hidden = true;
+            els.chooseLocation.disabled = true;
+            els.useDefaultLocation.disabled = true;
+            els.projectLocationActions.hidden = true;
+            return;
+        }
+        els.projectLocationActions.hidden = false;
         const destination = projectDestination(
             pendingProjectParent, els.name.value, pendingCanonicalDefaultLocation
         );
         els.projectLocationPath.textContent = destination;
         const relocating = modalMode === 'edit' && currentProjectRoot && destination !== currentProjectRoot;
+        const managedNameRename = relocating && !editingProjectImportedInPlace &&
+            pendingProjectParent === currentProjectParent && !pendingCanonicalDefaultLocation;
         const unavailable = !projectLocationAvailable;
         els.projectLocationStatus.textContent = unavailable
             ? 'The saved project location is unavailable. Locate the project before saving changes.'
             : projectHasActiveRound
             ? 'Stop the active round before changing this project location.'
+            : managedNameRename
+            ? 'The managed project folder will be renamed when you save changes.'
             : relocating
             ? 'The complete project will move when you save changes.'
             : (modalMode === 'create' ? 'This folder will be created when you create the project.' : 'Current project location.');
@@ -1097,8 +1135,102 @@
         }
     }
 
+    function importErrorForInvoker(invoker) {
+        return invoker === els.importEmptyBtn ? els.importEmptyError : els.importError;
+    }
+
+    function setImportInlineError(invoker, message) {
+        const target = importErrorForInvoker(invoker);
+        if (!target) return;
+        target.textContent = message || '';
+        target.hidden = !message;
+    }
+
+    function setImportPickerBusy(invoker, busy) {
+        projectImportRunning = Boolean(busy);
+        if (!invoker) return;
+        invoker.disabled = projectImportRunning;
+        if (projectImportRunning) invoker.setAttribute('aria-busy', 'true');
+        else invoker.removeAttribute('aria-busy');
+    }
+
+    function renderImportWarnings(warnings) {
+        els.importWarnings.innerHTML = '';
+        (warnings || []).forEach((warning) => {
+            const item = document.createElement('li');
+            item.textContent = warning;
+            els.importWarnings.appendChild(item);
+        });
+    }
+
+    function openImportForm(root, metadata, previewToken, invoker) {
+        modalMode = 'import'; editingProjectId = null; persistedEditSnapshot = null;
+        editingProjectImportedInPlace = true;
+        importProjectRoot = String(root || '');
+        importPreviewToken = String(previewToken || '');
+        importInvoker = invoker;
+        els.form.reset();
+        clearInvalid(els.reasoningModel); clearInvalid(els.executionModel); clearInvalid(els.queryCount);
+        setAdvancedSettingsExpanded(false);
+        if (els.projectDataStatus) els.projectDataStatus.textContent = '';
+        els.reasoningModel.value = els.reasoningModel.getAttribute('data-default-model') || els.reasoningModel.value;
+        els.executionModel.value = els.executionModel.getAttribute('data-default-model') || els.executionModel.value;
+        els.queryCount.value = els.queryCount.getAttribute('data-default-query-count') || '12';
+        els.deepResearch.checked = true; els.webSearch.checked = true;
+        els.name.value = (metadata && metadata.project_name) || '';
+        els.objective.value = (metadata && metadata.task_description) || '';
+        els.context.value = (metadata && metadata.dataset_context) || '';
+        els.importRoot.textContent = importProjectRoot;
+        renderImportWarnings(metadata && metadata.warnings);
+        pendingProjectParent = importProjectRoot.replace(/\/[^/]+\/?$/, '') || '/';
+        pendingCanonicalDefaultLocation = false;
+        currentProjectRoot = importProjectRoot;
+        currentProjectParent = pendingProjectParent;
+        projectLocationAvailable = true;
+        projectHasActiveRound = false;
+        selectedDataSources = [];
+        librarySources = [];
+        renderSelectedDataHierarchy();
+        resetSubmitState();
+        setFormError(null);
+        renderProjectLocation();
+        showModal();
+        loadLibrarySources();
+    }
+
+    async function chooseImportProject(invoker) {
+        if (projectImportRunning || !invoker) return;
+        setImportInlineError(invoker, null);
+        setImportPickerBusy(invoker, true);
+        let restoreFocus = false;
+        try {
+            const resp = await fetch('/api/project-import/choose', {
+                method: 'POST', credentials: 'include', headers: { 'Accept': 'application/json' },
+            });
+            const data = await readJson(resp);
+            if (!(resp.ok && data && data.success)) {
+                throw new Error((data && data.error) || 'Could not inspect the selected project folder.');
+            }
+            if (data.cancelled) {
+                restoreFocus = true;
+                return;
+            }
+            openImportForm(data.root, data.metadata || {}, data.preview_token, invoker);
+        } catch (error) {
+            setImportInlineError(
+                invoker,
+                error && error.message ? error.message : 'Could not inspect the selected project folder.'
+            );
+            restoreFocus = true;
+        } finally {
+            setImportPickerBusy(invoker, false);
+            if (restoreFocus) invoker.focus();
+        }
+    }
+
     function openCreate() {
-        modalMode = 'create'; editingProjectId = null; persistedEditSnapshot = null;
+        modalMode = 'create'; editingProjectId = null; persistedEditSnapshot = null; importInvoker = null; importPreviewToken = '';
+        editingProjectImportedInPlace = false;
         els.form.reset();
         clearInvalid(els.reasoningModel); clearInvalid(els.executionModel); clearInvalid(els.queryCount);
         setAdvancedSettingsExpanded(false);
@@ -1121,7 +1253,8 @@
     }
 
     async function openEdit(project) {
-        modalMode = 'edit'; editingProjectId = project.id; persistedEditSnapshot = null;
+        modalMode = 'edit'; editingProjectId = project.id; persistedEditSnapshot = null; importInvoker = null; importPreviewToken = '';
+        editingProjectImportedInPlace = project.imported_in_place === true;
         els.form.reset();
         clearInvalid(els.reasoningModel); clearInvalid(els.executionModel); clearInvalid(els.queryCount);
         setAdvancedSettingsExpanded(false);
@@ -1150,6 +1283,7 @@
             });
             const data = await resp.json();
             if (resp.ok && data && data.success && data.project && editingProjectId === project.id) {
+                editingProjectImportedInPlace = data.project.imported_in_place === true;
                 els.name.value = data.project.display_name || '';
                 els.objective.value = data.project.task_description || '';
                 els.reasoningModel.value = data.project.reasoning_model || els.reasoningModel.getAttribute('data-default-model') || '';
@@ -1185,6 +1319,7 @@
         if (!project || !project.id) return;
         pendingDeleteProject = project;
         pendingDeleteUnavailable = project.location_available === false;
+        pendingDeleteImported = project.imported_in_place === true;
         deleteLastFocused = document.activeElement;
         renderDeleteConfirmationCopy();
         els.deleteError.textContent = '';
@@ -1197,15 +1332,23 @@
     function renderDeleteConfirmationCopy() {
         const projectName = pendingDeleteProject && pendingDeleteProject.display_name
             ? pendingDeleteProject.display_name : 'This project';
-        if (pendingDeleteUnavailable) {
+        if (pendingDeleteImported) {
+            els.deleteTitle.textContent = ['Remove', 'this project?'].join(' ');
+            els.deleteNormalCopy.hidden = true;
+            els.deleteImportedCopy.hidden = false;
+            els.deleteUnavailableCopy.hidden = true;
+            els.deleteConfirm.textContent = 'Remove Project';
+        } else if (pendingDeleteUnavailable) {
             els.deleteTitle.textContent = 'Remove unavailable project?';
             els.deleteNormalCopy.hidden = true;
+            els.deleteImportedCopy.hidden = true;
             els.deleteUnavailableCopy.hidden = false;
             els.deleteConfirm.textContent = 'Remove Project';
         } else {
             els.deleteTitle.textContent = 'Delete this project?';
             els.deleteName.textContent = projectName;
             els.deleteNormalCopy.hidden = false;
+            els.deleteImportedCopy.hidden = true;
             els.deleteUnavailableCopy.hidden = true;
             els.deleteConfirm.textContent = 'Delete';
         }
@@ -1217,6 +1360,7 @@
         document.body.classList.remove('v2-modal-open');
         pendingDeleteProject = null;
         pendingDeleteUnavailable = false;
+        pendingDeleteImported = false;
         if (deleteLastFocused && deleteLastFocused.focus) deleteLastFocused.focus();
     }
 
@@ -1226,11 +1370,12 @@
         els.deleteConfirm.disabled = true;
         els.deleteConfirm.classList.add('is-busy');
         els.deleteConfirm.setAttribute('aria-busy', 'true');
-        els.deleteConfirm.textContent = pendingDeleteUnavailable ? 'Removing…' : 'Moving to Trash…';
+        const registryOnly = pendingDeleteImported || pendingDeleteUnavailable;
+        els.deleteConfirm.textContent = registryOnly ? 'Removing…' : 'Moving to Trash…';
         els.deleteCancel.disabled = true;
         try {
             const endpoint = '/api/projects/' + encodeURIComponent(project.id) +
-                (pendingDeleteUnavailable ? '?confirm_unavailable=true' : '');
+                (pendingDeleteUnavailable && !pendingDeleteImported ? '?confirm_unavailable=true' : '');
             const resp = await fetch(endpoint, {
                 method: 'DELETE',
                 credentials: 'include',
@@ -1246,7 +1391,7 @@
                     return;
                 }
                 els.deleteError.textContent = (data && data.error) ||
-                    (pendingDeleteUnavailable ? 'Could not remove this project.' : 'Could not move this project to Trash.');
+                    (registryOnly ? 'Could not remove this project.' : 'Could not move this project to Trash.');
                 els.deleteError.hidden = false;
                 return;
             }
@@ -1254,10 +1399,11 @@
             document.body.classList.remove('v2-modal-open');
             pendingDeleteProject = null;
             pendingDeleteUnavailable = false;
+            pendingDeleteImported = false;
             loadProjects();
         } catch (err) {
             els.deleteError.textContent = err && err.message ? err.message :
-                (pendingDeleteUnavailable ? 'Network error while removing this project.' : 'Network error while moving this project to Trash.');
+                (registryOnly ? 'Network error while removing this project.' : 'Network error while moving this project to Trash.');
             els.deleteError.hidden = false;
         } finally {
             els.deleteConfirm.disabled = false;
@@ -1288,7 +1434,8 @@
     }
 
     function showModal() {
-        lastFocused = document.activeElement;
+        lastFocused = importInvoker || document.activeElement;
+        importInvoker = null;
         resetProjectModalScroll();
         els.overlay.hidden = false;
         document.body.classList.add('v2-modal-open');
@@ -1431,7 +1578,11 @@
         projectSubmissionRunning = true;
         els.submit.disabled = true;
         els.submit.classList.add('is-busy');
-        els.submit.textContent = modalMode === 'create' ? 'Creating…' : 'Saving…';
+        els.submit.textContent = modalMode === 'create'
+            ? 'Creating…'
+            : modalMode === 'import'
+            ? 'Importing…'
+            : 'Saving…';
     }
 
     async function persistProject(body, options) {
@@ -1441,12 +1592,15 @@
         try {
             const endpoint = modalMode === 'edit'
                 ? '/api/projects/' + encodeURIComponent(editingProjectId) + '/edit'
+                : modalMode === 'import'
+                ? '/api/projects/import'
                 : '/api/projects';
             const resp = await fetch(endpoint, { method: 'POST', credentials: 'include', body: body });
             const data = await readJson(resp);
             if (!(resp.ok && data && data.success)) {
                 const message = (data && data.error) ||
-                    (modalMode === 'edit' ? 'Could not save changes.' : 'Could not create the project.');
+                    (modalMode === 'edit' ? 'Could not save changes.' : modalMode === 'import'
+                        ? 'Could not import the project.' : 'Could not create the project.');
                 if (data && data.code === 'project_location_recovery_required') {
                     const retryBody = new URLSearchParams(body.toString());
                     retryBody.delete('confirm_project_relocation');
@@ -1492,6 +1646,18 @@
                 return true;
             }
 
+            if (modalMode === 'import') {
+                if (typeof data.projects_url !== 'string' || !data.projects_url) {
+                    setFormError('The project was imported, but DiscoveryAgent could not return to Projects. Reload this page to continue.');
+                    resetSubmitState();
+                    return false;
+                }
+                resetSubmitState();
+                closeModal({ force: true });
+                window.location.replace(data.projects_url);
+                return true;
+            }
+
             if (typeof data.projects_url !== 'string' || !data.projects_url) {
                 setFormError('The project was created, but DiscoveryAgent could not return to Projects. Reload this page to continue.');
                 resetSubmitState();
@@ -1507,6 +1673,8 @@
         } catch (err) {
             setFormError(err && err.message ? err.message : (modalMode === 'edit'
                 ? 'Could not save changes. Please try again.'
+                : modalMode === 'import'
+                ? 'Could not import the project. Please try again.'
                 : 'Could not create the project. Please try again.'));
             resetSubmitState();
             if (config.relocation) {
@@ -1525,6 +1693,7 @@
     }
 
     async function submitPreparedProject(body) {
+        if (modalMode === 'import') return await persistProject(body);
         if (modalMode === 'edit' && !projectLocationAvailable) {
             if (projectHasActiveRound) {
                 setFormError('Stop the active round before reconnecting this project location.');
@@ -1543,13 +1712,20 @@
             body.get('use_canonical_default_location') === 'true'
         );
         const relocating = modalMode === 'edit' && currentProjectRoot && destination !== currentProjectRoot;
+        const automaticManagedRename = relocating && !editingProjectImportedInPlace &&
+            requestedParent === currentProjectParent &&
+            body.get('use_canonical_default_location') !== 'true';
         if (relocating) {
             if (projectHasActiveRound) {
-                setFormError('Stop the active round before changing this project location.');
+                const message = 'Stop the active round before changing this project location.';
+                if (automaticManagedRename) showProjectNameValidationError(message);
+                else setFormError(message);
                 return;
             }
-            openRelocationConfirmation(body, destination);
-            return;
+            if (!automaticManagedRename) {
+                openRelocationConfirmation(body, destination);
+                return;
+            }
         }
         return await persistProject(body);
     }
@@ -1600,7 +1776,11 @@
         body.append('query_count', queryCount);
         body.append('deep_research', String(els.deepResearch.checked));
         body.append('web_search', String(els.webSearch.checked));
-        body.append('project_parent_dir', pendingProjectParent);
+        if (modalMode === 'import') {
+            body.append('project_root', importProjectRoot);
+            body.append('preview_token', importPreviewToken);
+        }
+        else body.append('project_parent_dir', pendingProjectParent);
         if (modalMode === 'edit' && pendingCanonicalDefaultLocation) {
             body.append('use_canonical_default_location', 'true');
         }
@@ -1623,6 +1803,8 @@
         pendingEditProjectId = initialParams.get('edit');
         pendingRecoveryProjectId = initialParams.get('recover');
         if (els.openBtn) els.openBtn.addEventListener('click', openCreate);
+        if (els.importBtn) els.importBtn.addEventListener('click', (event) => chooseImportProject(event.currentTarget));
+        if (els.importEmptyBtn) els.importEmptyBtn.addEventListener('click', (event) => chooseImportProject(event.currentTarget));
         if (els.retry) els.retry.addEventListener('click', loadProjects);
         els.close.addEventListener('click', (e) => closeModal({ invoker: e.currentTarget }));
         els.cancel.addEventListener('click', (e) => closeModal({ invoker: e.currentTarget }));

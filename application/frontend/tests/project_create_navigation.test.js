@@ -22,7 +22,21 @@ test('successful Create closes its workflow and replaces history with the server
     assert.match(createSuccess, /resetSubmitState\(\)[\s\S]*closeModal\(\{ force: true \}\)[\s\S]*window\.location\.replace\(data\.projects_url\)/);
     assert.doesNotMatch(createSuccess, /window\.location\.href\s*=\s*data\.destination/);
     assert.doesNotMatch(createSuccess, /['"]\/projects(?:['"]|\/)/);
-    assert.match(template, /projects\.js'\) \}\}\?v=20260823-first-run-welcome-1/);
+    assert.match(template, /projects\.js'\) \}\}\?v=20260826-import-project-list-navigation-1/);
+});
+
+test('clicking a project card title still opens that project through its canonical home URL', () => {
+    const row = sourceBlock('function renderRow(p)', 'function renderList(projects)');
+    const titleLink = row.slice(
+        row.indexOf('const homeUrl ='),
+        row.indexOf('head.appendChild(buildMenu(p))'),
+    );
+
+    assert.match(titleLink, /const homeUrl = p\.home_url \|\| \('\/projects\/' \+ encodeURIComponent\(p\.url_slug \|\| p\.id\)\)/);
+    assert.match(titleLink, /const title = el\('a', 'v2-project-title'/);
+    assert.match(titleLink, /title\.href = homeUrl/);
+    assert.match(titleLink, /head\.appendChild\(title\)/);
+    assert.doesNotMatch(titleLink, /preventDefault|addEventListener/);
 });
 
 test('Create failure stays in the modal and duplicate submission protection remains intact', () => {
@@ -46,7 +60,7 @@ test('Edit Save and explicit Continue retain their established destinations', ()
     const persist = sourceBlock('async function persistProject(body, options)', 'async function confirmProjectRelocation');
     const editSuccess = persist.slice(
         persist.indexOf("if (modalMode === 'edit')"),
-        persist.indexOf("if (typeof data.projects_url"),
+        persist.indexOf("if (modalMode === 'import')"),
     );
     const continueProject = sourceBlock('async function continueProject(project, invoker)', '// ---- modal (create + edit)');
     const wiring = sourceBlock('function wire()', "document.addEventListener('DOMContentLoaded'");
@@ -63,11 +77,11 @@ test('first-run welcome owns the single New Project action while populated pages
     assert.ok(template.includes('id="open-new-project"'));
     assert.ok(template.includes('{% if projects_empty %}'));
     assert.ok(template.includes('Welcome to DiscoveryAgent!'));
-    assert.ok(template.includes(`v2-onboarding-cta">{{ new_project_button('Create Your First Project') }}`));
+    assert.ok(template.includes(`v2-onboarding-cta">{{ project_actions('Create Your First Project'`));
     assert.ok(template.includes('id="projects-primary-action" hidden'));
-    assert.ok(template.includes('{{ new_project_button() }}'));
+    assert.ok(template.includes("project_actions('New Project'"));
     assert.ok(template.includes('aria-label="{{ label }}"'));
-    assert.ok(template.includes("new_project_button('Create Your First Project')"));
+    assert.ok(template.includes("new_project_button(create_label)"));
     assert.ok(source.includes('if (helper && els.primaryAction) pageActionLayout = helper.create'));
     assert.ok(source.includes('if (empty !== initialProjectsEmpty)'));
     assert.ok(source.includes('window.location.reload()'));

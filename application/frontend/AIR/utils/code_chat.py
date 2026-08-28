@@ -78,8 +78,8 @@ The checkpoint structure can be described as such:
 - {working_dir}/checkpoint/checkpoints: the checkpoints directory with all information about the research trace so far.
     - {working_dir}/checkpoint/checkpoints/round_N/: This is the base folder for a given round N
         - {working_dir}/checkpoint/checkpoints/round_N/query_N/: This is the base folder for a given query N. There will be multiple query folders in the round directory. It contains a file query_N.md that describes the query at that step. Each N denotes the order in which they were called; intuitively, 001 comes before 002, etc.
-        - {working_dir}/checkpoint/checkpoints/round_N/memory_report.md: This is a full report of the research up until this point. 
-        - {working_dir}/checkpoint/checkpoints/round_N/round_report.md: This is a report of the research that was done between round (N-1) and round (N), i.e., the report of the research done in round N alone. 
+        - {working_dir}/checkpoint/checkpoints/round_N/memory_report.md: This is a full report of the research up until this point.
+        - {working_dir}/checkpoint/checkpoints/round_N/round_report.md: This is a report of the research that was done between round (N-1) and round (N), i.e., the report of the research done in round N alone.
 
 The codebase is provided in {working_dir}/code/. It contains all code written by the agent thus far during the research.
 Here's a file describing the codebase (from CLAUDE.md in the codebase):
@@ -152,8 +152,8 @@ The checkpoint structure can be described as such:
 - {working_dir}/checkpoint/checkpoints: the checkpoints directory with all information about the research trace so far.
     - {working_dir}/checkpoint/checkpoints/round_N/: This is the base folder for a given round N
         - {working_dir}/checkpoint/checkpoints/round_N/query_N/: This is the base folder for a given query N. There will be multiple query folders in the round directory. It contains a file query_N.md that describes the query at that step. Each N denotes the order in which they were called; intuitively, 001 comes before 002, etc.
-        - {working_dir}/checkpoint/checkpoints/round_N/memory_report.md: This is a full report of the research up until this point. 
-        - {working_dir}/checkpoint/checkpoints/round_N/round_report.md: This is a report of the research that was done between round (N-1) and round (N), i.e., the report of the research done in round N alone. 
+        - {working_dir}/checkpoint/checkpoints/round_N/memory_report.md: This is a full report of the research up until this point.
+        - {working_dir}/checkpoint/checkpoints/round_N/round_report.md: This is a report of the research that was done between round (N-1) and round (N), i.e., the report of the research done in round N alone.
 
 Instructions:
 - Prioritize round/query chronology, experiment trace, and report evidence.

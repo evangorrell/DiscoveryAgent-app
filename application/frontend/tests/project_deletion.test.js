@@ -43,3 +43,4 @@ test('failed deletion keeps the modal and visible project list intact', () => {
     assert.equal(failure.slice(0, failureReturn).includes('loadProjects()'), false);
     assert.ok(confirm.indexOf('loadProjects()') > confirm.indexOf('els.deleteOverlay.hidden = true'));
 });
+

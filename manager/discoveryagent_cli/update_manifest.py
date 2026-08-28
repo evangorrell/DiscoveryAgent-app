@@ -14,7 +14,7 @@ from .paths import validate_release_id
 
 UPDATE_SCHEMA_VERSION = 1
 PUBLIC_UPDATE_MANIFEST_URL = (
-    "https://github.com/owencqueen/DiscoveryAgent-app/releases/latest/download/"
+    "https://github.com/evangorrell/DiscoveryAgent-app/releases/latest/download/"
     "discoveryagent-update.json"
 )
 INTERNAL_UPDATE_MANIFEST_URL_ENV = "DISCOVERYAGENT_INTERNAL_UPDATE_MANIFEST_URL"

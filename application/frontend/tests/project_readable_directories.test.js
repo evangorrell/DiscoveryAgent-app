@@ -22,6 +22,7 @@ function locationHelpers(overrides = {}) {
         editingProjectId: overrides.editingProjectId || null,
         currentProjectRoot: overrides.currentProjectRoot || '',
         currentProjectParent: overrides.currentProjectParent || '',
+        editingProjectImportedInPlace: overrides.editingProjectImportedInPlace === true,
         els: { name: { value: overrides.name || '' } },
     };
     vm.runInNewContext(
@@ -52,7 +53,7 @@ test('browser preview mirrors unsafe, Unicode, empty, and bounded slug behavior'
     assert.equal(Array.from(api.projectDirectorySlug('界'.repeat(100))).length, 48);
 });
 
-test('rename alone preserves the registered root while explicit relocation previews a readable leaf', () => {
+test('managed rename previews its new readable leaf while imported rename preserves its external root', () => {
     const api = locationHelpers({
         modalMode: 'edit',
         editingProjectId: 'prj_' + 'a'.repeat(32),
@@ -62,11 +63,24 @@ test('rename alone preserves the registered root while explicit relocation previ
     });
     assert.equal(
         api.projectDestination('/old', 'Renamed Project'),
-        '/old/prj_' + 'a'.repeat(32)
+        '/old/renamed-project'
     );
     assert.equal(
         api.projectDestination('/new', 'Renamed Project'),
         '/new/renamed-project'
+    );
+
+    const imported = locationHelpers({
+        modalMode: 'edit',
+        editingProjectId: 'legacy-external-project',
+        currentProjectRoot: '/external/legacy-folder',
+        currentProjectParent: '/external',
+        editingProjectImportedInPlace: true,
+        name: 'Renamed External Project',
+    });
+    assert.equal(
+        imported.projectDestination('/external', 'Renamed External Project'),
+        '/external/legacy-folder'
     );
 });
 
@@ -137,5 +151,5 @@ test('duplicate-name response uses inline V2 error and restores Project Name foc
 });
 
 test('slug-only preview ships under a fresh ordinary-reload cache key', () => {
-    assert.match(template, /projects\.js'\) \}\}\?v=20260823-first-run-welcome-1/);
+    assert.match(template, /projects\.js'\) \}\}\?v=20260826-import-project-list-navigation-1/);
 });

@@ -262,7 +262,10 @@
 
     function latestSelection(events) {
         for (let i = (events || []).length - 1; i >= 0; i--) {
-            if (events[i] && events[i].kind === 'selection') return events[i];
+            if (events[i] && events[i].kind === 'selection' &&
+                    events[i].appliesToTargetRound !== false) {
+                return events[i];
+            }
         }
         return null;
     }
@@ -468,7 +471,12 @@
                         hypotheses: Array.isArray(item.hypotheses) ? item.hypotheses : [],
                     });
                 } else if (kind === 'selection' || kind === 'hypothesis_selected') {
-                    out.push({ kind: 'selection', id: id(), hypothesis: item.hypothesis || {} });
+                    out.push({
+                        kind: 'selection',
+                        id: id(),
+                        hypothesis: item.hypothesis || {},
+                        appliesToTargetRound: item.applies_to_target_round !== false,
+                    });
                 }
             });
             return out;

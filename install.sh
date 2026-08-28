@@ -4,10 +4,11 @@ set -eu
 umask 077
 
 RELEASE_TAG="v0.3.0-beta.1"
-RELEASE_ID="dev-d6d09412a141-5e7995a5e762"
+RELEASE_ID="dev-823dc588d2eb-5e7995a5e762"
 ARTIFACT_NAME="discoveryagent-${RELEASE_ID}-macos-arm64.tar.gz"
+GITHUB_REPOSITORY="evangorrell/DiscoveryAgent-app"
 PUBLIC_ARTIFACT_URL="https://github.com/evangorrell/DiscoveryAgent-app/releases/download/${RELEASE_TAG}/${ARTIFACT_NAME}"
-PUBLIC_ARTIFACT_SHA256="0e895ddfde19790486479c9f6957ea2b287ab5784c222c81d384d60b163cd826"
+PUBLIC_ARTIFACT_SHA256="8fd0f89bbfc8fd3c38f3d6bd335be1cfe10a9ffb6a9f9f894ab3bf0cdd5b1145"
 UV_URL="https://releases.astral.sh/github/uv/releases/download/0.11.17/uv-aarch64-apple-darwin.tar.gz"
 UV_SHA256="2a162f6b90ff3691a2f9cae1622e066a3ce592e110f66670cdcc841324b28226"
 
@@ -99,7 +100,18 @@ if [ -f "$local_artifact" ]; then
 else
     step "Downloading the DiscoveryAgent release (${ARTIFACT_NAME})"
     artifact="$temporary_root/$ARTIFACT_NAME"
-    curl -fsSL "$artifact_url" -o "$artifact" || fail "could not download the DiscoveryAgent release"
+    if [ "$artifact_url" = "$PUBLIC_ARTIFACT_URL" ]; then
+        command -v gh >/dev/null 2>&1 || fail \
+            "private release access requires GitHub CLI; install gh and run gh auth login"
+        gh auth status --hostname github.com >/dev/null 2>&1 || fail \
+            "GitHub CLI is not authenticated; run gh auth login with an account that can access DiscoveryAgent"
+        gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern "$ARTIFACT_NAME" --output "$artifact" || fail \
+            "could not download the private DiscoveryAgent release through GitHub CLI"
+    else
+        curl -fsSL "$artifact_url" -o "$artifact" || fail \
+            "could not download the DiscoveryAgent release"
+    fi
 fi
 step "Verifying the release archive"
 verify_sha256 "$artifact_sha256" "$artifact"

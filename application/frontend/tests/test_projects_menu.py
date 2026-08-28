@@ -1,7 +1,7 @@
-"""Focused tests for the project ⋮ menu (Edit + Delete).
+"""Focused tests for the project ⋮ menu (Edit + ownership-aware removal).
 
-Every project is a V2-created, editable project — every row menu is Edit +
-Delete, unconditionally. The pytest suite has no JS runtime, so the menu
+Every project is editable. Managed projects retain Delete while imported
+projects use Remove Project. The pytest suite has no JS runtime, so the menu
 construction contract is locked deterministically from projects.js source.
 (Live DOM/interaction is additionally verified with headless Chrome during
 manual visual verification.)"""
@@ -23,23 +23,24 @@ def _buildmenu_block():
     return s[start:end]
 
 
-# --- V2 menu contains only Edit and Delete -----------------------------------
+# --- V2 menu contains Edit and the ownership-appropriate removal action ------
 
-def test_menu_has_edit_and_delete_without_settings():
+def test_menu_has_edit_and_ownership_appropriate_removal_without_settings():
     block = _buildmenu_block()
     assert "menuItem('Edit'" in block
-    assert "dangerMenuItem('Delete'" in block
+    assert "project.imported_in_place ? 'Remove Project' : 'Delete'" in block
+    assert "dangerMenuItem(" in block
     assert "menuItem('Settings'" not in block
-    assert block.index("menuItem('Edit'") < block.index("dangerMenuItem('Delete'")
+    assert block.index("menuItem('Edit'") < block.index("dangerMenuItem(")
 
 
-# --- Edit + Delete are both unconditional (no editability branch) -----------
+# --- Edit + removal are both unconditional (no editability branch) -----------
 
-def test_edit_and_delete_are_unconditional():
+def test_edit_and_removal_are_unconditional():
     block = _buildmenu_block()
     edit = block.index("menuItem('Edit'")
-    delete = block.index("dangerMenuItem('Delete'")
-    assert delete > edit
+    removal = block.index("dangerMenuItem(")
+    assert removal > edit
     assert "if (project.editable)" not in block  # no editability branch remains
 
 
