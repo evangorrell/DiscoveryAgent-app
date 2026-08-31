@@ -52,6 +52,7 @@ def main() -> int:
     print(json.dumps({
         "release_id": metadata["release_id"],
         "app_commit": metadata["frontend"]["commit"],
+        "frontend_tree": metadata["frontend"]["tree"],
         "backend_commit": metadata["backend"]["commit"],
     }, sort_keys=True))
     return 0

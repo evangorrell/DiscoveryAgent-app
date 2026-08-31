@@ -38,7 +38,7 @@ directory; the verified local archive takes precedence over network access:
 
 ```bash
 install.sh
-discoveryagent-dev-e14536af60d3-412b7bd78bc1-macos-arm64.tar.gz
+discoveryagent-dev-4327cc97576a-412b7bd78bc1-macos-arm64.tar.gz
 ```
 
 After installation, open a new Terminal window or follow the PATH instruction

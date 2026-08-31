@@ -36,6 +36,7 @@ class ReleaseMetadata:
     release_type: str
     required_cpython_version: str
     frontend_commit: str
+    frontend_tree: str
     backend_commit: str
 
     @classmethod
@@ -50,9 +51,12 @@ class ReleaseMetadata:
         if not isinstance(application_schema_version, int) or application_schema_version < 1:
             raise ReleaseError("application_schema_version must be a positive integer")
         frontend_commit = _required_string(frontend.get("commit"), "frontend.commit")
+        frontend_tree = _required_string(frontend.get("tree"), "frontend.tree")
         backend_commit = _required_string(backend.get("commit"), "backend.commit")
         if not _COMMIT_PATTERN.fullmatch(frontend_commit):
             raise ReleaseError("frontend.commit must be a full lowercase Git SHA")
+        if not _COMMIT_PATTERN.fullmatch(frontend_tree):
+            raise ReleaseError("frontend.tree must be a full lowercase Git SHA")
         if not _COMMIT_PATTERN.fullmatch(backend_commit):
             raise ReleaseError("backend.commit must be a full lowercase Git SHA")
         return cls(
@@ -64,6 +68,7 @@ class ReleaseMetadata:
                 payload.get("required_cpython_version"), "required_cpython_version"
             ),
             frontend_commit=frontend_commit,
+            frontend_tree=frontend_tree,
             backend_commit=backend_commit,
         )
 

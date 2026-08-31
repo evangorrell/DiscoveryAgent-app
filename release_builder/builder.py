@@ -331,9 +331,9 @@ def _source_metadata(
     return metadata
 
 
-def _release_id(mode: ReleaseMode, app_sha: str, backend_sha: str) -> str:
+def _release_id(mode: ReleaseMode, frontend_tree: str, backend_sha: str) -> str:
     prefix = "dev" if mode == "development" else "prod"
-    return f"{prefix}-{app_sha[:12]}-{backend_sha[:12]}"
+    return f"{prefix}-{frontend_tree[:12]}-{backend_sha[:12]}"
 
 
 def create_release_metadata(
@@ -343,21 +343,24 @@ def create_release_metadata(
     application_root: Path,
 ) -> dict:
     wheel = application_root / "backend" / PAPERCLIP_WHEEL
+    frontend_metadata = _source_metadata(
+        app,
+        application_root / "frontend" / "uv.lock",
+        source_path=CANONICAL_FRONTEND_PATH,
+        provenance={
+            "relationship": "historical_import",
+            **FRONTEND_IMPORT_PROVENANCE,
+        },
+    )
     return {
         "schema_version": SCHEMA_VERSION,
-        "release_id": _release_id(mode, app.commit, backend.commit),
+        "release_id": _release_id(
+            mode, frontend_metadata["tree"], backend.commit
+        ),
         "release_type": mode,
         "required_cpython_version": REQUIRED_CPYTHON_VERSION,
         "application_schema_version": APPLICATION_SCHEMA_VERSION,
-        "frontend": _source_metadata(
-            app,
-            application_root / "frontend" / "uv.lock",
-            source_path=CANONICAL_FRONTEND_PATH,
-            provenance={
-                "relationship": "historical_import",
-                **FRONTEND_IMPORT_PROVENANCE,
-            },
-        ),
+        "frontend": frontend_metadata,
         "backend": _source_metadata(
             backend, application_root / "backend" / "uv.lock"
         ),

@@ -291,7 +291,10 @@ Both `--install-root` and `--data-root` require absolute paths.
 A release snapshot archives the canonical frontend from
 `application/frontend` at an explicit `DiscoveryAgent-app` commit and the
 backend from an explicit `discoveryagent` commit. It never reads frontend source
-from `DA_selection_ui`.
+from `DA_selection_ui`. The release ID combines the canonical frontend Git tree
+hash with the backend commit. The app commit remains provenance for the archived
+frontend tree, but does not participate in the release ID; this avoids making
+identity depend on a commit that records its own release metadata and checksum.
 
 A development snapshot may temporarily pin a backend commit that is reachable
 from a pushed feature branch or open pull request. That pin is suitable for
@@ -307,8 +310,10 @@ python3 tools/build_release.py \
 ```
 
 Then rebuild the install artifact and update `RELEASE_ID` and
-`PUBLIC_ARTIFACT_SHA256` together. Squash, rebase, and merge commits have
-distinct IDs, so always use the exact intended mainline commits.
+`PUBLIC_ARTIFACT_SHA256` together. App commits with an identical
+`application/frontend` tree share the same frontend identity, while distinct
+backend commits have distinct IDs. Always use an app commit containing the
+intended frontend tree and the exact intended backend mainline commit.
 
 Do not create a tag or upload an asset until both pins are validated against
 the intended release branches and the rebuilt checksum is committed.

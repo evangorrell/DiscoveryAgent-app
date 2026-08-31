@@ -17,9 +17,10 @@ from .state import (
 )
 
 
-DEFAULT_RELEASE_ID = "dev-f4eef14d4d44-d547cedabc0d"
 DEFAULT_FRONTEND_COMMIT = "f4eef14d4d449199db2c3b5f4d856a5e13f5b946"
+DEFAULT_FRONTEND_TREE = "a18e73b7f416e3c54c961ca327030bd616560251"
 DEFAULT_BACKEND_COMMIT = "d547cedabc0d983b518d1a1c9e66df21ea249560"
+DEFAULT_RELEASE_ID = f"dev-{DEFAULT_FRONTEND_TREE[:12]}-{DEFAULT_BACKEND_COMMIT[:12]}"
 
 
 def fixture_release_metadata(release_id: str = DEFAULT_RELEASE_ID) -> dict:
@@ -29,7 +30,10 @@ def fixture_release_metadata(release_id: str = DEFAULT_RELEASE_ID) -> dict:
         "release_type": "development",
         "required_cpython_version": "3.11.11",
         "application_schema_version": 1,
-        "frontend": {"commit": DEFAULT_FRONTEND_COMMIT},
+        "frontend": {
+            "commit": DEFAULT_FRONTEND_COMMIT,
+            "tree": DEFAULT_FRONTEND_TREE,
+        },
         "backend": {"commit": DEFAULT_BACKEND_COMMIT},
     }
 

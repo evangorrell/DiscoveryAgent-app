@@ -24,10 +24,11 @@ from manager.discoveryagent_cli.state import load_state, write_state_atomic
 from manager.discoveryagent_cli.testing import (
     DEFAULT_BACKEND_COMMIT,
     DEFAULT_FRONTEND_COMMIT,
+    DEFAULT_FRONTEND_TREE,
 )
 
 
-SECOND_FRONTEND_COMMIT = "a" * 40
+SECOND_FRONTEND_TREE = "a" * 40
 
 
 class ProductionInstallerTests(unittest.TestCase):
@@ -48,7 +49,7 @@ class ProductionInstallerTests(unittest.TestCase):
         self,
         root: Path,
         *,
-        frontend_commit: str = DEFAULT_FRONTEND_COMMIT,
+        frontend_tree: str = DEFAULT_FRONTEND_TREE,
         marker: str = "first",
     ) -> None:
         frontend = root / "application" / "frontend"
@@ -75,13 +76,14 @@ class ProductionInstallerTests(unittest.TestCase):
         metadata = {
             "schema_version": 1,
             "release_id": (
-                f"{prefix}-{frontend_commit[:12]}-{DEFAULT_BACKEND_COMMIT[:12]}"
+                f"{prefix}-{frontend_tree[:12]}-{DEFAULT_BACKEND_COMMIT[:12]}"
             ),
             "release_type": "development",
             "required_cpython_version": "3.11.11",
             "application_schema_version": 1,
             "frontend": {
-                "commit": frontend_commit,
+                "commit": DEFAULT_FRONTEND_COMMIT,
+                "tree": frontend_tree,
                 "uv_lock_sha256": self._sha256(frontend / "uv.lock"),
             },
             "backend": {
@@ -249,7 +251,7 @@ class ProductionInstallerTests(unittest.TestCase):
         second_payload = self.root / "second-payload"
         self._make_payload(
             second_payload,
-            frontend_commit=SECOND_FRONTEND_COMMIT,
+            frontend_tree=SECOND_FRONTEND_TREE,
             marker="second",
         )
         second = self.install_release(second_payload)
@@ -269,7 +271,7 @@ class ProductionInstallerTests(unittest.TestCase):
         second_payload = self.root / "second-payload"
         self._make_payload(
             second_payload,
-            frontend_commit=SECOND_FRONTEND_COMMIT,
+            frontend_tree=SECOND_FRONTEND_TREE,
             marker="second",
         )
 
@@ -285,7 +287,7 @@ class ProductionInstallerTests(unittest.TestCase):
         )
         self.assertFalse(
             first.paths.release_root(
-                f"dev-{SECOND_FRONTEND_COMMIT[:12]}-{DEFAULT_BACKEND_COMMIT[:12]}"
+                f"dev-{SECOND_FRONTEND_TREE[:12]}-{DEFAULT_BACKEND_COMMIT[:12]}"
             ).exists()
         )
         self.assertEqual(list((self.install / "staging").iterdir()), [])
@@ -298,6 +300,18 @@ class ProductionInstallerTests(unittest.TestCase):
             self.install_release()
         self.assertFalse(self.install.exists())
         self.assertFalse(self.cli.exists())
+
+    def test_frontend_tree_release_identity_mismatch_is_rejected(self) -> None:
+        metadata_path = self.payload / "release.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata["frontend"]["tree"] = "b" * 40
+        metadata_path.write_text(
+            json.dumps(metadata, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(BootstrapError, "source identities"):
+            self.install_release()
+        self.assertFalse(self.install.exists())
 
     def test_healthy_frontend_refuses_before_runtime_or_manager_changes(self) -> None:
         first = self.install_release()
@@ -350,7 +364,7 @@ class ProductionInstallerTests(unittest.TestCase):
     def test_cli_failure_does_not_publish_state(self) -> None:
         def fail_cli(*_arguments, **_keywords):
             release_id = (
-                f"dev-{DEFAULT_FRONTEND_COMMIT[:12]}-{DEFAULT_BACKEND_COMMIT[:12]}"
+                f"dev-{DEFAULT_FRONTEND_TREE[:12]}-{DEFAULT_BACKEND_COMMIT[:12]}"
             )
             self.assertTrue(
                 (self.install / "releases" / release_id / "complete").is_file()

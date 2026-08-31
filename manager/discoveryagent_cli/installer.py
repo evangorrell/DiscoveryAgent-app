@@ -306,11 +306,11 @@ def validate_packaged_payload(payload_root: Path) -> ReleaseMetadata:
     if metadata.release_type not in {"development", "production"}:
         raise BootstrapError(f"Unsupported release type: {metadata.release_type!r}")
     expected_release_id = (
-        f"{prefix}-{metadata.frontend_commit[:12]}-{metadata.backend_commit[:12]}"
+        f"{prefix}-{metadata.frontend_tree[:12]}-{metadata.backend_commit[:12]}"
     )
     if metadata.release_id != expected_release_id:
         raise BootstrapError(
-            "release.json release ID is inconsistent with its type and source commits"
+            "release.json release ID is inconsistent with its type and source identities"
         )
     if metadata.required_cpython_version != PYTHON_VERSION:
         raise BootstrapError(

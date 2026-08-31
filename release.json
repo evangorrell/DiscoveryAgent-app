@@ -16,7 +16,7 @@
     }
   },
   "frontend": {
-    "commit": "e14536af60d3b38c206b8623a7c9bbbb8c7b3005",
+    "commit": "fc035d95d087981169430da3d4af75c16ffae8e9",
     "provenance": {
       "branch": "v2-ui",
       "commit": "823dc588d2eba138ecac8c00dd7da00662b83986",
@@ -43,7 +43,7 @@
     "sha256": "036362c1408eb872183f7614d1784e1d5c2a770456878d2c6e02808cad593db8",
     "vendored_wheel": "vendor/gxl_paperclip-0.7.24-py3-none-any.whl"
   },
-  "release_id": "dev-e14536af60d3-412b7bd78bc1",
+  "release_id": "dev-4327cc97576a-412b7bd78bc1",
   "release_type": "development",
   "required_cpython_version": "3.11.11",
   "schema_version": 1

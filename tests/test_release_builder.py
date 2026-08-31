@@ -145,12 +145,39 @@ class ReleaseBuilderTests(unittest.TestCase):
         )
         self.assertEqual(
             first_metadata["release_id"],
-            f"dev-{frontend_sha[:12]}-{backend_sha[:12]}",
+            f"dev-{first_metadata['frontend']['tree'][:12]}-{backend_sha[:12]}",
         )
         serialized = (first / "release.json").read_text(encoding="utf-8")
         self.assertNotIn(str(frontend), serialized)
         self.assertNotIn(str(backend), serialized)
         self.assertNotIn("timestamp", serialized.lower())
+
+    def test_app_metadata_commit_does_not_change_frontend_release_identity(self) -> None:
+        frontend, frontend_sha, backend, backend_sha = self._pair()
+        first = self._build(
+            frontend,
+            frontend_sha,
+            backend,
+            backend_sha,
+            self.root / "first",
+        )
+        _write(frontend / "release-notes.md", "metadata-only change\n")
+        _git(frontend, "add", "release-notes.md")
+        _git(frontend, "commit", "-m", "metadata-only change")
+        second_sha = _git(frontend, "rev-parse", "HEAD")
+        _git(frontend, "update-ref", "refs/remotes/origin/v2-ui", second_sha)
+
+        second = self._build(
+            frontend,
+            second_sha,
+            backend,
+            backend_sha,
+            self.root / "second",
+        )
+
+        self.assertNotEqual(first["frontend"]["commit"], second["frontend"]["commit"])
+        self.assertEqual(first["frontend"]["tree"], second["frontend"]["tree"])
+        self.assertEqual(first["release_id"], second["release_id"])
 
     def test_dirty_and_untracked_source_files_are_ignored(self) -> None:
         frontend, frontend_sha, backend, backend_sha = self._pair()
