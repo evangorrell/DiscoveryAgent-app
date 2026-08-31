@@ -3,7 +3,7 @@
 set -eu
 umask 077
 
-RELEASE_TAG="v0.3.0-beta.1"
+RELEASE_TAG="v0.3.0-beta.2"
 RELEASE_ID="dev-4327cc97576a-412b7bd78bc1"
 ARTIFACT_NAME="discoveryagent-${RELEASE_ID}-macos-arm64.tar.gz"
 GITHUB_REPOSITORY="evangorrell/DiscoveryAgent-app"
