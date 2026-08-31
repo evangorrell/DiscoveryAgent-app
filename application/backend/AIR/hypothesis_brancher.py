@@ -9,7 +9,7 @@ or parameters for each run.
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 import datetime
-from pathlib import Path
+import copy
 import re
 from dataclasses import dataclass, field
 
@@ -19,6 +19,10 @@ from .config import HypothesisGenerationConfig
 from .memory.results_memory import ResultsMemoryManager
 from .utils.data_directory_manager import DataDirectoryManager
 from .utils import progress_recorder
+from .utils.config_loader import (
+    AGENT_BEHAVIOR_VERSION_KEY,
+    CURRENT_AGENT_BEHAVIOR_VERSION,
+)
 from .utils.report_summaries import persist_report_summaries
 
 
@@ -67,7 +71,12 @@ class AIRWorkflowConfig:
     # If True, the within-round reviewer may flag a literature-sensitive claim and have it
     # validated via DeepResearchAgent before the resulting feedback steers the next query.
     # Only consumed by DirectorWorkflow. Does not change review cadence.
-    enable_deep_research_in_review: bool = True
+    # Opt-in: preserve the original reviewer -> director feedback path by default.
+    enable_deep_research_in_review: bool = False
+    # When true, the behavior fields above explicitly override a mid-round
+    # checkpoint. Normal programmatic restoration leaves checkpoint behavior
+    # authoritative.
+    resume_behavior_overrides: bool = False
 
     # Expanding Dataset Mode settings
     # When enabled, the data directory is treated as a growing directory and the
@@ -80,6 +89,11 @@ class AIRWorkflowConfig:
     # Placeholder string in dataset_description that will be replaced with file listing.
     # Set to None to append file listing at the end instead of replacing a placeholder.
     file_listing_placeholder: Optional[str] = "{file_listing}"
+
+    def __post_init__(self) -> None:
+        # Keep runtime behavior and checkpoint provenance aligned for direct API
+        # callers that pass None or an empty provider value.
+        self.deep_research_provider = self.deep_research_provider or "paperclip"
 
 
 class HypothesisBrancher:
@@ -456,6 +470,20 @@ class HypothesisBrancher:
         try:
             print(f"🔄 Restoring workflow from checkpoint: {checkpoint_path}")
 
+            behavior_overrides: Dict[str, Any] = {}
+            if self.workflow_config.resume_behavior_overrides:
+                behavior_overrides = {
+                    'deep_research_provider': self.workflow_config.deep_research_provider,
+                    'use_deep_research_for_hypothesis_generation': getattr(
+                        self.workflow_config.hypothesis_config,
+                        'use_deep_research_for_hypothesis_generation',
+                        False,
+                    ),
+                    'enable_deep_research_in_review': (
+                        self.workflow_config.enable_deep_research_in_review
+                    ),
+                }
+
             # Use DirectorWorkflow.from_checkpoint to restore
             workflow = DirectorWorkflow.from_checkpoint(
                 checkpoint_path_or_query=checkpoint_path,
@@ -473,6 +501,7 @@ class HypothesisBrancher:
                 hold_reviews_in_exploratory_phase=self.workflow_config.hold_reviews_in_exploratory_phase,
                 git_tracking=self.workflow_config.git_tracking,
                 background_report=self.workflow_config.background_report,
+                **behavior_overrides,
             )
 
             # Set round number
@@ -496,6 +525,23 @@ class HypothesisBrancher:
             import traceback
             traceback.print_exc()
             return None
+
+    def _sync_restored_workflow_behavior(self, workflow: DirectorWorkflow) -> None:
+        """Persist checkpoint-authoritative behavior in later round configs."""
+        if self.workflow_config.resume_behavior_overrides:
+            return
+
+        synced_hypothesis_config = copy.copy(self.workflow_config.hypothesis_config)
+        synced_hypothesis_config.use_deep_research_for_hypothesis_generation = getattr(
+            workflow.hypothesis_config,
+            'use_deep_research_for_hypothesis_generation',
+            False,
+        )
+        self.workflow_config.hypothesis_config = synced_hypothesis_config
+        self.workflow_config.deep_research_provider = workflow.deep_research_provider
+        self.workflow_config.enable_deep_research_in_review = (
+            workflow.enable_deep_research_in_review
+        )
 
     def _init_workflows(
         self, 
@@ -712,6 +758,10 @@ class HypothesisBrancher:
             )
 
             if restored_workflow:
+                # A query checkpoint is authoritative unless this resume came
+                # from an explicit config/CLI behavior override. Synchronize the
+                # brancher so the next round config records the effective state.
+                self._sync_restored_workflow_behavior(restored_workflow)
                 workflows = [restored_workflow]
                 print(f"✓ Workflow restored successfully")
                 print(f"   Will resume from query {restored_workflow.query_num + 1}")
@@ -753,6 +803,7 @@ class HypothesisBrancher:
                         False,
                     )
                     config_to_save.update({
+                        AGENT_BEHAVIOR_VERSION_KEY: CURRENT_AGENT_BEHAVIOR_VERSION,
                         'deep_research_provider': self.workflow_config.deep_research_provider,
                         'use_deep_research_for_hypothesis_generation': _use_dr_hyp,
                         'enable_deep_research_in_review': self.workflow_config.enable_deep_research_in_review,

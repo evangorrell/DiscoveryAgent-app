@@ -28,7 +28,12 @@ import datetime
 import openai
 import anthropic
 from ..prompts.claude_md_generator_command import CLAUDEMD_prompt
-from ..prompts.execution_agent import CODEBASE_STRUCTURE_PROMPT, EXECUTION_AGENT_SYSTEM_PROMPT, EXECUTION_AGENT_SYSTEM_PROMPT_SUB_AGENTS
+from ..prompts.execution_agent import (
+    CODEBASE_STRUCTURE_PROMPT,
+    EXECUTION_AGENT_SYSTEM_PROMPT,
+    EXECUTION_AGENT_SYSTEM_PROMPT_SUB_AGENTS,
+    SANDBOX_PATH_PROMPT,
+)
 from ..prompts.cc_sub_agents import SUB_AGENT_CONFIGS
 from .execution_sdk_tracker import ExecutionSDKTracker
 
@@ -37,7 +42,11 @@ from .base import BaseAgent
 # Configure Claude Code environment BEFORE importing SDK
 from ..config import setup_claude_code_environment
 from .security.kill_blocker import process_protection_hook
-from .security.sandbox_enforcement import create_sandbox_enforcement_hook, create_sandbox_posttool_guard
+from .security.sandbox_enforcement import (
+    create_sandbox_enforcement_hook,
+    create_sandbox_posttool_guard,
+)
+from .security.url_blocker import create_url_blocker_hooks
 
 claude_cli_path = setup_claude_code_environment()
 
@@ -172,6 +181,13 @@ class ExecutionAgentCCConfig(AgentToolConfig):
     # Sandbox enforcement: restrict file operations to working_directory
     sandbox_enforcement: bool = True
     allowed_read_paths: Optional[List[str]] = None
+    # URL blocker: deny network fetches to specific hosts / URL substrings.
+    # ``None`` uses the module defaults (ProteinGym test-label sources). Pass
+    # ``[]`` to disable that category. Set ``url_blocker_enabled=False`` to skip
+    # the hook entirely.
+    url_blocker_enabled: bool = True
+    blocked_url_hosts: Optional[List[str]] = None
+    blocked_url_substrings: Optional[List[str]] = None
 
 class ExecutionAgentCC(BaseAgent):
     """
@@ -928,6 +944,9 @@ class ExecutionAgentCC(BaseAgent):
         self.log_execution_agent = getattr(config, 'log_execution_agent', True)
         self.sandbox_enforcement = getattr(config, 'sandbox_enforcement', True)
         self.allowed_read_paths = getattr(config, 'allowed_read_paths', None)
+        self.url_blocker_enabled = getattr(config, 'url_blocker_enabled', True)
+        self.blocked_url_hosts = getattr(config, 'blocked_url_hosts', None)
+        self.blocked_url_substrings = getattr(config, 'blocked_url_substrings', None)
         self.execution_tracker: Optional[ExecutionSDKTracker] = None
         self._execution_skills_runtime_directory = None
         self._configured_execution_skills: List[Dict[str, str]] = []
@@ -1056,6 +1075,22 @@ class ExecutionAgentCC(BaseAgent):
 
         return configs
 
+    def _format_codebase_structure_prompt(self) -> str:
+        """Format codebase structure guidance, adding sandbox rules only when enabled."""
+        prompt = ""
+        if self.codebase_structure_prompt:
+            prompt = CODEBASE_STRUCTURE_PROMPT.format(
+                codebase_structure_prompt=self.codebase_structure_prompt,
+                working_directory=self.working_directory,
+            )
+
+        if self.sandbox_enforcement:
+            prompt += SANDBOX_PATH_PROMPT.format(
+                working_directory=self.working_directory,
+            )
+
+        return prompt
+
     def _init_claude_code_session(self):
 
         # Set up Claude Code options
@@ -1151,6 +1186,26 @@ class ExecutionAgentCC(BaseAgent):
                 f"allowed_read_paths={runtime_read_paths or '[]'}"
             )
 
+        # URL blocker hooks — deny network fetches to known leak vectors
+        if getattr(self, "url_blocker_enabled", True):
+            blocked_hosts = getattr(self, "blocked_url_hosts", None)
+            blocked_substrings = getattr(self, "blocked_url_substrings", None)
+            url_hooks = create_url_blocker_hooks(
+                blocked_hosts=blocked_hosts,
+                blocked_url_substrings=blocked_substrings,
+                logger=self.logger,
+            )
+            pre_tool_hooks.extend(url_hooks)
+            host_label = "DEFAULT" if blocked_hosts is None else blocked_hosts
+            substring_label = (
+                "DEFAULT" if blocked_substrings is None else blocked_substrings
+            )
+            self.logger.log_action(
+                "url_blocker_init",
+                f"URL blocker enabled: hosts={host_label}, "
+                f"substrings={substring_label}"
+            )
+
         # Base prompt for claude code:
         # { # Use default system prompt from Claude Code SDK
         #     "type": "preset",
@@ -1174,12 +1229,12 @@ class ExecutionAgentCC(BaseAgent):
             for agent_name, agent_def in SUB_AGENT_CONFIGS.items():
                 modified_prompt = agent_def.prompt
 
-                # Inject structure prompt into execution_agent (the one that writes files)
-                if self.codebase_structure_prompt and agent_name == "execution_agent":
-                    structure_injection = CODEBASE_STRUCTURE_PROMPT.format(
-                        codebase_structure_prompt=self.codebase_structure_prompt,
-                        working_directory=self.working_directory
-                    )
+                # Inject path/structure rules into the agent that writes files.
+                if (
+                    agent_name == "execution_agent"
+                    and (self.codebase_structure_prompt or self.sandbox_enforcement)
+                ):
+                    structure_injection = self._format_codebase_structure_prompt()
                     modified_prompt = modified_prompt + "\n\n" + structure_injection
                     self.logger.log_action("sub_agent_structure_injection",
                         f"Injected codebase structure prompt into '{agent_name}' sub-agent ({len(structure_injection)} chars)")
@@ -1320,7 +1375,7 @@ class ExecutionAgentCC(BaseAgent):
         
         # Initialize the Claude SDK client with the options
         self.claude_client = ClaudeSDKClient(options=self.claude_code_options)
-        
+
     def _get_existing_files(self) -> set:
         """
         Get a set of all existing files in the working directory for safety monitoring.
@@ -1412,8 +1467,8 @@ class ExecutionAgentCC(BaseAgent):
             base_prompt += f"\n\n{resource_info}\n"
         
         # If codebase_building is enabled, inject session context
-        if self.codebase_structure_prompt:
-            base_prompt += CODEBASE_STRUCTURE_PROMPT.format(codebase_structure_prompt=self.codebase_structure_prompt, working_directory=self.working_directory)
+        if self.codebase_structure_prompt or self.sandbox_enforcement:
+            base_prompt += self._format_codebase_structure_prompt()
 
         
         # If CLAUDE.md file exists, load its contents into the system prompt
@@ -1645,7 +1700,7 @@ Here's a description of the dataset you're working with:
                 if self.execution_tracker is not None:
                     self.execution_tracker.log_stream_message(message, phase="analysis")
                 self._observe_execution_skills_discovery(message)
-                
+
                 # Real-time logging - use direct print to avoid duplicate output
                 formatted_msg = self._format_message_for_display(str(message))
                 if formatted_msg:
@@ -1733,7 +1788,7 @@ Here's a description of the dataset you're working with:
                 self.logger.log_error(f"Failed to initialize execution tracker logs: {str(e)}")
             
         self._direct_print(f"\n🤖 Claude Code SDK executing autonomous analysis for: {query[:100]}...")
-        
+
         #try:
         # Note: Removed session reset for codebase building to maintain continuity
         # If codebase building is enabled, context will be injected via _get_system_prompt()

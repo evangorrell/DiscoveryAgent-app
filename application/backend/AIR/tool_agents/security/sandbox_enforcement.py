@@ -30,7 +30,15 @@ _COPY_LIKE_COMMANDS = {"cp", "mv", "ln", "install"}
 # Patterns for in-place edit flags
 _INPLACE_EDIT_PATTERN = re.compile(r"\b(sed|perl|awk)\b.*\s-i\b")
 
-# Patterns for output redirection
+# Patterns for output redirection.
+#
+# This is INTENTIONALLY loose: it catches ``> file``, ``>> file``, and forms
+# like ``2> file`` / ``&> file`` because the ``>`` is what we anchor on and
+# every literal-file redirect contains it. The downside is that it also
+# matches things that aren't file writes:
+#   * FD duplication: ``2>&1``, ``>&2`` -> target starts with ``&``
+#   * Process substitution: ``>(cmd)``  -> target starts with ``(``
+# Those are filtered out below at the use site (see ``_check_bash_write``).
 _REDIRECT_PATTERN = re.compile(r"(>{1,2})\s*(\S+)")
 
 # Pattern for tee command writing to a file
@@ -158,6 +166,12 @@ def _check_bash_write(command: str, sandbox_root: str, cwd: Optional[str] = None
         # 1. Output redirections (> or >>)
         for redir_match in _REDIRECT_PATTERN.finditer(segment):
             target_file = redir_match.group(2).strip("'\"")
+            # FD duplication (``2>&1``, ``>&2``): not a file write.
+            if target_file.startswith("&"):
+                continue
+            # Process substitution (``>(cmd)``): not a file write.
+            if target_file.startswith("("):
+                continue
             if not _is_within(target_file, write_roots, cwd, strict=True):
                 return f"Blocked: redirect to path outside sandbox: {target_file}"
 
@@ -351,7 +365,13 @@ def create_sandbox_enforcement_hook(
         if not command:
             return _allow("PreToolUse")
 
-        cwd = tool_input.get("cwd", None)
+        # Default the cwd used for *relative* path resolution to the sandbox
+        # root. The CLI's Bash tool runs with cwd=sandbox (set via
+        # ClaudeAgentOptions.cwd), but tool_input rarely echoes that back; if
+        # we fell through to os.getcwd() we'd resolve ``data/foo`` against the
+        # Python process's cwd (the agent repo) and reject every relative
+        # path in commands the CLI actually runs from inside the sandbox.
+        cwd = tool_input.get("cwd") or sandbox_root
 
         # Check writes first (stricter — sandbox only)
         write_violation = _check_bash_write(command, sandbox_root, cwd)

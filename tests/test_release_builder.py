@@ -9,6 +9,8 @@ import unittest
 from pathlib import Path
 
 from release_builder.builder import (
+    CANONICAL_FRONTEND_PATH,
+    FRONTEND_IMPORT_PROVENANCE,
     PAPERCLIP_WHEEL,
     ReleaseBuildError,
     SourceRequest,
@@ -65,15 +67,18 @@ class ReleaseBuilderTests(unittest.TestCase):
         _git(repository, "config", "user.email", "release-builder@example.test")
         _git(repository, "remote", "add", "origin", f"https://example.test/org/{name}.git")
 
-        _write(repository / "pyproject.toml", f"[project]\nname = \"{name}\"\n")
+        source_root = (
+            repository / CANONICAL_FRONTEND_PATH if kind == "app" else repository
+        )
+        _write(source_root / "pyproject.toml", f"[project]\nname = \"{name}\"\n")
         if include_lock:
-            _write(repository / "uv.lock", f"version = 1\n# {name}\n")
-        if kind == "frontend":
-            _write(repository / "da_selection_ui/__init__.py", "")
-            _write(repository / "da_selection_ui/__main__.py", "def main(): pass\n")
-            _write(repository / "da_selection_ui/production_server.py", "APP = True\n")
-            _write(repository / "da_selection_ui/templates/base.html", "<main>test</main>\n")
-            _write(repository / "da_selection_ui/static/app.js", "export const ready = true;\n")
+            _write(source_root / "uv.lock", f"version = 1\n# {name}\n")
+        if kind == "app":
+            _write(source_root / "da_selection_ui/__init__.py", "")
+            _write(source_root / "da_selection_ui/__main__.py", "def main(): pass\n")
+            _write(source_root / "da_selection_ui/production_server.py", "APP = True\n")
+            _write(source_root / "da_selection_ui/templates/base.html", "<main>test</main>\n")
+            _write(source_root / "da_selection_ui/static/app.js", "export const ready = true;\n")
         elif kind == "backend":
             _write(repository / "AIR/__init__.py", "")
             _write(
@@ -96,7 +101,7 @@ class ReleaseBuilderTests(unittest.TestCase):
 
     def _pair(self, **options) -> tuple[Path, str, Path, str]:
         frontend = self._repository(
-            "frontend-source", "frontend", **options.get("frontend", {})
+            "DiscoveryAgent-app", "app", **options.get("app", {})
         )
         backend = self._repository(
             "backend-source", "backend", **options.get("backend", {})
@@ -149,9 +154,16 @@ class ReleaseBuilderTests(unittest.TestCase):
 
     def test_dirty_and_untracked_source_files_are_ignored(self) -> None:
         frontend, frontend_sha, backend, backend_sha = self._pair()
-        committed_pyproject = _git(frontend, "show", f"{frontend_sha}:pyproject.toml")
-        _write(frontend / "pyproject.toml", "dirty working tree\n")
-        _write(frontend / "checkpoint/private.json", "{}\n")
+        committed_pyproject = _git(
+            frontend,
+            "show",
+            f"{frontend_sha}:{CANONICAL_FRONTEND_PATH}/pyproject.toml",
+        )
+        _write(frontend / CANONICAL_FRONTEND_PATH / "pyproject.toml", "dirty working tree\n")
+        _write(
+            frontend / CANONICAL_FRONTEND_PATH / "checkpoint/private.json",
+            "{}\n",
+        )
         _write(backend / "untracked.txt", "must not ship\n")
 
         destination = self.root / "output"
@@ -218,7 +230,7 @@ class ReleaseBuilderTests(unittest.TestCase):
 
     def test_required_lockfiles_and_wheel_are_enforced(self) -> None:
         cases = (
-            ({"frontend": {"include_lock": False}}, "frontend snapshot.*uv.lock"),
+            ({"app": {"include_lock": False}}, "frontend snapshot.*uv.lock"),
             ({"backend": {"include_lock": False}}, "backend snapshot.*uv.lock"),
             ({"backend": {"include_wheel": False}}, "backend snapshot.*gxl_paperclip"),
         )
@@ -257,6 +269,14 @@ class ReleaseBuilderTests(unittest.TestCase):
                 source["validation"]["reachable_remote_refs"],
                 ["refs/remotes/origin/v2-ui"],
             )
+        self.assertEqual(metadata["frontend"]["source_path"], CANONICAL_FRONTEND_PATH)
+        self.assertEqual(
+            metadata["frontend"]["provenance"],
+            {
+                "relationship": "historical_import",
+                **FRONTEND_IMPORT_PROVENANCE,
+            },
+        )
 
     def test_local_commit_not_reachable_from_an_origin_ref_is_rejected(self) -> None:
         frontend, _, backend, backend_sha = self._pair()
@@ -276,8 +296,9 @@ class ReleaseBuilderTests(unittest.TestCase):
 
     def test_forbidden_tracked_runtime_state_is_rejected(self) -> None:
         frontend, _, backend, backend_sha = self._pair()
-        _write(frontend / "checkpoint/state.json", "{}\n")
-        _git(frontend, "add", "checkpoint/state.json")
+        checkpoint = f"{CANONICAL_FRONTEND_PATH}/checkpoint/state.json"
+        _write(frontend / checkpoint, "{}\n")
+        _git(frontend, "add", checkpoint)
         _git(frontend, "commit", "-m", "forbidden fixture")
         forbidden_commit = _git(frontend, "rev-parse", "HEAD")
         _git(
@@ -310,7 +331,7 @@ class ReleaseBuilderTests(unittest.TestCase):
 
     def test_production_accepts_commits_reachable_from_origin_main(self) -> None:
         frontend, frontend_sha, backend, backend_sha = self._pair(
-            frontend={"on_main": True}, backend={"on_main": True}
+            app={"on_main": True}, backend={"on_main": True}
         )
         metadata = self._build(
             frontend,
@@ -365,6 +386,21 @@ class ReleaseBuilderTests(unittest.TestCase):
         self.assertEqual(parsed, metadata)
         self.assertEqual(parsed["required_cpython_version"], "3.11.11")
         self.assertEqual(parsed["paperclip"]["vendored_wheel"], PAPERCLIP_WHEEL)
+        self.assertEqual(parsed["frontend"]["repository"], "DiscoveryAgent-app")
+        self.assertEqual(parsed["frontend"]["commit"], frontend_sha)
+        self.assertEqual(
+            parsed["frontend"]["tree"],
+            _git(
+                frontend,
+                "rev-parse",
+                f"{frontend_sha}:{CANONICAL_FRONTEND_PATH}",
+            ),
+        )
+        self.assertEqual(parsed["frontend"]["source_path"], CANONICAL_FRONTEND_PATH)
+        self.assertEqual(
+            parsed["frontend"]["provenance"]["commit"],
+            FRONTEND_IMPORT_PROVENANCE["commit"],
+        )
 
 
 if __name__ == "__main__":

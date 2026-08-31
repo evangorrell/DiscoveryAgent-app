@@ -21,6 +21,14 @@ SCHEMA_VERSION = 1
 APPLICATION_SCHEMA_VERSION = 1
 REQUIRED_CPYTHON_VERSION = "3.11.11"
 PAPERCLIP_WHEEL = "vendor/gxl_paperclip-0.7.24-py3-none-any.whl"
+CANONICAL_FRONTEND_PATH = "application/frontend"
+FRONTEND_IMPORT_PROVENANCE = {
+    "branch": "v2-ui",
+    "commit": "823dc588d2eba138ecac8c00dd7da00662b83986",
+    "remote_url": "https://github.com/owencqueen/DA_selection_ui",
+    "repository": "DA_selection_ui",
+    "tree": "4327cc97576a29c4604f0f88fc523f630f308d25",
+}
 
 FRONTEND_REQUIRED = (
     "pyproject.toml",
@@ -217,13 +225,39 @@ def _safe_archive_members(members: Iterable[tarfile.TarInfo]) -> list[tarfile.Ta
     return checked
 
 
-def archive_commit(source: ResolvedSource, destination: Path) -> None:
+def _tree_id(source: ResolvedSource, source_path: str | None = None) -> str:
+    treeish = f"{source.commit}:{source_path}" if source_path else f"{source.commit}^{{tree}}"
+    resolved = _run_git(
+        source.repository,
+        "rev-parse",
+        "--verify",
+        treeish,
+        check=False,
+    )
+    if resolved.returncode != 0:
+        label = source_path or source.commit
+        raise ReleaseBuildError(
+            f"{source.repository_name} commit does not contain the required tree: {label}"
+        )
+    tree = resolved.stdout.strip()
+    if _run_git(source.repository, "cat-file", "-t", tree).stdout.strip() != "tree":
+        raise ReleaseBuildError(f"Required source path is not a tree: {source_path}")
+    return tree
+
+
+def archive_commit(
+    source: ResolvedSource,
+    destination: Path,
+    *,
+    source_path: str | None = None,
+) -> None:
     destination.mkdir(parents=True, exist_ok=False)
+    treeish = f"{source.commit}:{source_path}" if source_path else source.commit
     archive = _run_git(
         source.repository,
         "archive",
         "--format=tar",
-        source.commit,
+        treeish,
         text=False,
     ).stdout
     try:
@@ -270,11 +304,18 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _source_metadata(source: ResolvedSource, lockfile: Path) -> dict:
-    return {
+def _source_metadata(
+    source: ResolvedSource,
+    lockfile: Path,
+    *,
+    source_path: str | None = None,
+    provenance: dict | None = None,
+) -> dict:
+    metadata = {
         "repository": source.repository_name,
         "remote_url": source.remote_url,
         "commit": source.commit,
+        "tree": _tree_id(source, source_path),
         "uv_lock_sha256": _sha256(lockfile),
         "validation": {
             "commit_exists": True,
@@ -283,28 +324,39 @@ def _source_metadata(source: ResolvedSource, lockfile: Path) -> dict:
             "reachable_from_origin_main": source.reachable_from_origin_main,
         },
     }
+    if source_path is not None:
+        metadata["source_path"] = source_path
+    if provenance is not None:
+        metadata["provenance"] = provenance
+    return metadata
 
 
-def _release_id(mode: ReleaseMode, frontend_sha: str, backend_sha: str) -> str:
+def _release_id(mode: ReleaseMode, app_sha: str, backend_sha: str) -> str:
     prefix = "dev" if mode == "development" else "prod"
-    return f"{prefix}-{frontend_sha[:12]}-{backend_sha[:12]}"
+    return f"{prefix}-{app_sha[:12]}-{backend_sha[:12]}"
 
 
 def create_release_metadata(
     mode: ReleaseMode,
-    frontend: ResolvedSource,
+    app: ResolvedSource,
     backend: ResolvedSource,
     application_root: Path,
 ) -> dict:
     wheel = application_root / "backend" / PAPERCLIP_WHEEL
     return {
         "schema_version": SCHEMA_VERSION,
-        "release_id": _release_id(mode, frontend.commit, backend.commit),
+        "release_id": _release_id(mode, app.commit, backend.commit),
         "release_type": mode,
         "required_cpython_version": REQUIRED_CPYTHON_VERSION,
         "application_schema_version": APPLICATION_SCHEMA_VERSION,
         "frontend": _source_metadata(
-            frontend, application_root / "frontend" / "uv.lock"
+            app,
+            application_root / "frontend" / "uv.lock",
+            source_path=CANONICAL_FRONTEND_PATH,
+            provenance={
+                "relationship": "historical_import",
+                **FRONTEND_IMPORT_PROVENANCE,
+            },
         ),
         "backend": _source_metadata(
             backend, application_root / "backend" / "uv.lock"
@@ -363,7 +415,7 @@ def _replace_snapshot(staging: Path, destination_root: Path) -> None:
 
 
 def build_release(
-    frontend_request: SourceRequest,
+    app_request: SourceRequest,
     backend_request: SourceRequest,
     *,
     mode: ReleaseMode,
@@ -374,7 +426,7 @@ def build_release(
     destination_root = destination_root.expanduser().resolve()
     destination_root.mkdir(parents=True, exist_ok=True)
 
-    frontend = resolve_source(frontend_request, mode, "frontend")
+    app = resolve_source(app_request, mode, "app frontend")
     backend = resolve_source(backend_request, mode, "backend")
 
     staging_path = Path(
@@ -383,10 +435,14 @@ def build_release(
     try:
         application = staging_path / "application"
         application.mkdir()
-        archive_commit(frontend, application / "frontend")
+        archive_commit(
+            app,
+            application / "frontend",
+            source_path=CANONICAL_FRONTEND_PATH,
+        )
         archive_commit(backend, application / "backend")
         validate_snapshot(application / "frontend", application / "backend")
-        metadata = create_release_metadata(mode, frontend, backend, application)
+        metadata = create_release_metadata(mode, app, backend, application)
         _write_release_json(staging_path / "release.json", metadata)
         _replace_snapshot(staging_path, destination_root)
         return metadata

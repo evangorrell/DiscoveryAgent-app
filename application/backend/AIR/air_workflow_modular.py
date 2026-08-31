@@ -111,7 +111,8 @@ class AIRWorkflowModular:
             review_search (bool): Enable web search tools for the reviewer
             review_design (bool): Use ReviewDesigner to generate custom reviewer prompts based on research task
             review_designer_llm_config (Optional[LLMConfig]): Configuration for the ReviewDesigner LLM.
-                If None and review_design=True, defaults to claude-sonnet-4-6
+                If None and review_design=True, direct construction retains the legacy
+                claude-sonnet-4-5-20250929 fallback; normal CLI construction supplies the configured model.
             report_summarization_llm_config (LLMConfig): Configuration for report summarization LLM
             explicit_hypothesis_step (int): Step at which to start explicit hypothesis generation
             exploratory_phase_warmup_steps (int): Number of warmup steps for exploratory phase
@@ -208,7 +209,7 @@ class AIRWorkflowModular:
             # Conditionally use ReviewDesigner based on review_design flag
             if self.review_design:
                 # Use ReviewDesigner to generate a custom reviewer prompt based on the research task
-                # Use provided config or default to claude-sonnet-4-6
+                # Direct callers without a config retain the legacy Sonnet 4.5 fallback.
                 designer_llm_config = self.review_designer_llm_config or LLMConfig(model_name="claude-sonnet-4-5-20250929", max_tokens = 8192)
                 review_designer = ReviewDesigner(
                     llm_config=designer_llm_config

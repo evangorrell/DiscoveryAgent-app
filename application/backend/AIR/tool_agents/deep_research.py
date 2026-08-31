@@ -152,6 +152,9 @@ class DeepResearchConfig(AgentToolConfig):
     # below only applies to the "perplexity" (and legacy "openai") path.
     deep_research_provider: str = "paperclip"
 
+    def __post_init__(self) -> None:
+        self.deep_research_provider = self.deep_research_provider or "paperclip"
+
 
 class DeepResearchAgent(BaseAgent):
     """
@@ -162,7 +165,9 @@ class DeepResearchAgent(BaseAgent):
     def __init__(self, config: DeepResearchConfig, logger=None):
         self.config = config
         self.llm_config = config.llm_config
-        self.deep_research_provider = getattr(config, "deep_research_provider", "paperclip")
+        self.deep_research_provider = (
+            getattr(config, "deep_research_provider", None) or "paperclip"
+        )
         # Use passed logger or create a new one if not provided
         self.logger = logger if logger is not None else Logger("deep_research", log_dir=config.log_dir)
 

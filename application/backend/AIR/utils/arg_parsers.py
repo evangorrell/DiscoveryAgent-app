@@ -132,11 +132,11 @@ def create_hb_sherlock_parser():
     parser.add_argument("--enable_deep_research_in_review", action="store_true",
                         dest="enable_deep_research_in_review",
                         help="Allow the within-round reviewer to flag a literature-sensitive claim "
-                             "and validate it via DeepResearchAgent (default: enabled)")
+                             "and validate it via DeepResearchAgent (default: disabled)")
     parser.add_argument("--no-enable-deep-research-in-review", action="store_false",
                         dest="enable_deep_research_in_review",
                         help="Disable DeepResearch-assisted review validation")
-    parser.set_defaults(enable_deep_research_in_review=True)
+    parser.set_defaults(enable_deep_research_in_review=False)
 
     # Human hypothesis selection arguments
     parser.add_argument("--human-selection", action="store_true",
@@ -216,6 +216,8 @@ def create_hb_sherlock_parser():
                         help="Disable sandbox mode and run in original directory")
     parser.add_argument("--no-sandbox-enforcement", dest="no_sandbox_enforcement", action="store_true",
                         help="Disable sandbox enforcement hooks (agent can read/write outside sandbox)")
+    parser.add_argument("--no-url-blocker", dest="no_url_blocker", action="store_true",
+                        help="Disable URL blocker hooks (agent can fetch any URL)")
     parser.add_argument("--allowed-read-paths", type=str, default=None, dest="allowed_read_paths",
                         help="Comma-separated list of additional absolute paths the agent may read from")
     parser.add_argument("--existing_codebase", type=str, default=None,
@@ -252,11 +254,11 @@ def create_hb_sherlock_parser():
     parser.add_argument("--use_deep_research_for_hypothesis_generation", action="store_true",
                         dest="use_deep_research_for_hypothesis_generation",
                         help="Generate a per-round external literature novelty/grounding context "
-                             "via DeepResearchAgent and inject it into hypothesis generation (default: enabled)")
+                             "via DeepResearchAgent and inject it into hypothesis generation (default: disabled)")
     parser.add_argument("--no-use-deep-research-for-hypothesis-generation", action="store_false",
                         dest="use_deep_research_for_hypothesis_generation",
                         help="Disable DeepResearch-backed hypothesis generation context")
-    parser.set_defaults(use_deep_research_for_hypothesis_generation=True)
+    parser.set_defaults(use_deep_research_for_hypothesis_generation=False)
 
     # Compaction support (Anthropic only)
     parser.add_argument("--enable_compaction", action="store_true",

@@ -3,6 +3,7 @@
 import os
 import shutil
 import json
+import sys
 from datetime import datetime
 
 
@@ -22,8 +23,12 @@ from AIR.utils.arg_parsers import (
     normalize_anthropic_model_configuration,
 )
 from AIR.utils.config_loader import (
+    AGENT_BEHAVIOR_VERSION_KEY,
+    CURRENT_AGENT_BEHAVIOR_VERSION,
     apply_updates_with_cli_priority,
+    explicit_cli_destinations,
     load_yaml_config,
+    resolve_checkpoint_behavior,
     snapshot_args_to_yaml,
 )
 from AIR.utils.agent_config_builders import (
@@ -253,7 +258,7 @@ def set_review_designer_llm_config(args):
     if args.review_design and args.review_designer_model:
         llm_config = LLMConfig(model_name=args.review_designer_model, max_tokens = 16384)
         return llm_config
-    return None  # Will default to claude-sonnet-4-6 in AIRWorkflowModular
+    return None  # Direct callers may rely on the workflows' legacy Sonnet 4.5 fallback.
 
 def build_run_config(args, run_datetime, working_directory, log_dir):
     """
@@ -272,9 +277,14 @@ def build_run_config(args, run_datetime, working_directory, log_dir):
     """
     # Snapshot all resolved argparse values so checkpoint config remains complete
     # as new CLI arguments are added over time.
-    config = dict(vars(args))
+    config = {
+        key: value
+        for key, value in vars(args).items()
+        if not key.startswith('_')
+    }
     # Memory report paths are resume-time derived and should never be checkpoint-persisted.
     config.pop('background_report_path', None)
+    config[AGENT_BEHAVIOR_VERSION_KEY] = CURRENT_AGENT_BEHAVIOR_VERSION
 
     # Add runtime metadata and resolved paths needed for robust resumption.
     config.update({
@@ -629,7 +639,7 @@ def main(args):
             system_prompt=HYPOTHESIS_GENERATION_SYSTEM_PROMPT,
             generate_plan=args.generate_plan,
             use_deep_research_for_hypothesis_generation=getattr(
-                args, "use_deep_research_for_hypothesis_generation", True
+                args, "use_deep_research_for_hypothesis_generation", False
             ),
         )
 
@@ -702,8 +712,11 @@ def main(args):
         generate_background_report=args.generate_background_report,
         # Retrieval backend: paperclip is the default; optional override, never required.
         deep_research_provider=getattr(args, "deep_research_provider", None) or "paperclip",
-        # Validate literature-sensitive reviewer claims via DeepResearchAgent (default: enabled).
-        enable_deep_research_in_review=getattr(args, "enable_deep_research_in_review", True),
+        # Optional reviewer-directed literature validation; off in the original architecture.
+        enable_deep_research_in_review=getattr(args, "enable_deep_research_in_review", False),
+        # A config-file resume has already resolved legacy/current behavior and
+        # may intentionally override a mid-round query checkpoint.
+        resume_behavior_overrides=getattr(args, '_resume_behavior_overrides', False),
         # Expanding dataset mode settings
         expanding_dataset_mode=args.expanding_dataset,
         expanding_data_directory=expanding_data_dir,
@@ -805,15 +818,16 @@ def main(args):
 
 if __name__ == "__main__":
     parser = create_hb_sherlock_parser()
-    args = parser.parse_args()
-    defaults = vars(parser.parse_args([]))
-    cli_overrides = {k for k, v in defaults.items() if getattr(args, k) != v}
+    raw_cli_args = sys.argv[1:]
+    args = parser.parse_args(raw_cli_args)
+    cli_overrides = explicit_cli_destinations(parser, raw_cli_args)
 
     # Deprecated input: background report paths are now always derived at resume time.
     if args.background_report_path is not None:
         print("ℹ️  Ignoring --background_report_path (deprecated). Resume memory is auto-detected from round checkpoints.")
     args.background_report_path = None
     args._resume_memory_report_path = None
+    args._resume_behavior_overrides = False
 
     # Load configuration from file if provided
     if args.config_file:
@@ -825,6 +839,18 @@ if __name__ == "__main__":
         if config:
             # Never load persisted background_report_path from checkpoint configs.
             config.pop('background_report_path', None)
+            try:
+                config, used_legacy_behavior = resolve_checkpoint_behavior(config)
+            except ValueError as exc:
+                parser.error(str(exc))
+            if used_legacy_behavior:
+                print(
+                    "   ℹ️  Legacy checkpoint detected; resolved behavior: "
+                    f"provider={config['deep_research_provider']}, "
+                    "hypothesis_literature_grounding="
+                    f"{config['use_deep_research_for_hypothesis_generation']}, "
+                    f"review_literature_checks={config['enable_deep_research_in_review']}."
+                )
             args = apply_updates_with_cli_priority(
                 args,
                 config,
@@ -832,6 +858,7 @@ if __name__ == "__main__":
                 parser=parser,
                 source_label=f"config file: {args.config_file}",
             )
+            args._resume_behavior_overrides = True
             print_full_config(config, title="Full Config Loaded From Checkpoint")
             print()
         else:

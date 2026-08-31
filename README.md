@@ -38,7 +38,7 @@ directory; the verified local archive takes precedence over network access:
 
 ```bash
 install.sh
-discoveryagent-dev-823dc588d2eb-5e7995a5e762-macos-arm64.tar.gz
+discoveryagent-dev-e14536af60d3-412b7bd78bc1-macos-arm64.tar.gz
 ```
 
 After installation, open a new Terminal window or follow the PATH instruction
@@ -210,8 +210,12 @@ Before using confidential, regulated, identifiable, proprietary, or embargoed da
 
 This repository packages DiscoveryAgent for local installation and distribution.
 
+The canonical local-application frontend source is maintained in
+[`application/frontend`](application/frontend). The separate
+`DA_selection_ui` repository is not an upstream for local-app development.
+
 For development and technical documentation, see:
 
-- [DiscoveryAgent Frontend](https://github.com/owencqueen/DA_selection_ui)
+- [Frontend ownership and import provenance](docs/frontend_provenance.md)
 - [DiscoveryAgent Backend](https://github.com/owencqueen/discoveryagent)
 - [Development server launch](docs/development_server_launch.md)

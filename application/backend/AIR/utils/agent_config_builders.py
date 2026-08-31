@@ -67,7 +67,9 @@ def set_deep_research_agent_config(args):
         llm_config=llm_config,
         log_dir="logs",
         max_output_tokens=5000,
-        deep_research_provider=getattr(args, "deep_research_provider", "paperclip"),
+        deep_research_provider=(
+            getattr(args, "deep_research_provider", None) or "paperclip"
+        ),
     )
 
 
@@ -251,6 +253,9 @@ def set_execution_agent_config(
     no_sandbox_enforcement = getattr(args, "no_sandbox_enforcement", False)
     no_sandbox = getattr(args, "no_sandbox", False)
     config_kwargs["sandbox_enforcement"] = not (no_sandbox_enforcement or no_sandbox)
+
+    no_url_blocker = getattr(args, "no_url_blocker", False)
+    config_kwargs["url_blocker_enabled"] = not no_url_blocker
 
     allowed_read_paths_raw = getattr(args, "allowed_read_paths", None)
     if allowed_read_paths_raw:

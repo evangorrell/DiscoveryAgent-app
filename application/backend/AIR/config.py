@@ -366,7 +366,9 @@ class HypothesisGenerationConfig:
     # and inject it into the hypothesis generation prompt.
     # Paperclip is the default deep-research provider; deep_research_provider is an optional
     # override, not a required config key — missing it always falls back to "paperclip".
-    use_deep_research_for_hypothesis_generation: bool = True
+    # Opt-in: the original architecture lets the director choose when to call
+    # DeepResearchAgent instead of inserting retrieval before every hypothesis.
+    use_deep_research_for_hypothesis_generation: bool = False
     # Citations support (Anthropic only)
     enable_citations: bool = False
     cache_documents: bool = False

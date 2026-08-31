@@ -288,17 +288,30 @@ Both `--install-root` and `--data-root` require absolute paths.
 
 ## Release pin sequencing
 
-A development snapshot may temporarily pin a commit that is reachable from a
-pushed feature branch or open pull request. That pin is suitable for review,
-but it is not release-final. After the source pull request merges, resolve the
-exact commit that landed on `origin/main`, rerun `tools/build_release.py`, then
-rebuild the install artifact and update `RELEASE_ID` and
-`PUBLIC_ARTIFACT_SHA256` together. Squash and rebase merges necessarily create
-new commit IDs; a merge commit also has a distinct mainline commit ID even
-though the original feature commit remains in its history.
+A release snapshot archives the canonical frontend from
+`application/frontend` at an explicit `DiscoveryAgent-app` commit and the
+backend from an explicit `discoveryagent` commit. It never reads frontend source
+from `DA_selection_ui`.
 
-Do not create a tag or upload an asset until both source pins are validated
-against the intended release branches and the rebuilt checksum is committed.
+A development snapshot may temporarily pin a backend commit that is reachable
+from a pushed feature branch or open pull request. That pin is suitable for
+review, but it is not release-final. After the backend pull request merges,
+resolve the exact commit that landed on `discoveryagent/origin/main` and rebuild:
+
+```bash
+python3 tools/build_release.py \
+  --app-sha "$(git rev-parse origin/main)" \
+  --backend-repo /path/to/discoveryagent \
+  --backend-sha "$(git -C /path/to/discoveryagent rev-parse origin/main)" \
+  --mode development
+```
+
+Then rebuild the install artifact and update `RELEASE_ID` and
+`PUBLIC_ARTIFACT_SHA256` together. Squash, rebase, and merge commits have
+distinct IDs, so always use the exact intended mainline commits.
+
+Do not create a tag or upload an asset until both pins are validated against
+the intended release branches and the rebuilt checksum is committed.
 
 ---
 

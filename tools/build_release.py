@@ -17,10 +17,16 @@ from release_builder import ReleaseBuildError, SourceRequest, build_release  # n
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Build application/ from explicit committed frontend/backend sources."
+        description=(
+            "Build application/ from this repository's committed canonical frontend "
+            "and an explicit committed backend source."
+        )
     )
-    parser.add_argument("--frontend-repo", type=Path, required=True)
-    parser.add_argument("--frontend-sha", required=True)
+    parser.add_argument(
+        "--app-sha",
+        required=True,
+        help="DiscoveryAgent-app commit containing application/frontend",
+    )
     parser.add_argument("--backend-repo", type=Path, required=True)
     parser.add_argument("--backend-sha", required=True)
     parser.add_argument(
@@ -35,7 +41,7 @@ def main() -> int:
     arguments = parse_args()
     try:
         metadata = build_release(
-            SourceRequest(arguments.frontend_repo, arguments.frontend_sha),
+            SourceRequest(REPOSITORY_ROOT, arguments.app_sha),
             SourceRequest(arguments.backend_repo, arguments.backend_sha),
             mode=arguments.mode,
             destination_root=REPOSITORY_ROOT,
@@ -45,7 +51,7 @@ def main() -> int:
         return 1
     print(json.dumps({
         "release_id": metadata["release_id"],
-        "frontend_commit": metadata["frontend"]["commit"],
+        "app_commit": metadata["frontend"]["commit"],
         "backend_commit": metadata["backend"]["commit"],
     }, sort_keys=True))
     return 0

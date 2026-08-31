@@ -17,6 +17,10 @@ from typing import Dict, Any, Optional, List, Tuple
 from dataclasses import dataclass, asdict, is_dataclass
 import datetime
 
+from .utils.config_loader import (
+    AGENT_BEHAVIOR_VERSION_KEY,
+    CURRENT_AGENT_BEHAVIOR_VERSION,
+)
 from .utils.query_artifacts import query_directory
 
 
@@ -142,6 +146,7 @@ class CheckpointManager:
         """
         # Core workflow state
         workflow_state = {
+            AGENT_BEHAVIOR_VERSION_KEY: CURRENT_AGENT_BEHAVIOR_VERSION,
             'dataset_description': getattr(self.workflow, 'dataset_description', ''),
             'task_description': getattr(self.workflow, 'task_description', None),
             'max_queries': getattr(self.workflow, 'max_queries', 10),
@@ -159,9 +164,15 @@ class CheckpointManager:
             'multiturn_hypothesis': getattr(self.workflow, 'multiturn_hypothesis', True),
             'review_search': getattr(self.workflow, 'review_search', False),
             'review_design': getattr(self.workflow, 'review_design', False),
-            # Paperclip is the default; persisted so old-checkpoint resumes keep the right provider.
+            # Persist behavior-changing settings explicitly. Missing values in a
+            # pre-V2 checkpoint are resolved as legacy behavior during restore.
             'deep_research_provider': getattr(self.workflow, 'deep_research_provider', 'paperclip') or 'paperclip',
-            'enable_deep_research_in_review': getattr(self.workflow, 'enable_deep_research_in_review', True),
+            'use_deep_research_for_hypothesis_generation': getattr(
+                getattr(self.workflow, 'hypothesis_config', None),
+                'use_deep_research_for_hypothesis_generation',
+                False,
+            ),
+            'enable_deep_research_in_review': getattr(self.workflow, 'enable_deep_research_in_review', False),
         }
         
         # Agent states using new protocol
@@ -299,11 +310,27 @@ class CheckpointManager:
                 'query_num': 0,
                 'checkpoint_type': 'initial_hypothesis',
                 'workflow_state': {
+                    AGENT_BEHAVIOR_VERSION_KEY: CURRENT_AGENT_BEHAVIOR_VERSION,
                     'dataset_description': getattr(self.workflow, 'dataset_description', ''),
                     'task_description': getattr(self.workflow, 'task_description', None),
                     'max_queries': getattr(self.workflow, 'max_queries', 10),
                     'query_num': 0,
                     'round_num': self.round_num,
+                    'deep_research_provider': getattr(
+                        self.workflow,
+                        'deep_research_provider',
+                        'paperclip',
+                    ) or 'paperclip',
+                    'use_deep_research_for_hypothesis_generation': getattr(
+                        getattr(self.workflow, 'hypothesis_config', None),
+                        'use_deep_research_for_hypothesis_generation',
+                        False,
+                    ),
+                    'enable_deep_research_in_review': getattr(
+                        self.workflow,
+                        'enable_deep_research_in_review',
+                        False,
+                    ),
                 },
                 'hypothesis_output': hypothesis_output
             }

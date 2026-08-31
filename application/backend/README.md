@@ -2,6 +2,14 @@
 
 DiscoveryAgent (AIR) is an agentic scientific research system. Given a dataset and a research question, it autonomously generates hypotheses, runs multi-step data analyses, and produces structured reports — iterating across multiple rounds with branching exploration strategies. It is built on top of Claude and the Claude Code execution environment.
 
+## Guidance: original implementation and newer features
+
+- The repository includes post-paper features that were not used in the original experiments.
+- The original implementation used Perplexity for deep research. Paperclip was added later and is recommended for future work; use Perplexity when reproducing the original provider choice.
+- Automatic literature grounding during hypothesis generation was added later and was not used originally. Leave it disabled for paper reproduction; enable the Paperclip-backed option for future literature-grounded studies.
+- Reviewer-triggered literature validation is also a post-paper, opt-in feature.
+- These settings are checkpointed, so resumed experiments retain their original behavior. See [Paperclip Deep Research Setup](docs/PAPERCLIP_DEEP_RESEARCH_SETUP.md) for configuration details.
+
 ## Setup
 
 Requires Python 3.11+. The Claude Agent SDK supplies its own compatible Claude
@@ -92,10 +100,16 @@ ANTHROPIC_API_KEY=your_key_here   # or OPENAI_API_KEY, etc.
 DATA_PATH=/path/to/your/data
 ```
 
-For the interactive CLI, also set:
+For Paperclip-backed literature retrieval, authenticate with `paperclip login` or set:
 
 ```bash
-PERPLEXITY_API_KEY=your_key_here  # only if you want deep research
+PAPERCLIP_API_KEY=your_key_here
+```
+
+Set the Perplexity key only when using Perplexity directly or as a Paperclip provider-error fallback:
+
+```bash
+PERPLEXITY_API_KEY=your_key_here
 ```
 
 See [Environment Variables](#environment-variables) for the full list.
@@ -104,7 +118,7 @@ See [Environment Variables](#environment-variables) for the full list.
 
 ```bash
 python -c "import AIR; print('OK')"
-claude --version
+python -c "import claude_agent_sdk; print('Claude Agent SDK OK')"
 ```
 
 If you plan to use the interactive CLI, prefer launching it with the project environment explicitly:
@@ -151,7 +165,9 @@ At least one is required.
 | `OPENAI_API_KEY` | OpenAI (GPT) |
 | `TOGETHER_API_KEY` | Together AI |
 | `OPENROUTER_API_KEY` | OpenRouter |
-| `PERPLEXITY_API_KEY` | Perplexity (used by the deep research tool) |
+| `PAPERCLIP_API_KEY` | Paperclip literature retrieval; optional if authenticated with `paperclip login` |
+| `PAPERCLIP_BEARER_TOKEN` | Alternative Paperclip bearer-token authentication |
+| `PERPLEXITY_API_KEY` | Perplexity deep research, or fallback when Paperclip has a provider error |
 
 ### Other
 

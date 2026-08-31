@@ -33,6 +33,7 @@ import pytest
 from claude_agent_sdk import ClaudeAgentOptions, HookMatcher, query
 
 from AIR.tool_agents.security.sandbox_enforcement import (
+    _check_bash_write,
     _is_within,
     create_sandbox_enforcement_hook,
     create_sandbox_posttool_guard,
@@ -111,6 +112,29 @@ class TestIsWithin:
         root = str(tmp_path / "code")
         os.makedirs(root)
         assert _is_within(os.path.join(root, "reports", "tables", "out.csv"), [root], strict=True)
+
+
+class TestBashWriteParsing:
+    def test_relative_redirect_defaults_to_sandbox_cwd(self, tmp_path):
+        root = str(tmp_path / "code")
+        os.makedirs(root)
+
+        assert _check_bash_write("python analysis.py > outputs.txt", root) is None
+        assert "outside sandbox" in _check_bash_write(
+            "python analysis.py > ../outside.txt",
+            root,
+        )
+
+    @pytest.mark.parametrize("command", ["python analysis.py 2>&1", "cat file >(wc -l)"])
+    def test_fd_duplication_and_process_substitution_are_not_file_targets(
+        self,
+        tmp_path,
+        command,
+    ):
+        root = str(tmp_path / "code")
+        os.makedirs(root)
+
+        assert _check_bash_write(command, root) is None
 
 
 # ---------------------------------------------------------------------------

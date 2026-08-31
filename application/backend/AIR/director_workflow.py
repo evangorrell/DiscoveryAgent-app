@@ -49,6 +49,7 @@ import pathlib
 import time
 import threading
 import itertools
+import copy
 from pathlib import Path
 import shutil
 
@@ -64,6 +65,10 @@ from .utils.query_artifacts import (
     read_query_artifact,
 )
 from .utils.llm_diagnostics import REFUSAL_ADVICE, first_refusal
+from .utils.config_loader import (
+    merge_checkpoint_behavior_context,
+    resolve_checkpoint_behavior,
+)
 from .config import LLMConfig, ExecutionAgentConfig, HypothesisGenerationConfig, get_default_execution_config, get_default_hypothesis_config
 from .context_managers import NotebookManager, NotebookManagerXML, strip_code_markers
 from .tool_agents.execution_agent_cc import ExecutionAgentCC
@@ -530,7 +535,7 @@ class DirectorWorkflow:
                  deep_research_provider: str = "paperclip",
                  # Validate literature-sensitive reviewer claims via DeepResearchAgent.
                  # Does not change review cadence (controlled by review_optimization_steps).
-                 enable_deep_research_in_review: bool = True,
+                 enable_deep_research_in_review: bool = False,
         ):
         """
         Initialize the AIRWorkflow.
@@ -549,7 +554,8 @@ class DirectorWorkflow:
             review_search (bool): Enable web search tools for the reviewer
             review_design (bool): Use ReviewDesigner to generate custom reviewer prompts based on research task
             review_designer_llm_config (Optional[LLMConfig]): Configuration for the ReviewDesigner LLM.
-                If None and review_design=True, defaults to claude-sonnet-4-6
+                If None and review_design=True, direct construction retains the legacy
+                claude-sonnet-4-5-20250929 fallback; normal CLI construction supplies the configured model.
             report_summarization_llm_config (LLMConfig): Configuration for report summarization LLM
             explicit_hypothesis_step (int): Step at which to start explicit hypothesis generation
             exploratory_phase_warmup_steps (int): Number of warmup steps for exploratory phase
@@ -584,7 +590,7 @@ class DirectorWorkflow:
         self.round_num = None  # Will be set by HypothesisBrancher if used
         self.background_report = background_report  # Accumulated knowledge from previous rounds
         self.log_dir = log_dir
-        self.deep_research_provider = deep_research_provider
+        self.deep_research_provider = deep_research_provider or "paperclip"
         self.enable_deep_research_in_review = enable_deep_research_in_review
 
         self.review_optimization_steps = review_optimization_steps
@@ -636,7 +642,7 @@ class DirectorWorkflow:
                                 if director_hypothesis_config is not None
                                 else hypothesis_config.llm_config
                             ),
-                            deep_research_provider=deep_research_provider,
+                            deep_research_provider=self.deep_research_provider,
                         )
                     finally:
                         spinner_stop.set()
@@ -707,7 +713,7 @@ class DirectorWorkflow:
             # Conditionally use ReviewDesigner based on review_design flag
             if self.review_design:
                 # Use ReviewDesigner to generate a custom reviewer prompt based on the research task
-                # Use provided config or default to claude-sonnet-4-6
+                # Direct callers without a config retain the legacy Sonnet 4.5 fallback.
                 designer_llm_config = self.review_designer_llm_config or LLMConfig(model_name="claude-sonnet-4-5-20250929", max_tokens = 8192)
                 review_designer = ReviewDesigner(
                     llm_config=designer_llm_config
@@ -1124,10 +1130,10 @@ class DirectorWorkflow:
                 "Calling hypothesis_gen_agent.generate_hypothesis() to establish research direction")
 
             # Optional: build a per-round external literature novelty/grounding context via
-            # DeepResearchAgent before generating the hypothesis. Enabled by default, but safe/disableable; never
+            # DeepResearchAgent before generating the hypothesis. This is opt-in and never
             # raises, and never injects a retrieval-failure marker into the hypothesis prompt.
             literature_context = None
-            if getattr(self.hypothesis_config, "use_deep_research_for_hypothesis_generation", True):
+            if getattr(self.hypothesis_config, "use_deep_research_for_hypothesis_generation", False):
                 try:
                     literature_context = _generate_hypothesis_literature_context(
                         dataset_description=self.dataset_description,
@@ -1575,7 +1581,7 @@ Make sure your query is complete and the closing XML tag is present. Keep your i
         literature_check_section = ""
         if self.enable_deep_research_in_review:
             literature_check_section = """
-When any of the following conditions apply, emit a literature-check tag so a deep_research system 
+When any of the following conditions apply, emit a literature-check tag so a deep_research system
 can validate the claim before it steers the next query:
 
 - A claim may already be known and the novelty of the finding is uncertain.
@@ -2010,8 +2016,33 @@ Generated on: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
         with open(checkpoint_file, 'r', encoding='utf-8') as f:
             checkpoint_data = json.load(f)
         
-        # Extract workflow state
-        workflow_state = checkpoint_data.get('workflow_state', {})
+        # Early PR query checkpoints omitted one behavior field that was still
+        # recorded in the surrounding round config. Consult that config before
+        # applying compatibility inference so an explicit opt-out stays off.
+        raw_workflow_state = checkpoint_data.get('workflow_state', {})
+        for parent in checkpoint_file.parents:
+            if not re.fullmatch(r"round_\d+", parent.name):
+                continue
+            round_config_path = parent / "config.json"
+            if round_config_path.is_file():
+                try:
+                    with open(round_config_path, 'r', encoding='utf-8') as f:
+                        round_config = json.load(f)
+                    if isinstance(round_config, dict):
+                        raw_workflow_state = merge_checkpoint_behavior_context(
+                            raw_workflow_state,
+                            round_config,
+                        )
+                except (OSError, ValueError, TypeError):
+                    # An incomplete/corrupt round config must not make an
+                    # otherwise valid query checkpoint unrestorable.
+                    pass
+            break
+
+        # Extract and classify workflow behavior after contextual recovery.
+        workflow_state, used_legacy_behavior = resolve_checkpoint_behavior(
+            raw_workflow_state
+        )
 
         # Reconstruct configuration objects
         def _reconstruct_llm_config(config_dict):
@@ -2022,19 +2053,30 @@ Generated on: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
                     return LLMConfig(model_name=config_dict.get('model_name', 'claude-3-5-sonnet-20241022'))
             return LLMConfig(model_name='claude-3-5-sonnet-20241022')
 
-        # Create default hypothesis config - will be updated from checkpoint
-        hypothesis_config = get_default_hypothesis_config()
+        # Callers often provide hypothesis_config to restore model and prompt
+        # settings, so its dataclass default must not silently override checkpoint
+        # behavior. A dedicated behavior override is required for that.
+        supplied_hypothesis_config = override_kwargs.get('hypothesis_config')
+        hypothesis_config = copy.copy(
+            supplied_hypothesis_config or get_default_hypothesis_config()
+        )
+        hypothesis_config.use_deep_research_for_hypothesis_generation = (
+            override_kwargs['use_deep_research_for_hypothesis_generation']
+            if 'use_deep_research_for_hypothesis_generation' in override_kwargs
+            else workflow_state['use_deep_research_for_hypothesis_generation']
+        )
 
-        # Extract workflow configuration flags from checkpoint (for proper restoration).
-        # Old checkpoints missing deep_research_provider/enable_deep_research_in_review
-        # automatically receive the new defaults so they behave correctly on resume.
+        # Extract workflow configuration flags from checkpoint. Missing V2
+        # behavior fields in old checkpoints resolve to the historical behavior;
+        # fresh sessions continue to receive the new defaults in their constructors.
         checkpoint_git_tracking = workflow_state.get('git_tracking', False)
         checkpoint_multiturn = workflow_state.get('multiturn_hypothesis', True)
         checkpoint_review_search = workflow_state.get('review_search', False)
         checkpoint_review_design = workflow_state.get('review_design', False)
-        # Paperclip is the default; missing key in old checkpoints → "paperclip".
-        checkpoint_deep_research_provider = workflow_state.get('deep_research_provider', 'paperclip') or 'paperclip'
-        checkpoint_enable_deep_research_in_review = workflow_state.get('enable_deep_research_in_review', True)
+        checkpoint_deep_research_provider = workflow_state['deep_research_provider']
+        checkpoint_enable_deep_research_in_review = workflow_state[
+            'enable_deep_research_in_review'
+        ]
 
         # Override with any provided parameters
         init_kwargs = {
@@ -2056,8 +2098,16 @@ Generated on: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
         # Apply any additional overrides (exclude parameters not in __init__)
         # This allows explicit override_kwargs to take precedence over checkpoint values
+        excluded_override_keys = {
+            'agent_config_list',
+            'log_dir',
+            'output_home',
+            'refinement_feedback',
+            'hypothesis_config',
+            'use_deep_research_for_hypothesis_generation',
+        }
         for key, value in override_kwargs.items():
-            if key not in ['agent_config_list', 'log_dir', 'output_home', 'refinement_feedback']:
+            if key not in excluded_override_keys:
                 init_kwargs[key] = value
         
         # Create workflow instance
@@ -2138,6 +2188,15 @@ Generated on: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
         
         workflow.logger.log_action("workflow_restored", 
             f"Restored workflow from query {workflow.query_num} checkpoint")
+        if used_legacy_behavior:
+            workflow.logger.log_action(
+                "legacy_behavior_restored",
+                "Legacy checkpoint effective behavior: "
+                f"provider={workflow.deep_research_provider}, "
+                "hypothesis_literature_grounding="
+                f"{workflow.hypothesis_config.use_deep_research_for_hypothesis_generation}, "
+                f"review_literature_checks={workflow.enable_deep_research_in_review}",
+            )
         
         return workflow
 

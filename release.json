@@ -1,30 +1,41 @@
 {
   "application_schema_version": 1,
   "backend": {
-    "commit": "5e7995a5e7627efb334d22df255dc7963b4be7e2",
+    "commit": "412b7bd78bc16c2d248402871b02691b7cceab43",
     "remote_url": "https://github.com/owencqueen/discoveryagent",
     "repository": "discoveryagent",
+    "tree": "265732ea82bb421de9ce10f0e31ea52be9c5b3f6",
     "uv_lock_sha256": "7043fde28b946ba615f8eb1c337bfb750a49ee5cfb85be3e11f8ff677f0e2b4a",
     "validation": {
       "commit_exists": true,
       "reachable_from_known_remote": true,
-      "reachable_from_origin_main": false,
+      "reachable_from_origin_main": true,
       "reachable_remote_refs": [
-        "refs/remotes/origin/v2-ui"
+        "refs/remotes/origin/main"
       ]
     }
   },
   "frontend": {
-    "commit": "823dc588d2eba138ecac8c00dd7da00662b83986",
-    "remote_url": "https://github.com/owencqueen/DA_selection_ui",
-    "repository": "DA_selection_ui",
+    "commit": "e14536af60d3b38c206b8623a7c9bbbb8c7b3005",
+    "provenance": {
+      "branch": "v2-ui",
+      "commit": "823dc588d2eba138ecac8c00dd7da00662b83986",
+      "relationship": "historical_import",
+      "remote_url": "https://github.com/owencqueen/DA_selection_ui",
+      "repository": "DA_selection_ui",
+      "tree": "4327cc97576a29c4604f0f88fc523f630f308d25"
+    },
+    "remote_url": "https://github.com/evangorrell/DiscoveryAgent-app",
+    "repository": "DiscoveryAgent-app",
+    "source_path": "application/frontend",
+    "tree": "4327cc97576a29c4604f0f88fc523f630f308d25",
     "uv_lock_sha256": "bbdcf1dff4ad2768430c7226147d5ebd6ea87dd7b45948b3aa28ba8660a95a1b",
     "validation": {
       "commit_exists": true,
       "reachable_from_known_remote": true,
-      "reachable_from_origin_main": false,
+      "reachable_from_origin_main": true,
       "reachable_remote_refs": [
-        "refs/remotes/origin/v2-ui"
+        "refs/remotes/origin/main"
       ]
     }
   },
@@ -32,7 +43,7 @@
     "sha256": "036362c1408eb872183f7614d1784e1d5c2a770456878d2c6e02808cad593db8",
     "vendored_wheel": "vendor/gxl_paperclip-0.7.24-py3-none-any.whl"
   },
-  "release_id": "dev-823dc588d2eb-5e7995a5e762",
+  "release_id": "dev-e14536af60d3-412b7bd78bc1",
   "release_type": "development",
   "required_cpython_version": "3.11.11",
   "schema_version": 1

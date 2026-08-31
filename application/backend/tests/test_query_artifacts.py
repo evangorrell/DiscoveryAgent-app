@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 
@@ -7,6 +8,7 @@ os.environ["CLAUDE_CODE_CLI_PATH"] = "/usr/bin/true"
 
 from AIR.director_workflow import DirectorWorkflow
 from AIR.checkpoint_manager import CheckpointManager
+from AIR.utils import progress_recorder
 from AIR.utils.query_artifacts import (
     QueryArtifactCollisionError,
     artifact_filename,
@@ -167,3 +169,42 @@ def test_ambiguous_new_and_legacy_directories_fail_explicitly(tmp_path):
     (round_dir / "query_001").mkdir()
     with pytest.raises(QueryArtifactCollisionError, match="multiple query directories"):
         persist_query_input(round_dir, 1, "do not choose silently")
+
+
+def test_query_started_persists_exact_input_without_changing_bounded_objective(tmp_path):
+    exact = "Compare the following cohorts:\n\n- treatment\n- control\n\n" + ("x" * 1400)
+
+    progress_recorder.write_query_started(tmp_path, 7, objective=exact)
+
+    payload = json.loads(
+        (tmp_path / "query_07" / "query_status.json").read_text(encoding="utf-8")
+    )
+    assert payload["schema_version"] == 2
+    assert payload["query_input"] == exact.strip()
+    assert payload["objective"].endswith("... [truncated]")
+    assert len(payload["objective"]) < len(payload["query_input"])
+
+
+def test_later_status_updates_preserve_exact_query_input(tmp_path):
+    exact = "Measure effect sizes.\nPreserve this second line exactly."
+    progress_recorder.write_query_started(tmp_path, 3, objective=exact)
+
+    progress_recorder.write_query_step(tmp_path, 3, "analyzing_results")
+    progress_recorder.write_query_completed(tmp_path, 3, summary="Completed analysis.")
+
+    payload = json.loads(
+        (tmp_path / "query_03" / "query_status.json").read_text(encoding="utf-8")
+    )
+    assert payload["schema_version"] == 2
+    assert payload["query_input"] == exact
+    assert payload["status"] == "completed"
+
+
+def test_missing_input_is_represented_as_null_without_persisting_other_context(tmp_path):
+    progress_recorder.write_query_started(tmp_path, 1)
+
+    payload = json.loads(
+        (tmp_path / "query_01" / "query_status.json").read_text(encoding="utf-8")
+    )
+    assert payload["query_input"] is None
+    assert payload["objective"] == progress_recorder.DEFAULT_OBJECTIVE

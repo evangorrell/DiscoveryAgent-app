@@ -73,6 +73,19 @@ Make sure the above requirements are always followed, even if it means you need 
 ═══════════════════════════════════════════════════════════════════════════════
 """
 
+SANDBOX_PATH_PROMPT = """
+
+🚨 SANDBOX PATH RULES (NON-NEGOTIABLE):
+
+- Your current working directory is the sandbox root: {working_directory}
+- Treat this directory as the project root for all analysis.
+- Do not search, read, write, or glob parent directories outside this sandbox.
+- Access the dataset only through paths under this sandbox, especially `data/...`.
+- If `data/` contains symlinks to shared storage, still use the sandbox path such as `data/train/substitutions/...`; do not resolve or access the external target path directly.
+- Never use parent run directories, shared scratch parents, or `/scratch/users/oqueen/AIR_project/active` as search roots.
+- Write temporary files to this sandbox, do not write them outside of the sandbox.
+"""
+
 CODEBASE_STRUCTURE_PROMPT_SUB_AGENT = """
 
 ═══════════════════════════════════════════════════════════════════════════════
