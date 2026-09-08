@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}DiscoveryAgent{% endblock %}</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=20260823-active-round-skill-import-1">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=20260908-round-launch-settings-1">
     {% block head %}{% endblock %}
 </head>
 <body class="v2{% if page_class %} {{ page_class }}{% endif %}">
@@ -75,6 +75,10 @@
     </div>
     {% else %}
     </main>
+    {% endif %}
+
+    {% if project_slug and not bare_shell %}
+    {% include '_round_launch_dialog.html' %}
     {% endif %}
 
     <script>

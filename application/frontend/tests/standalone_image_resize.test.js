@@ -448,6 +448,6 @@ test('shared renderer loads before the viewer under matching fresh asset keys', 
         < workspaceTemplate.indexOf("filename='round_workspace.js'"));
     assert.match(workspaceTemplate, new RegExp("report_figures\\.js', v='" + key));
     assert.match(workspaceTemplate, /round_workspace\.js', v='[^']+'/);
-    assert.match(workspaceTemplate, /round_workspace\.css', v='20260823-tab-scrollbar-overflow-1'/);
+    assert.match(workspaceTemplate, /round_workspace\.css', v='20260908-project-configuration-1'/);
     assert.match(projectHomeTemplate, new RegExp("report_figures\\.js', v='" + key));
 });

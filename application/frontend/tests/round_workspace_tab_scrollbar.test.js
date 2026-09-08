@@ -425,7 +425,7 @@ test('scrollbar accessibility and cache-safe asset ordering are explicit', () =>
     const moduleIndex = template.indexOf("filename='round_workspace_tab_scrollbar.js'");
     const workspaceIndex = template.indexOf("filename='round_workspace.js'");
     assert.ok(moduleIndex > 0 && workspaceIndex > moduleIndex);
-    assert.match(template, /round_workspace\.css', v='20260823-tab-scrollbar-overflow-1'/);
+    assert.match(template, /round_workspace\.css', v='20260908-project-configuration-1'/);
     assert.match(template, /round_workspace_tab_scrollbar\.js', v='20260823-tab-scrollbar-overflow-1'/);
     assert.match(template, /round_workspace\.js', v='20260823-tab-scrollbar-overflow-1'/);
 });

@@ -10584,13 +10584,30 @@ def api_local_round_options():
     try:
         _api_round_request_identity(project)
         round_number = local_round_runner.next_round_number(project)
+        defaults = local_round_runner.round_option_defaults(round_number, project)
+        model_warning = None
+        try:
+            defaults.update(model_catalog.resolve_project_models(project))
+        except model_catalog.UnsupportedProjectModel as exc:
+            defaults.update({
+                'reasoning_model': model_catalog.DEFAULT_REASONING_MODEL,
+                'execution_model': model_catalog.DEFAULT_EXECUTION_MODEL,
+            })
+            model_warning = (
+                f'{exc} Choose supported models below for this round.'
+            )
     except local_round_runner.RoundLaunchError as exc:
         return jsonify({'ok': False, 'code': exc.code, 'message': exc.message}), exc.http_status
     return jsonify({
         'ok': True,
         'project_id': str(project['id']),
         'round': round_number,
-        'defaults': local_round_runner.round_option_defaults(round_number, project),
+        'defaults': defaults,
+        'model_warning': model_warning,
+        'models': [
+            {'id': model['id'], 'display_name': model['display_name']}
+            for model in model_catalog.SUPPORTED_PROJECT_MODELS
+        ],
     })
 
 
@@ -10606,9 +10623,15 @@ def api_start_local_round():
         }), 400
     try:
         _api_round_request_identity(project)
-        # Fresh rounds snapshot the trusted project-level Advanced Settings.
-        # Round Start has no parallel browser-owned configuration path.
-        result = local_round_runner.start_round(project)
+        requested = request.get_json(silent=True)
+        options = local_round_runner.normalize_round_options(requested)
+        # Only the allowlisted, validated per-round settings above can override
+        # the trusted project defaults. Paths, README/context, selected data,
+        # skills, sandboxing, and runtime configuration remain server-owned.
+        result = (
+            local_round_runner.start_round(project, options=options)
+            if options else local_round_runner.start_round(project)
+        )
     except local_round_runner.RoundLaunchError as exc:
         return jsonify({'ok': False, 'code': exc.code, 'message': exc.message}), exc.http_status
     return jsonify({

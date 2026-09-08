@@ -3,7 +3,7 @@
 {% block title %}Round Workspace &middot; DiscoveryAgent{% endblock %}
 
 {% block head %}
-<link rel="stylesheet" href="{{ url_for('static', filename='round_workspace.css', v='20260823-tab-scrollbar-overflow-1') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='round_workspace.css', v='20260908-project-configuration-1') }}">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
 <link rel="stylesheet" href="{{ url_for('static', filename='project_audit_agent.css', v='20260818-audit-figure-drag') }}">
 <script>
@@ -32,6 +32,15 @@
 <section class="rw-page"{% if pre_round_overlay %} inert{% endif %}>
     <div class="rw-layout">
         <aside class="v2-workspace-sidebar rw-sidebar" aria-label="Round files">
+            <div class="rw-project-configuration-section">
+                <div class="v2-workspace-sidebar-label rw-sidebar-label">Project</div>
+                <button class="rw-project-configuration-button" id="rw-project-configuration" type="button">
+                    <svg viewBox="0 0 20 20" width="15" height="15" aria-hidden="true" focusable="false">
+                        <path d="M4 3.5h8.2L16 7.3v9.2H4zM12 3.5v4h4M7 10h6M7 13h6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                    <span>Configuration</span>
+                </button>
+            </div>
             <div class="v2-workspace-sidebar-label rw-sidebar-label">Rounds</div>
             <div class="rw-tree-status" id="rw-tree-status" role="status">Loading...</div>
             <nav class="v2-workspace-sidebar-list rw-round-list" id="rw-round-list" aria-label="Round file explorer"></nav>
@@ -143,6 +152,49 @@
     </div>
 </section>
 
+<div class="v2-modal-overlay rw-project-configuration-overlay" id="rw-project-configuration-overlay" hidden>
+    <div class="v2-modal rw-project-configuration-modal" role="dialog" aria-modal="true"
+         aria-labelledby="rw-project-configuration-title" aria-describedby="rw-project-configuration-description">
+        <div class="v2-modal-head">
+            <div>
+                <p class="v2-section-label">PROJECT</p>
+                <h2 class="v2-modal-title" id="rw-project-configuration-title">Project configuration</h2>
+                <p class="v2-field-help" id="rw-project-configuration-description">
+                    This is the project&rsquo;s current read-only configuration. Supported execution settings can be adjusted when launching a new round.
+                </p>
+            </div>
+        </div>
+        <div class="v2-modal-body rw-project-configuration-body">
+            <div class="rw-project-configuration-loading" id="rw-project-configuration-loading" role="status">Loading project configuration&hellip;</div>
+            <div class="rw-project-configuration-error" id="rw-project-configuration-error" role="alert" hidden></div>
+            <div id="rw-project-configuration-content" hidden>
+                <section class="rw-project-configuration-section-block">
+                    <h3>Research objective</h3>
+                    <p class="rw-project-configuration-objective" id="rw-project-configuration-objective"></p>
+                </section>
+                <section class="rw-project-configuration-section-block">
+                    <h3>Project defaults</h3>
+                    <dl class="rw-project-configuration-settings" id="rw-project-configuration-settings"></dl>
+                </section>
+                <section class="rw-project-configuration-section-block">
+                    <h3>DiscoveryAgent Data</h3>
+                    <ul class="rw-project-configuration-data" id="rw-project-configuration-data"></ul>
+                </section>
+                <section class="rw-project-configuration-section-block">
+                    <div class="rw-project-configuration-readme-heading">
+                        <h3>Project README</h3>
+                        <span>Read only</span>
+                    </div>
+                    <pre class="rw-project-configuration-readme" id="rw-project-configuration-readme"></pre>
+                </section>
+            </div>
+        </div>
+        <div class="v2-modal-footer">
+            <button type="button" class="v2-btn v2-btn-secondary" id="rw-project-configuration-close">Close</button>
+        </div>
+    </div>
+</div>
+
 {% if pre_round_overlay %}
 {# Round Workspace uses its own orientation sentence: unlike Hypothesis Studio,
    this screen is where the user can follow the exploratory round in progress. #}
@@ -154,12 +206,13 @@
 {% block scripts %}
 <script>window.__PINNED_ROUND__ = {{ pinned_round | default(none) | tojson }};</script>
 <script>window.__PRE_ROUND_OVERLAY__ = {{ pre_round_overlay | default(false) | tojson }};</script>
-<script src="{{ url_for('static', filename='round_start.js', v='20260823-round-run-identity-1') }}"></script>
+<script src="{{ url_for('static', filename='round_start.js', v='20260908-round-launch-settings-1') }}"></script>
 <script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
 <script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 <script src="{{ url_for('static', filename='report_figures.js', v='20260823-standalone-image-resize-1') }}"></script>
 <script src="{{ url_for('static', filename='round_workspace_tab_scrollbar.js', v='20260823-tab-scrollbar-overflow-1') }}"></script>
 <script src="{{ url_for('static', filename='round_workspace.js', v='20260823-tab-scrollbar-overflow-1') }}"></script>
+<script src="{{ url_for('static', filename='round_configuration.js', v='20260908-project-configuration-1') }}"></script>
 <script src="{{ url_for('static', filename='project_audit_agent.js', v='20260823-audit-new-chat-lifecycle-1') }}"></script>
 {% endblock %}

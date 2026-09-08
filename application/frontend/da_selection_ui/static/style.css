@@ -2516,6 +2516,7 @@ sup.citation-marker {
 body.v2 {
     --v2-bg: #faf7f0;
     --v2-surface: #fffdf8;
+    --v2-surface-hover: #f5f0e7;
     --v2-ink: #2b2a26;          /* dark warm-neutral primary text */
     --v2-ink-soft: #55514a;     /* secondary prose */
     --v2-muted: #8f887b;        /* labels / muted */
@@ -4250,6 +4251,18 @@ body.v2 .v2-onboarding-title {
 
 /* ---- Modal ---- */
 body.v2-modal-open { overflow: hidden; }
+.v2-modal-overlay.v2-round-launch-overlay { z-index: 1220; }
+.v2-modal.v2-round-launch-modal { width: min(620px, calc(100vw - 32px)); }
+.v2-round-launch-body { display: flex; flex-direction: column; gap: 18px; }
+.v2-round-launch-body > p { margin: 0; }
+.v2-round-launch-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px 18px; }
+.v2-round-launch-field { display: flex; min-width: 0; flex-direction: column; gap: 8px; }
+.v2-round-launch-field .v2-input { width: 100%; box-sizing: border-box; }
+.v2-round-launch-tools { display: flex; flex-direction: column; gap: 8px; }
+.v2-round-launch-tools > .v2-field-label { margin: 0; }
+@media (max-width: 620px) {
+    .v2-round-launch-grid { grid-template-columns: minmax(0, 1fr); }
+}
 .v2-modal-overlay {
     position: fixed;
     inset: 0;

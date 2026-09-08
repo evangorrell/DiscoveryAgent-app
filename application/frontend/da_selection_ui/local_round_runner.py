@@ -124,8 +124,31 @@ def normalize_round_options(raw: Any) -> dict[str, Any]:
 
     for switch, (config_key, negated) in DIRECTOR_AGENT_SWITCHES.items():
         if switch in raw:
-            enabled = bool(raw[switch])
+            enabled = raw[switch]
+            if not isinstance(enabled, bool):
+                raise RoundLaunchError(
+                    "invalid_round_options",
+                    f"{switch.replace('_', ' ').title()} must be enabled or disabled.",
+                )
             config[config_key] = (not enabled) if negated else enabled
+
+    reasoning_raw = raw.get("reasoning_model")
+    execution_raw = raw.get("execution_model")
+    try:
+        if reasoning_raw not in (None, ""):
+            reasoning = model_catalog.validate_project_model(reasoning_raw)
+            config.update({
+                field: reasoning
+                for field in model_catalog.REASONING_MODEL_CONFIG_FIELDS
+            })
+        if execution_raw not in (None, ""):
+            execution = model_catalog.validate_project_model(execution_raw)
+            config.update({
+                field: execution
+                for field in model_catalog.EXECUTION_MODEL_CONFIG_FIELDS
+            })
+    except model_catalog.UnsupportedProjectModel as exc:
+        raise RoundLaunchError("unsupported_project_model", str(exc)) from exc
 
     return config
 
@@ -188,15 +211,25 @@ def _project_model_config(project: dict[str, Any]) -> dict[str, str]:
         raise RoundLaunchError("unsupported_project_model", str(exc)) from exc
 
 
-def _project_round_config(project: dict[str, Any], round_number: int) -> dict[str, Any]:
+def _project_round_config(
+    project: dict[str, Any], round_number: int,
+    overrides: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Return the project settings to snapshot into one fresh round."""
     defaults = round_option_defaults(round_number, project)
-    return {
+    config = {
         "num_queries": defaults["num_queries"],
         "omit_deepresearch": not defaults["deep_research"],
         "omit_singlesearch": not defaults["web_search"],
-        **_project_model_config(project),
     }
+    try:
+        config.update(_project_model_config(project))
+    except RoundLaunchError:
+        supplied = overrides or {}
+        required_model_fields = set(model_catalog.PROJECT_MODEL_CONFIG_FIELDS)
+        if not required_model_fields.issubset(supplied):
+            raise
+    return config
 
 
 def external_data_read_paths(project: dict[str, Any]) -> list[str]:
@@ -710,12 +743,8 @@ def _hydrate_round_zero_config(
         "deep_research_provider": existing.get("deep_research_provider") or "paperclip",
     })
     if snapshot_project_model:
-        snapshot_options = dict(options or {})
-        snapshot_options.pop("num_queries", None)
-        config.update(_project_round_config(project, 0))
-        # Kept for direct runner callers during migration; the public start
-        # route no longer accepts per-round browser overrides.
-        config.update(snapshot_options)
+        config.update(_project_round_config(project, 0, options))
+        config.update(options or {})
     config["sub_agent_architecture"] = SUB_AGENT_ARCHITECTURE
     _apply_external_data_access(project, config)
     _apply_data_library_access(project, config, manifest_path=paths["target_dir"] / ".discoveryagent_input_data_manifest.md")
@@ -854,14 +883,12 @@ def _hydrate_continuation_config(
         "no_sandbox": False,
     })
     if is_new_hypothesis_round:
-        snapshot_options = dict(options or {})
-        snapshot_options.pop("num_queries", None)
         round_number = paths.get("round")
         if not isinstance(round_number, int):
             match = re.fullmatch(r"round_(\d+)", paths["target_dir"].name)
             round_number = int(match.group(1)) if match else 1
-        local_config.update(_project_round_config(project, round_number))
-        local_config.update(snapshot_options)
+        local_config.update(_project_round_config(project, round_number, options))
+        local_config.update(options or {})
     local_config["sub_agent_architecture"] = SUB_AGENT_ARCHITECTURE
     _apply_external_data_access(project, local_config)
     _apply_data_library_access(project, local_config, manifest_path=paths["target_dir"] / ".discoveryagent_input_data_manifest.md")
