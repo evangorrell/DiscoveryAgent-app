@@ -278,7 +278,7 @@
         <div class="v2-modal-body v2-data-selector-body">
             <div class="v2-data-action-row v2-data-selector-action-row">
                 <a class="v2-data-action" id="np-data-library-add-data"
-                   href="{{ url_for('discoveryagent_data', open_data_picker='1') }}">
+                   href="{{ url_for('discoveryagent_data', open_data_picker='1', project_draft='1') }}">
                     <span class="v2-data-action-label">Add Data</span>
                     <span class="v2-data-action-arrow" aria-hidden="true">&#8599;</span>
                 </a>
@@ -388,7 +388,7 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="{{ url_for('static', filename='data_tree.js') }}?v=20260822-data-tree-row-geometry-1"></script>
+<script src="{{ url_for('static', filename='data_tree.js') }}?v=20260908-file-sources-1"></script>
 <script src="{{ url_for('static', filename='app_page_action.js') }}?v=20260822-sticky-action-tray-1"></script>
-<script src="{{ url_for('static', filename='projects.js') }}?v=20260826-import-project-list-navigation-1"></script>
+<script src="{{ url_for('static', filename='projects.js') }}?v=20260908-data-files-project-draft-1"></script>
 {% endblock %}

@@ -78,11 +78,11 @@ int main(int argc, const char *argv[]) {
 
             NSOpenPanel *panel = [NSOpenPanel openPanel];
             panel.canChooseDirectories = YES;
-            panel.canChooseFiles = NO;
+            panel.canChooseFiles = YES;
             panel.allowsMultipleSelection = YES;
             panel.canCreateDirectories = NO;
             panel.prompt = @"Select";
-            panel.message = @"Select a folder containing the data you want to add.";
+            panel.message = @"Select the data files or folders you want to add.";
             panel.ignoresMouseEvents = NO;
             panel.alphaValue = 1.0;
 

@@ -274,6 +274,29 @@ def test_project_selection_is_normalized_and_individual_file_is_narrow_root(monk
     assert manifest[0]["exclusions_hard_enforced"] is True
 
 
+def test_individual_file_is_registered_and_resolved_without_copying(monkeypatch, tmp_path):
+    configure_roots(monkeypatch, tmp_path)
+    source = tmp_path / "standalone measurements.csv"
+    source.write_text("sample,value\nA,7\n", encoding="utf-8")
+    before = source.read_bytes()
+    client = authenticated_client()
+
+    added = client.post("/api/data-library/sources", json={"path": str(source)})
+    payload = added.get_json()["source"]
+    selection = [{"dataset_id": payload["id"], "selected_paths": ["."], "excluded_paths": []}]
+    roots, manifest = data_library.resolve_selection(selection)
+    created = create_project(client, "Standalone File", selection)
+
+    assert added.status_code == 201
+    assert payload["kind"] == "file"
+    assert payload["size_bytes"] == len(before)
+    assert roots == [str(source.resolve())]
+    assert manifest[0]["resolved_read_paths"] == [str(source.resolve())]
+    project = app_module._v2_get_project(created.get_json()["project_id"])
+    assert not (Path(project["data_dir"]) / source.name).exists()
+    assert source.read_bytes() == before
+
+
 def test_create_keeps_code_data_and_references_library_without_copy(monkeypatch, tmp_path):
     _root, _projects = configure_roots(monkeypatch, tmp_path)
     source = source_folder(tmp_path)
@@ -684,7 +707,7 @@ def test_navigation_and_project_selector_use_one_unified_data_section():
     assert 'id="data-library-title">Data</h1>' in data_page and 'class="v2-data-library-box v2-data-tree-container"' in data_page
     assert 'id="data-library-primary-action" hidden' in data_page
     assert 'class="v2-btn v2-btn-primary v2-data-library-add-btn" id="data-library-add"' in data_page
-    assert "Add folders once, then choose which projects can access them. Files stay in their original locations." in data_page
+    assert "Add files or folders once, then choose which projects can access them. Data stays in its original location." in data_page
     assert 'class="v2-dropzone v2-data-empty-state v2-data-library-empty"' in data_page
     assert 'aria-label="No data added. Click to add data."' in data_page
     assert "No data added" in data_page
@@ -699,14 +722,14 @@ def test_navigation_and_project_selector_use_one_unified_data_section():
     assert "Select data" in projects
     assert 'id="np-data-library-add-data"' in projects
     assert '<a class="v2-data-action" id="np-data-library-add-data"' in projects
-    assert "href=\"{{ url_for('discoveryagent_data', open_data_picker='1') }}\"" in projects
+    assert "href=\"{{ url_for('discoveryagent_data', open_data_picker='1', project_draft='1') }}\"" in projects
     assert "Click anywhere to select data" not in projects
     assert 'aria-label="No data selected. Click to select data."' in projects
     assert "Click to select data" in projects
     assert "No data available" not in projects
     assert "Add data to DiscoveryAgent" not in projects
     assert "to use it in a project." not in projects
-    assert "url_for('discoveryagent_data', open_data_picker='1')" in projects
+    assert "url_for('discoveryagent_data', open_data_picker='1', project_draft='1')" in projects
     assert "INPUT DATA" not in projects and "Open Data Library" not in projects
     assert "Open Data Folder" not in projects and "Copy path" not in projects
     assert "data_sources', JSON.stringify(selectedDataSources)" in script
@@ -804,7 +827,7 @@ def test_data_route_renders_dedicated_page_and_api_exposes_lazy_tree(monkeypatch
     assert page.status_code == 200
     assert b'id="data-library-title">Data</h1>' in page.data
     header_start = page.data.index(b'<header class="v2-app-page-header v2-data-library-header">')
-    description_start = page.data.index(b"Add folders once, then choose which projects can access them. Files stay in their original locations.", header_start)
+    description_start = page.data.index(b"Add files or folders once, then choose which projects can access them. Data stays in its original location.", header_start)
     header_end = page.data.index(b"</header>", description_start)
     content_start = page.data.index(b'id="data-library-content"', header_end)
     box_start = page.data.index(b'id="data-library-box"', content_start)
@@ -814,6 +837,8 @@ def test_data_route_renders_dedicated_page_and_api_exposes_lazy_tree(monkeypatch
     assert b'class="v2-data-library-header-row"' not in page.data
     assert b'class="v2-app-page-action v2-sticky-action-tray" id="data-library-primary-action" hidden' in page.data
     assert b'class="v2-btn v2-btn-primary v2-data-library-add-btn" id="data-library-add"' in page.data
+    assert b'id="data-library-return-project-draft"' in page.data
+    assert b'href="/projects?resume_project_draft=1" hidden>Back to project draft</a>' in page.data
     assert page.data.count(b'id="data-library-add"') == 1
     assert b'id="data-library-box"' in page.data
     assert b'class="v2-dropzone v2-data-empty-state v2-data-library-empty"' in page.data
@@ -831,7 +856,7 @@ def test_data_route_renders_dedicated_page_and_api_exposes_lazy_tree(monkeypatch
     modal_add = projects_page.data[projects_page.data.index(b'id="np-data-library-add-data"') - 100:
                                    projects_page.data.index(b'id="np-data-library-add-data"') + 260]
     assert b'<a class="v2-data-action"' in modal_add
-    assert b'href="/data?open_data_picker=1"' in modal_add
+    assert b'href="/data?open_data_picker=1&amp;project_draft=1"' in modal_add
     assert b'Add Data' in modal_add and b'&#8599;' in modal_add
     assert b'id="data-library-box"' not in projects_page.data
     assert b'aria-current="page">Projects</a>' in projects_page.data
@@ -965,28 +990,30 @@ def test_all_duplicate_picker_batch_performs_no_registry_write(monkeypatch, tmp_
     assert data_library.registry_path().read_bytes() == before
 
 
-def test_native_picker_reports_invalid_peer_without_discarding_valid_folder(monkeypatch, tmp_path):
+def test_native_picker_reports_invalid_peer_without_discarding_valid_sources(monkeypatch, tmp_path):
     configure_roots(monkeypatch, tmp_path)
     valid = source_folder(tmp_path, "valid")
-    invalid_file = tmp_path / "not-a-folder.csv"
-    invalid_file.write_text("x", encoding="utf-8")
+    valid_file = tmp_path / "single-file.csv"
+    valid_file.write_text("x", encoding="utf-8")
+    unavailable = tmp_path / "missing.csv"
     client = authenticated_client()
     monkeypatch.setattr(app_module, "_v2_data_library_picker_command", fake_picker_command)
     monkeypatch.setattr(app_module.subprocess, "run", picker_result_process(
-        json.dumps({"status": "selected", "paths": [str(valid), str(invalid_file)]})
+        json.dumps({"status": "selected", "paths": [str(valid), str(valid_file), str(unavailable)]})
     ))
     response = client.post("/api/data-library/choose")
 
     payload = response.get_json()
     assert response.status_code == 201
-    assert [item["source_path"] for item in payload["added"]] == [str(valid)]
+    assert [item["source_path"] for item in payload["added"]] == [str(valid), str(valid_file)]
+    assert [item["kind"] for item in payload["added"]] == ["directory", "file"]
     assert payload["rejected"] == [{
-        "selection_index": 1,
-        "path": str(invalid_file),
-        "code": "data_source_not_directory",
-        "error": f"The selected path is not a folder: {invalid_file}.",
+        "selection_index": 2,
+        "path": str(unavailable),
+        "code": "data_source_unavailable",
+        "error": f"The data source is unavailable: {unavailable}.",
     }]
-    assert len(data_library.list_sources()) == 1
+    assert len(data_library.list_sources()) == 2
 
 
 def test_native_picker_cancel_is_distinct_and_never_mutates_registry(monkeypatch, tmp_path):
@@ -1118,7 +1145,7 @@ def test_native_picker_readiness_failure_is_clear_and_never_registers_data(monke
     assert response.get_json() == {
         "success": False,
         "code": "native_picker_not_ready",
-        "error": "The folder chooser could not become ready for input. No data folders were added.",
+        "error": "The data chooser could not become ready for input. No data sources were added.",
     }
     assert data_library.list_sources() == []
 

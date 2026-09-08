@@ -182,21 +182,32 @@
 
         function renderSource(entry) {
             const source = getSource(entry);
-            const item = node('li', 'v2-data-source' + (options.sourceClass ? ' ' + options.sourceClass : ''));
+            const sourceIsFile = source.kind === 'file';
+            const item = node('li', 'v2-data-source' + (sourceIsFile ? ' v2-data-source-file' : '') +
+                (options.sourceClass ? ' ' + options.sourceClass : ''));
             if (source.id != null) item.dataset.datasetId = source.id;
             item.setAttribute('role', 'treeitem');
-            item.setAttribute('aria-expanded', 'false');
+            if (!sourceIsFile) item.setAttribute('aria-expanded', 'false');
             const row = node('div', 'v2-data-source-row');
             row.style.setProperty('--v2-data-tree-indent', '0px');
-            const disclosure = node('button', 'v2-data-source-disclosure');
-            disclosure.type = 'button';
-            disclosure.setAttribute('aria-expanded', 'false');
-            disclosure.setAttribute('aria-label', 'Expand ' + source.display_name);
-            disclosure.append(glyph('chevron'));
-            row.appendChild(disclosure);
+            let disclosure = null;
+            if (sourceIsFile) {
+                row.appendChild(node('span', 'v2-data-tree-chevron-spacer'));
+            } else {
+                disclosure = node('button', 'v2-data-source-disclosure');
+                disclosure.type = 'button';
+                disclosure.setAttribute('aria-expanded', 'false');
+                disclosure.setAttribute('aria-label', 'Expand ' + source.display_name);
+                disclosure.append(glyph('chevron'));
+                row.appendChild(disclosure);
+            }
             if (selection) row.appendChild(createSelectionCheckbox(entry, '.', source.display_name, source));
-            const sourceSize = sizeCell(null);
-            row.append(glyph('folder'), node('span', 'v2-data-source-name', source.display_name), sourceSize.value);
+            const sourceSize = sourceIsFile ? sizeCell(source.size_bytes) : sizeCell(null);
+            if (sourceIsFile) {
+                row.append(glyph('file'), node('span', 'v2-data-source-name', source.display_name), sourceSize.value);
+            } else {
+                row.append(glyph('folder'), node('span', 'v2-data-source-name', source.display_name), sourceSize.value);
+            }
             labelItemSize(item, source.display_name, sourceSize.label);
 
             if (options.onRemove) {
@@ -215,14 +226,18 @@
                 row.appendChild(remove);
             }
 
-            const tree = node('ul', 'v2-data-tree');
-            tree.hidden = true;
-            tree.setAttribute('role', 'group');
-            wireDirectory(item, row, disclosure, tree, source.display_name, async () => {
-                try { await loadChildren(entry, tree, '.', 0, false, 1); }
-                catch (error) { await handleLoadError('source', error, item, tree, entry); }
-            });
-            item.append(row, tree);
+            if (sourceIsFile) {
+                item.appendChild(row);
+            } else {
+                const tree = node('ul', 'v2-data-tree');
+                tree.hidden = true;
+                tree.setAttribute('role', 'group');
+                wireDirectory(item, row, disclosure, tree, source.display_name, async () => {
+                    try { await loadChildren(entry, tree, '.', 0, false, 1); }
+                    catch (error) { await handleLoadError('source', error, item, tree, entry); }
+                });
+                item.append(row, tree);
+            }
             return item;
         }
 

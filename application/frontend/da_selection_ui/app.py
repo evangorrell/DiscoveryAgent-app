@@ -10080,6 +10080,14 @@ def _v2_project_is_running(project: dict) -> bool:
 
 def _data_library_source_payload(source: dict) -> dict:
     payload = dict(source)
+    source_path = Path(str(source.get('source_path') or ''))
+    payload['kind'] = 'file' if source_path.is_file() else 'directory'
+    payload['size_bytes'] = None
+    if payload['kind'] == 'file':
+        try:
+            payload['size_bytes'] = source_path.stat().st_size
+        except OSError:
+            pass
     payload['projects'] = _data_library_project_references(str(source.get('id') or ''))
     payload['project_count'] = len(payload['projects'])
     return payload
@@ -10121,7 +10129,7 @@ def _data_library_reconcile_missing_sources() -> list[dict]:
 
 @app.route('/data')
 def discoveryagent_data():
-    """App-wide registry of user-supplied, read-only input folders."""
+    """App-wide registry of user-supplied, read-only input files and folders."""
     return render_template(
         'data_library.html', bare_shell=True, page_class='v2-page-data',
         global_nav_active='data',
@@ -10161,13 +10169,13 @@ def api_data_library_add():
 
 @app.route('/api/data-library/choose', methods=['POST'])
 def api_data_library_choose():
-    """Register one foreground native multi-folder picker batch."""
+    """Register one foreground native multi-item picker batch."""
     if not _V2_DATA_LIBRARY_PICKER_LOCK.acquire(blocking=False):
         app.logger.info('Data Library picker request rejected because another picker is active.')
         return jsonify({
             'success': False,
             'code': 'native_picker_busy',
-            'error': 'A folder chooser is already open. Finish or cancel it before trying again.',
+            'error': 'A data chooser is already open. Finish or cancel it before trying again.',
         }), 409
     try:
         return _v2_run_data_library_picker()
@@ -10193,7 +10201,7 @@ def _v2_run_data_library_picker():
         return jsonify({
             'success': False,
             'code': 'native_picker_launch_failed',
-            'error': 'The folder chooser could not be opened. No data folders were added.',
+            'error': 'The data chooser could not be opened. No data sources were added.',
         }), 500
     completed = None
     try:
@@ -10211,14 +10219,14 @@ def _v2_run_data_library_picker():
         return jsonify({
             'success': False,
             'code': 'native_picker_timeout',
-            'error': 'The folder chooser stopped responding. No data folders were added.',
+            'error': 'The data chooser stopped responding. No data sources were added.',
         }), 504
     except OSError:
         app.logger.warning('Data Library picker helper could not be launched.')
         return jsonify({
             'success': False,
             'code': 'native_picker_launch_failed',
-            'error': 'The folder chooser could not be opened. No data folders were added.',
+            'error': 'The data chooser could not be opened. No data sources were added.',
         }), 500
     finally:
         picker_output = _v2_data_library_picker_output(result_path)
@@ -10232,14 +10240,14 @@ def _v2_run_data_library_picker():
         return jsonify({
             'success': False,
             'code': 'native_picker_failed',
-            'error': 'The folder chooser failed. No data folders were added.',
+            'error': 'The data chooser failed. No data sources were added.',
         }), 500
     try:
         picker_result = _v2_parse_data_library_picker_result(picker_output)
         if completed.returncode != 0:
             raise data_library.DataLibraryError(
                 'native_picker_failed',
-                'The folder chooser failed. No data folders were added.',
+                'The data chooser failed. No data sources were added.',
                 500,
             )
         if picker_result['status'] == 'cancelled':
@@ -10271,7 +10279,7 @@ def _v2_run_data_library_picker():
         if completed.returncode != 0 and exc.code == 'native_picker_invalid_result':
             exc = data_library.DataLibraryError(
                 'native_picker_failed',
-                'The folder chooser failed. No data folders were added.',
+                'The data chooser failed. No data sources were added.',
                 500,
             )
         if exc.code == 'native_picker_invalid_result':
@@ -10283,7 +10291,7 @@ def _v2_run_data_library_picker():
         return jsonify({
             'success': False,
             'code': 'data_library_write_failed',
-            'error': 'The selected folders could not be saved. The Data Library was left unchanged.',
+            'error': 'The selected data sources could not be saved. The Data Library was left unchanged.',
         }), 500
 
 
@@ -12220,7 +12228,7 @@ def _v2_data_library_picker_helper_sha256() -> str:
             for chunk in iter(lambda: stream.read(1024 * 1024), b''):
                 digest.update(chunk)
     except OSError as exc:
-        raise RuntimeError('The native folder chooser helper is missing or unreadable.') from exc
+        raise RuntimeError('The native data chooser helper is missing or unreadable.') from exc
     return digest.hexdigest()
 
 
@@ -12231,13 +12239,13 @@ def _v2_data_library_picker_command(
     """Launch the bundled first-class macOS picker through LaunchServices."""
     platform_name = platform_name or sys.platform
     if platform_name != 'darwin':
-        raise RuntimeError('Choosing folders is only supported on macOS.')
+        raise RuntimeError('Choosing data files or folders is only supported on macOS.')
     bundle, executable = _v2_data_library_picker_helper_paths()
     if not bundle.is_dir() or not executable.is_file() or not os.access(executable, os.X_OK):
-        raise RuntimeError('The native folder chooser helper is unavailable.')
+        raise RuntimeError('The native data chooser helper is unavailable.')
     output = Path(result_path)
     if not output.is_absolute():
-        raise RuntimeError('The native folder chooser result path must be absolute.')
+        raise RuntimeError('The native data chooser result path must be absolute.')
     return ['/usr/bin/open', '-W', '-n', str(bundle), '--args', str(output)]
 
 
@@ -12278,25 +12286,25 @@ def _v2_parse_data_library_picker_result(stdout: str | None) -> dict:
     except (TypeError, ValueError) as exc:
         raise data_library.DataLibraryError(
             'native_picker_invalid_result',
-            'The folder chooser returned an invalid result. No data folders were added.',
+            'The data chooser returned an invalid result. No data sources were added.',
             500,
         ) from exc
     if isinstance(value, dict) and value.get('status') == 'error':
         if value.get('code') == 'picker_not_ready':
             raise data_library.DataLibraryError(
                 'native_picker_not_ready',
-                'The folder chooser could not become ready for input. No data folders were added.',
+                'The data chooser could not become ready for input. No data sources were added.',
                 500,
             )
         raise data_library.DataLibraryError(
             'native_picker_failed',
-            'The folder chooser failed. No data folders were added.',
+            'The data chooser failed. No data sources were added.',
             500,
         )
     if not isinstance(value, dict) or value.get('status') not in {'selected', 'cancelled'}:
         raise data_library.DataLibraryError(
             'native_picker_invalid_result',
-            'The folder chooser returned an invalid result. No data folders were added.',
+            'The data chooser returned an invalid result. No data sources were added.',
             500,
         )
     paths = value.get('paths')
@@ -12304,7 +12312,7 @@ def _v2_parse_data_library_picker_result(stdout: str | None) -> dict:
         if paths not in (None, []):
             raise data_library.DataLibraryError(
                 'native_picker_invalid_result',
-                'The folder chooser returned an invalid result. No data folders were added.',
+                'The data chooser returned an invalid result. No data sources were added.',
                 500,
             )
         return {'status': 'cancelled', 'paths': []}
@@ -12314,7 +12322,7 @@ def _v2_parse_data_library_picker_result(stdout: str | None) -> dict:
     ):
         raise data_library.DataLibraryError(
             'native_picker_invalid_result',
-            'The folder chooser returned an invalid result. No data folders were added.',
+            'The data chooser returned an invalid result. No data sources were added.',
             500,
         )
     return {'status': 'selected', 'paths': paths}

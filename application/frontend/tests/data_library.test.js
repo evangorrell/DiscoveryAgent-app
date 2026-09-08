@@ -48,7 +48,7 @@ test('Projects and Data share centered page identity, bounded content, and one t
     assert.match(projectsHeader, /<h1 class="v2-title v2-app-page-title">Projects<\/h1>/);
     assert.match(projectsHeader, /<p class="v2-app-page-description v2-projects-description">Start new investigations or continue work across your existing research projects\.<\/p>/);
     assert.match(dataHeader, /<h1 class="v2-title v2-app-page-title" id="data-library-title">Data<\/h1>/);
-    assert.match(dataHeader, /Add folders once, then choose which projects can access them\. Files stay in their original locations\./);
+    assert.match(dataHeader, /Add files or folders once, then choose which projects can access them\. Data stays in its original location\./);
     assert.ok(projectsContent > projectsTemplate.indexOf('</header>') && projectsAction > projectsContent);
     assert.ok(dataContent > dataTemplate.indexOf('</header>') && dataAction > dataContent);
     assert.equal((projectsTemplate.match(/id="open-new-project"/g) || []).length, 1);
@@ -281,14 +281,14 @@ test('shared folder rows toggle once from row, caret, name, or keyboard while X 
     assert.match(wire, /event\.preventDefault\(\)[\s\S]*return toggle\(\)/);
     assert.match(wire, /setDisclosure\(button, item, opening, name\)/);
     assert.match(sourceRenderer, /remove\.addEventListener\('click',[\s\S]*event\.stopPropagation\(\)[\s\S]*options\.onRemove\(entry, remove\)/s);
-    assert.match(styleSource, /\.v2-data-source-row,\s*\.v2-data-tree-folder-row\s*\{\s*cursor:\s*pointer;\s*\}/s);
+    assert.match(styleSource, /\.v2-data-source:not\(\.v2-data-source-file\) > \.v2-data-source-row,\s*\.v2-data-tree-folder-row\s*\{\s*cursor:\s*pointer;\s*\}/s);
     assert.match(styleSource, /\.v2-data-source:focus-visible > \.v2-data-source-row,[\s\S]*\.v2-data-tree-item:focus-visible > \.v2-data-tree-row/s);
-    assert.match(dataTemplate, /data_tree\.js'\) \}\}\?v=20260822-data-tree-row-geometry-1/);
-    assert.match(projectsTemplate, /data_tree\.js'\) \}\}\?v=20260822-data-tree-row-geometry-1/);
+    assert.match(dataTemplate, /data_tree\.js'\) \}\}\?v=20260908-file-sources-1/);
+    assert.match(projectsTemplate, /data_tree\.js'\) \}\}\?v=20260908-file-sources-1/);
 });
 test('dedicated Data page uses the compact shared Skill dropzone empty state', () => {
     assert.match(dataTemplate, /<h1[^>]*id="data-library-title">Data<\/h1>/);
-    assert.match(dataTemplate, /Add folders once, then choose which projects can access them\. Files stay in their original locations\./);
+    assert.match(dataTemplate, /Add files or folders once, then choose which projects can access them\. Data stays in its original location\./);
     assert.match(dataTemplate, /aria-label="No data added\. Click to add data\."/);
     assert.match(dataTemplate, /class="v2-dropzone-text">No data added<\/span>/);
     assert.match(dataTemplate, /class="v2-dropzone-action">Click to add data<\/span>/);
@@ -503,7 +503,7 @@ test('one-shot modal handoff removes its signal and waits for the rendered Data 
     const wiring = librarySource.slice(librarySource.indexOf("document.addEventListener('DOMContentLoaded'"));
     assert.ok(wiring.indexOf('consumeAutoPickerSignal()') < wiring.indexOf('const initialLoad = load()'));
     assert.ok(wiring.indexOf('const initialLoad = load()') < wiring.indexOf('launchAutoPickerAfterRender(initialLoad)'));
-    assert.match(dataTemplate, /data_library\.js'\) \}\}\?v=20260822-unsaved-size-1/);
+    assert.match(dataTemplate, /data_library\.js'\) \}\}\?v=20260908-data-files-project-draft-1/);
 });
 
 test('populated Project and DiscoveryAgent Data share one renderer and compact geometry', () => {
@@ -576,7 +576,7 @@ test('Create and Edit share one Data card without exposing the physical project 
     assert.match(projectsTemplate, /<button type="button" class="v2-data-action v2-project-data-action" id="np-select-data" hidden>[\s\S]*Select Data[\s\S]*&#8599;/);
     assert.doesNotMatch(projectsTemplate, /Click anywhere to select data|np-selected-data-guidance/);
     assert.match(projectsTemplate, /class="v2-dropzone-action">Click to select data<\/span>/);
-    assert.match(projectsTemplate, /<a class="v2-data-action" id="np-data-library-add-data"\s+href="\{\{ url_for\('discoveryagent_data', open_data_picker='1'\) \}\}">[\s\S]*Add Data[\s\S]*&#8599;/);
+    assert.match(projectsTemplate, /<a class="v2-data-action" id="np-data-library-add-data"\s+href="\{\{ url_for\('discoveryagent_data', open_data_picker='1', project_draft='1'\) \}\}">[\s\S]*Add Data[\s\S]*&#8599;/);
     assert.doesNotMatch(projectsTemplate, />DATA<\/span>|Click to browse DiscoveryAgent Data/);
     assert.doesNotMatch(projectsTemplate, /np-edit-data|np-create-data|INPUT DATA|Open Data Library|Open Data Folder|Copy path/);
     assert.doesNotMatch(projectsSource, /data_folder|renderEditDataFolder|rescanDataFolder|openDataFolder|copyEditDataPath/);

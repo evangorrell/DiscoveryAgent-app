@@ -48,7 +48,7 @@
         dataLibraryBrowser: $('np-data-library-browser'),
         dataLibraryLoading: $('np-data-library-loading'),
         dataLibraryEmpty: $('np-data-library-empty'), dataLibrarySources: $('np-data-library-sources'),
-        dataLibraryError: $('np-data-library-error'),
+        dataLibraryError: $('np-data-library-error'), dataLibraryAdd: $('np-data-library-add-data'),
         deleteOverlay: $('delete-project-overlay'), deleteTitle: $('delete-project-title'),
         deleteDescription: $('delete-project-description'),
         deleteName: $('delete-project-name'), deleteNormalCopy: $('delete-project-normal-copy'),
@@ -81,6 +81,8 @@
     const initialProjectsEmpty = Boolean(
         els.pageRoot && els.pageRoot.dataset.projectsEmpty === 'true'
     );
+    const CREATE_DRAFT_STORAGE_KEY = 'discoveryagent.create-project-draft.v1';
+    const CREATE_DRAFT_VERSION = 1;
 
     function esc(t) { const d = document.createElement('div'); d.textContent = t == null ? '' : String(t); return d.innerHTML; }
     function el(tag, cls, html) { const n = document.createElement(tag); if (cls) n.className = cls; if (html != null) n.innerHTML = html; return n; }
@@ -241,6 +243,11 @@
                 window.history.replaceState({}, '', '/projects');
             }
         }
+        if (pendingCreateDraftRestore) {
+            pendingCreateDraftRestore = false;
+            openCreate();
+            window.history.replaceState({}, '', '/projects');
+        }
     }
 
     function showError(message) {
@@ -300,6 +307,7 @@
     let editingProjectImportedInPlace = false;
     let pendingEditProjectId = null;
     let pendingRecoveryProjectId = null;
+    let pendingCreateDraftRestore = false;
     let selectedDataSources = [];
     let draftDataSources = [];
     let librarySources = [];
@@ -645,6 +653,93 @@
         normalizeDraft(); selectedDataSources = copySelection(draftDataSources);
         renderSelectedDataHierarchy();
         closeDataLibrarySelector({ restoreToProjectData: true });
+    }
+
+    function createProjectDraftState() {
+        const pendingSelection = !els.dataLibraryOverlay.hidden
+            ? draftDataSources
+            : selectedDataSources;
+        return {
+            version: CREATE_DRAFT_VERSION,
+            saved_at: new Date().toISOString(),
+            project_name: els.name.value,
+            research_objective: els.objective.value,
+            project_context: els.context.value,
+            data_sources: normalizeEditableDataSelection(pendingSelection),
+            query_count: els.queryCount.value,
+            deep_research: Boolean(els.deepResearch.checked),
+            web_search: Boolean(els.webSearch.checked),
+            reasoning_model: els.reasoningModel.value,
+            execution_model: els.executionModel.value,
+            project_parent: pendingProjectParent,
+            canonical_default_location: Boolean(pendingCanonicalDefaultLocation),
+            advanced_settings_expanded: els.advancedSettingsToggle.getAttribute('aria-expanded') === 'true',
+        };
+    }
+
+    function saveCreateProjectDraft() {
+        if (modalMode !== 'create') return true;
+        try {
+            window.localStorage.setItem(CREATE_DRAFT_STORAGE_KEY, JSON.stringify(createProjectDraftState()));
+            return true;
+        } catch (_error) {
+            return false;
+        }
+    }
+
+    function readCreateProjectDraft() {
+        try {
+            const raw = window.localStorage.getItem(CREATE_DRAFT_STORAGE_KEY);
+            if (!raw) return null;
+            const draft = JSON.parse(raw);
+            if (!draft || typeof draft !== 'object' || draft.version !== CREATE_DRAFT_VERSION) {
+                window.localStorage.removeItem(CREATE_DRAFT_STORAGE_KEY);
+                return null;
+            }
+            return draft;
+        } catch (_error) {
+            return null;
+        }
+    }
+
+    function clearCreateProjectDraft() {
+        try { window.localStorage.removeItem(CREATE_DRAFT_STORAGE_KEY); }
+        catch (_error) { /* Storage may be unavailable; project creation still succeeded. */ }
+    }
+
+    function selectHasOption(select, value) {
+        return Array.from(select.options || []).some((option) => option.value === value);
+    }
+
+    function applyCreateProjectDraft(draft) {
+        if (!draft) return;
+        els.name.value = typeof draft.project_name === 'string' ? draft.project_name : '';
+        els.objective.value = typeof draft.research_objective === 'string' ? draft.research_objective : '';
+        els.context.value = typeof draft.project_context === 'string' ? draft.project_context : '';
+        if (typeof draft.query_count === 'string') els.queryCount.value = draft.query_count;
+        if (selectHasOption(els.reasoningModel, draft.reasoning_model)) {
+            els.reasoningModel.value = draft.reasoning_model;
+        }
+        if (selectHasOption(els.executionModel, draft.execution_model)) {
+            els.executionModel.value = draft.execution_model;
+        }
+        els.deepResearch.checked = draft.deep_research !== false;
+        els.webSearch.checked = draft.web_search !== false;
+        if (typeof draft.project_parent === 'string' && draft.project_parent.trim()) {
+            pendingProjectParent = draft.project_parent;
+        }
+        pendingCanonicalDefaultLocation = draft.canonical_default_location === true;
+        selectedDataSources = normalizeEditableDataSelection(draft.data_sources);
+        draftDataSources = copySelection(selectedDataSources);
+        setAdvancedSettingsExpanded(draft.advanced_settings_expanded === true);
+    }
+
+    function preserveCreateDraftBeforeAddingData(event) {
+        if (modalMode !== 'create') return;
+        if (saveCreateProjectDraft()) return;
+        event.preventDefault();
+        els.dataLibraryError.textContent = 'The project draft could not be saved in this browser. Your form is still open and no data was changed.';
+        els.dataLibraryError.hidden = false;
     }
 
     function applyMode() {
@@ -1229,6 +1324,7 @@
     }
 
     function openCreate() {
+        const savedDraft = readCreateProjectDraft();
         modalMode = 'create'; editingProjectId = null; persistedEditSnapshot = null; importInvoker = null; importPreviewToken = '';
         editingProjectImportedInPlace = false;
         els.form.reset();
@@ -1244,7 +1340,10 @@
         currentProjectRoot = ''; currentProjectParent = ''; projectLocationAvailable = true;
         projectHasActiveRound = false; renderProjectLocation();
         selectedDataSources = [];
+        draftDataSources = [];
         librarySources = [];
+        applyCreateProjectDraft(savedDraft);
+        renderProjectLocation();
         renderSelectedDataHierarchy();
         resetSubmitState();
         setFormError(null);
@@ -1658,6 +1757,9 @@
                 return true;
             }
 
+            // The create request committed successfully even if a malformed
+            // response leaves this browser unable to navigate afterward.
+            clearCreateProjectDraft();
             if (typeof data.projects_url !== 'string' || !data.projects_url) {
                 setFormError('The project was created, but DiscoveryAgent could not return to Projects. Reload this page to continue.');
                 resetSubmitState();
@@ -1802,6 +1904,7 @@
         const initialParams = new URLSearchParams(window.location.search);
         pendingEditProjectId = initialParams.get('edit');
         pendingRecoveryProjectId = initialParams.get('recover');
+        pendingCreateDraftRestore = initialParams.get('resume_project_draft') === '1';
         if (els.openBtn) els.openBtn.addEventListener('click', openCreate);
         if (els.importBtn) els.importBtn.addEventListener('click', (event) => chooseImportProject(event.currentTarget));
         if (els.importEmptyBtn) els.importEmptyBtn.addEventListener('click', (event) => chooseImportProject(event.currentTarget));
@@ -1893,6 +1996,7 @@
         els.selectedDataEmptySelect.addEventListener('click', openDataLibrarySelector);
         els.dataLibraryCancel.addEventListener('click', closeDataLibrarySelector);
         els.dataLibrarySave.addEventListener('click', saveSelectedData);
+        els.dataLibraryAdd.addEventListener('click', preserveCreateDraftBeforeAddingData);
         els.dataLibraryOverlay.addEventListener('mousedown', (e) => {
             if (e.target === els.dataLibraryOverlay) closeDataLibrarySelector();
         });
