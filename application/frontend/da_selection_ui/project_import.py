@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import stat
 from pathlib import Path
@@ -17,6 +18,7 @@ from typing import Any
 
 MAX_METADATA_BYTES = 256 * 1024
 MAX_FIELD_CHARS = 20_000
+MAX_SPLIT_LAYOUT_ENTRIES = 2_048
 
 # Earlier HPC layouts placed ``checkpoints`` directly beneath the selected
 # project root.  Current local projects nest it beneath ``checkpoint``.
@@ -46,6 +48,67 @@ _YAML_SCALAR = re.compile(r"^(dataset_name|task_description):[ \t]*(.*)$")
 
 class ProjectImportMetadataError(ValueError):
     """A recognized metadata file exists but cannot be inspected safely."""
+
+
+def _split_layout(root: Path) -> dict[str, Path] | None:
+    """Recognize one historical ``code_<run>``/``logs_<run>`` sibling pair.
+
+    Some archived HPC exports preserve the backend's two output roots beneath
+    one bundle directory instead of renaming them to ``code`` and
+    ``checkpoint``.  Inspect only immediate children and require matching,
+    unique suffixes so unrelated folders are never guessed into a project.
+    """
+    if any(
+        _recognized_directory(root, relative) is not None
+        for relative in (Path("code"), Path("checkpoint"), Path("checkpoints"))
+    ):
+        return None
+    code_roots: dict[str, Path] = {}
+    log_roots: dict[str, Path] = {}
+    try:
+        with os.scandir(root) as entries:
+            for index, entry in enumerate(entries, start=1):
+                if index > MAX_SPLIT_LAYOUT_ENTRIES:
+                    raise ProjectImportMetadataError(
+                        "DiscoveryAgent cannot inspect a split legacy project with "
+                        f"more than {MAX_SPLIT_LAYOUT_ENTRIES} top-level entries."
+                    )
+                name = entry.name
+                if name.startswith("code_"):
+                    collection, suffix = code_roots, name.removeprefix("code_")
+                elif name.startswith("logs_"):
+                    collection, suffix = log_roots, name.removeprefix("logs_")
+                else:
+                    continue
+                if not suffix or not entry.is_dir(follow_symlinks=False):
+                    continue
+                collection[suffix] = Path(entry.path)
+    except ProjectImportMetadataError:
+        raise
+    except OSError as exc:
+        raise ProjectImportMetadataError(
+            "DiscoveryAgent could not inspect the selected project's top-level layout."
+        ) from exc
+
+    pairs: list[dict[str, Path]] = []
+    for suffix in sorted(code_roots.keys() & log_roots.keys()):
+        code_dir = code_roots[suffix]
+        logs_dir = log_roots[suffix]
+        checkpoint_dir = _recognized_directory(
+            root, logs_dir.relative_to(root) / "checkpoints" / "round_0"
+        )
+        if checkpoint_dir is None:
+            continue
+        pairs.append({
+            "code_dir": code_dir,
+            "logs_dir": logs_dir,
+            "checkpoint_dir": checkpoint_dir,
+        })
+    if len(pairs) > 1:
+        raise ProjectImportMetadataError(
+            "Multiple matching code/log run pairs were found; select a folder containing one archived run."
+        )
+    return pairs[0] if pairs else None
 
 
 def _candidate_without_symlinks(root: Path, relative: Path) -> Path | None:
@@ -216,6 +279,7 @@ def _resolve_field(
 def inspect_project_metadata(root: Path) -> dict[str, Any]:
     """Return safe Create-form suggestions without changing ``root``."""
     root = Path(root)
+    split = _split_layout(root)
     values: dict[str, list[tuple[str, str]]] = {
         "project_name": [],
         "task_description": [],
@@ -252,10 +316,56 @@ def inspect_project_metadata(root: Path) -> dict[str, Any]:
         context = _context_from_readme(text)
         if context is not None:
             values["dataset_context"].append((relative.as_posix(), context))
+    if split is not None:
+        split_code = split["code_dir"].relative_to(root)
+        split_logs = split["logs_dir"].relative_to(root)
+        split_json_configs = (
+            split_logs / "checkpoints" / "round_0" / "config.json",
+        )
+        split_yaml_configs = (
+            split_logs / "checkpoints" / "config.yaml",
+            split_logs / "checkpoints" / "config.yml",
+        )
+        split_context_files = (
+            split_code / "data" / "README.md",
+            split_code / "data" / "README.txt",
+            split_code / "README.md",
+            split_code / "README.txt",
+        )
+        for relative in split_json_configs:
+            text = _read_recognized_text(root, relative)
+            record_candidate(relative, text)
+            if text is None:
+                continue
+            recognized.append(relative.as_posix())
+            for field, value in _json_fields(text, relative).items():
+                values[field].append((relative.as_posix(), value))
+        for relative in split_yaml_configs:
+            text = _read_recognized_text(root, relative)
+            record_candidate(relative, text)
+            if text is None:
+                continue
+            recognized.append(relative.as_posix())
+            for field, value in _yaml_fields(text).items():
+                values[field].append((relative.as_posix(), value))
+        for relative in split_context_files:
+            text = _read_recognized_text(root, relative)
+            record_candidate(relative, text)
+            if text is None:
+                continue
+            recognized.append(relative.as_posix())
+            context = _context_from_readme(text)
+            if context is not None:
+                values["dataset_context"].append((relative.as_posix(), context))
     for relative in RECOGNIZED_LAYOUT_DIRS:
         directory = _recognized_directory(root, relative)
         metadata_digest.update(relative.as_posix().encode("utf-8"))
         metadata_digest.update(b"\x00" if directory is None else b"\x02")
+    if split is not None:
+        for key in ("code_dir", "logs_dir", "checkpoint_dir"):
+            relative = split[key].relative_to(root)
+            metadata_digest.update(relative.as_posix().encode("utf-8"))
+            metadata_digest.update(b"\x02")
 
     warnings: list[str] = []
     project_name = _resolve_field("project_name", values["project_name"], warnings)
@@ -278,7 +388,13 @@ def inspect_project_metadata(root: Path) -> dict[str, Any]:
 def recognized_layout(root: Path) -> dict[str, Path | None]:
     """Choose existing canonical subpaths without walking project contents."""
     root = Path(root)
-    code_dir = root / "code"
+    split = _split_layout(root)
+    canonical_code_dir = root / "code"
+    code_dir = (
+        canonical_code_dir
+        if _recognized_directory(root, Path("code")) is not None or split is None
+        else split["code_dir"]
+    )
     data_dir = code_dir / "data"
     checkpoint_candidates = (
         Path("checkpoint/checkpoints/round_0"),
@@ -292,10 +408,21 @@ def recognized_layout(root: Path) -> dict[str, Path | None]:
         ),
         None,
     )
+    if checkpoint_dir is None and split is not None:
+        checkpoint_dir = split["checkpoint_dir"]
+    context_files = list(RECOGNIZED_CONTEXT_FILES)
+    if split is not None and code_dir == split["code_dir"]:
+        split_code = split["code_dir"].relative_to(root)
+        context_files = [
+            split_code / "data" / "README.md",
+            split_code / "data" / "README.txt",
+            split_code / "README.md",
+            split_code / "README.txt",
+        ]
     readme_path = next(
         (
             candidate
-            for relative in RECOGNIZED_CONTEXT_FILES
+            for relative in context_files
             if (candidate := _candidate_without_symlinks(root, relative)) is not None
         ),
         None,
