@@ -154,6 +154,40 @@ def test_figures_prefix_resolves_three_captions_in_full_and_summary_and_serves(
         assert (fixture["round_dir"] / name).read_bytes() == original
 
 
+def test_reports_figures_prefix_from_archived_runs_resolves_and_serves(
+    monkeypatch, tmp_path
+):
+    fixture = _figures_project(monkeypatch, tmp_path)
+    reference = "reports/figures/relay_summary.png"
+    archived_figure = fixture["code"] / reference
+    archived_figure.parent.mkdir(parents=True, exist_ok=True)
+    archived_figure.write_bytes(b"archived-relay-summary")
+    (fixture["round_dir"] / "memory_report.md").write_text(
+        f"# Memory Report\n\n![Relay summary]({reference})\n",
+        encoding="utf-8",
+    )
+    _clear_artifact_cache()
+
+    client = _authenticated_client()
+    response = client.get(
+        "/api/round_workspace_markdown",
+        query_string={"round": 0, "path": "memory_report.md"},
+    )
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["display_text"] == (
+        "# Memory Report\n\n![Relay summary](rw-report-figure:rw_fig_0)\n"
+    )
+    assert payload["figures"][0]["available"] is True
+    served = client.get(payload["figures"][0]["url"])
+    assert served.status_code == 200
+    assert served.data == b"archived-relay-summary"
+
+    with app_module.app.test_request_context("/"):
+        output = _execution_output(app_module._round_workspace_artifact_registry(0))
+        assert output["files"][reference]["target"] == archived_figure.resolve()
+
+
 @pytest.mark.parametrize(
     "layout",
     [
