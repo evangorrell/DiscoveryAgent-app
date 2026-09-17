@@ -154,6 +154,91 @@ def test_figures_prefix_resolves_three_captions_in_full_and_summary_and_serves(
         assert (fixture["round_dir"] / name).read_bytes() == original
 
 
+def test_bare_code_root_pdf_is_resolved_and_served_as_report_media(
+    monkeypatch, tmp_path
+):
+    fixture = _figures_project(monkeypatch, tmp_path)
+    pdf = fixture["code"] / "polarization_over_time.pdf"
+    pdf.write_bytes(b"%PDF-1.4\ntrusted-figure\n")
+    markdown = "# Memory\n\n![Polarization over time](polarization_over_time.pdf)\n"
+    for name in fixture["reports"]:
+        (fixture["round_dir"] / name).write_text(markdown, encoding="utf-8")
+    _clear_artifact_cache()
+
+    client = _authenticated_client()
+    for report_name in fixture["reports"]:
+        response = client.get(
+            "/api/round_workspace_markdown",
+            query_string={"round": 0, "path": report_name},
+        )
+        assert response.status_code == 200
+        payload = response.get_json()
+        assert payload["display_text"].count("rw-report-figure:rw_fig_0") == 1
+        assert payload["figures"] == [{
+            "token": "rw_fig_0",
+            "alt": "Polarization over time",
+            "available": True,
+            "url": payload["figures"][0]["url"],
+            "media_type": "pdf",
+        }]
+        served = client.get(payload["figures"][0]["url"])
+        assert served.status_code == 200
+        assert served.data == pdf.read_bytes()
+        assert served.content_type.startswith("application/pdf")
+
+    with app_module.app.test_request_context("/"):
+        output = _execution_output(app_module._round_workspace_artifact_registry(0))
+    assert output["files"][pdf.name]["target"] == pdf.resolve()
+
+
+def test_missing_or_escaped_bare_pdf_is_inert_and_does_not_guess(
+    monkeypatch, tmp_path
+):
+    fixture = _figures_project(monkeypatch, tmp_path)
+    outside = tmp_path / "outside.pdf"
+    outside.write_bytes(b"private-pdf")
+    (fixture["code"] / "escaped.pdf").symlink_to(outside)
+    markdown = (
+        "![Missing PDF](not_generated.pdf)\n\n"
+        "![Escaped PDF](escaped.pdf)"
+    )
+    for name in fixture["reports"]:
+        (fixture["round_dir"] / name).write_text(markdown, encoding="utf-8")
+    _clear_artifact_cache()
+
+    response = _authenticated_client().get(
+        "/api/round_workspace_markdown",
+        query_string={"round": 0, "path": "memory_report.md"},
+    )
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["figures"] == [
+        {
+            "token": "rw_fig_0",
+            "alt": "Missing PDF",
+            "available": False,
+            "url": None,
+            "media_type": "pdf",
+        },
+        {
+            "token": "rw_fig_1",
+            "alt": "Escaped PDF",
+            "available": False,
+            "url": None,
+            "media_type": "pdf",
+        },
+    ]
+    assert "not_generated.pdf" not in payload["display_text"]
+    assert "escaped.pdf" not in payload["display_text"]
+    assert str(outside) not in json.dumps(payload)
+    with app_module.app.test_request_context("/"):
+        registry = app_module._round_workspace_artifact_registry(0)
+    assert not any(
+        "escaped.pdf" in (source.get("files") or {})
+        for source in registry.values()
+    )
+
+
 @pytest.mark.parametrize(
     "layout",
     [

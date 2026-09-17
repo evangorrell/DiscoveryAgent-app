@@ -14607,6 +14607,9 @@ ROUND_WORKSPACE_HIDDEN_DIRS = {
 ROUND_WORKSPACE_FIGURE_EXTENSIONS = {
     '.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.tif', '.tiff',
 }
+ROUND_WORKSPACE_REPORT_MEDIA_EXTENSIONS = (
+    ROUND_WORKSPACE_FIGURE_EXTENSIONS | {'.pdf'}
+)
 ROUND_WORKSPACE_SCIENTIFIC_OUTPUT_ROOTS = {
     'figures', 'figure', 'images', 'visualizations', 'visualization',
     'outputs', 'output', 'results', 'result',
@@ -14614,9 +14617,7 @@ ROUND_WORKSPACE_SCIENTIFIC_OUTPUT_ROOTS = {
 ROUND_WORKSPACE_TECHNICAL_EXTENSIONS = {
     '.py', '.r', '.js', '.ts', '.sh', '.sql', '.yaml', '.yml', '.tex', '.log', '.jsonl',
 }
-ROUND_WORKSPACE_EXTERNAL_ARTIFACT_EXTENSIONS = (
-    ROUND_WORKSPACE_FIGURE_EXTENSIONS | {'.pdf'}
-)
+ROUND_WORKSPACE_EXTERNAL_ARTIFACT_EXTENSIONS = ROUND_WORKSPACE_REPORT_MEDIA_EXTENSIONS
 ROUND_WORKSPACE_CODE_REFERENCE_ROOTS = {
     'outputs',
     'analysis_output',
@@ -14772,6 +14773,9 @@ def _round_workspace_reference_strings(round_dir: Path) -> set[str]:
         rf'(?P<path>(?:/[^\s`"\'<>()\[\]]+|(?:{relative_roots})/[^\s`"\'<>()\[\]]+)\.(?:{suffixes}))',
         re.IGNORECASE,
     )
+    markdown_image_pattern = re.compile(
+        r'!\[[^\]\r\n]*\]\(\s*(?P<dest><[^>\r\n]+>|[^\s)\r\n]+)',
+    )
 
     candidates: list[Path] = []
     try:
@@ -14788,6 +14792,22 @@ def _round_workspace_reference_strings(round_dir: Path) -> set[str]:
             continue
         for match in pattern.finditer(text):
             references.add(match.group('path').rstrip('.,;:'))
+        # A report is written from the project code directory, so a one-part
+        # Markdown destination such as ``plot.pdf`` names a file at that code
+        # root rather than beside the persisted report in round_N. Keep this
+        # compatibility path scoped to actual Markdown images and approved
+        # media extensions; arbitrary bare filenames in prose are not exposed.
+        for match in markdown_image_pattern.finditer(text):
+            destination = match.group('dest')
+            if destination.startswith('<') and destination.endswith('>'):
+                destination = destination[1:-1]
+            relative = _round_workspace_safe_relative(destination)
+            if (
+                relative is not None
+                and len(relative.parts) == 1
+                and relative.suffix.lower() in ROUND_WORKSPACE_REPORT_MEDIA_EXTENSIONS
+            ):
+                references.add(relative.as_posix())
     return references
 
 
@@ -14919,6 +14939,10 @@ def _build_round_workspace_artifact_registry(round_index: int) -> dict[str, dict
             if relative is None:
                 continue
             if relative.parts[0].lower() in ROUND_WORKSPACE_CODE_REFERENCE_ROOTS:
+                source_root, display, target_files = code_root, relative, output_files
+            elif len(relative.parts) == 1:
+                # Legacy/local agents often saved a figure directly in their
+                # working directory and persisted only its basename.
                 source_root, display, target_files = code_root, relative, output_files
             elif relative.parts[0].lower() == 'images':
                 source_root, display, target_files = run_root, PurePosixPath('logs') / relative, run_files
@@ -21338,7 +21362,7 @@ def _prepare_round_workspace_report_figures(
         raw_dest = match.group('dest')
         dest = raw_dest[1:-1] if raw_dest.startswith('<') and raw_dest.endswith('>') else raw_dest
         suffix = PurePosixPath(dest).suffix.lower()
-        if suffix == '.pdf' or suffix not in ROUND_WORKSPACE_FIGURE_EXTENSIONS:
+        if suffix not in ROUND_WORKSPACE_REPORT_MEDIA_EXTENSIONS:
             return match.group(0)
 
         dest_path = PurePosixPath(dest.replace('\\', '/'))
@@ -21424,6 +21448,10 @@ def _prepare_round_workspace_report_figures(
                 or any(marker in lowered for marker in (
                     '/outputs/', '/analysis_output/', '/images/',
                 ))
+                or (
+                    not PurePosixPath(lowered).is_absolute()
+                    and len(PurePosixPath(lowered).parts) == 1
+                )
             )
         )
         if resolved_url is None and not trusted_missing:
@@ -21438,6 +21466,8 @@ def _prepare_round_workspace_report_figures(
             'available': resolved_url is not None,
             'url': resolved_url,
         }
+        if suffix == '.pdf':
+            descriptor['media_type'] = 'pdf'
         if include_context:
             descriptor['context'] = resolved_context
         figures.append(descriptor)

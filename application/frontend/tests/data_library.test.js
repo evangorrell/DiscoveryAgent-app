@@ -78,7 +78,7 @@ test('Projects and Data share centered page identity, bounded content, and one t
     assert.doesNotMatch(styleSource.slice(styleSource.indexOf('.v2-app-page {'), styleSource.indexOf('/* ---- Project list ---- */')), /min-height:/);
     assert.match(projectsTemplate, /app_page_action\.js'\) \}\}\?v=20260822-sticky-action-tray-1/);
     assert.match(dataTemplate, /app_page_action\.js'\) \}\}\?v=20260822-sticky-action-tray-1/);
-    assert.match(baseTemplate, /style\.css'\) \}\}\?v=20260908-round-launch-settings-1/);
+    assert.match(baseTemplate, /style\.css'\) \}\}\?v=20260909-report-pdf-figures-1/);
 });
 
 test('Data keeps the empty dropzone as its sole empty action and shows one solid action after populated content', () => {

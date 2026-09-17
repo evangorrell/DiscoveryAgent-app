@@ -3087,6 +3087,8 @@ body.v2 .hs-welcome-heading {
 .rw-figure-resize-shell>figure{box-sizing:border-box;width:100%;max-width:100%;margin:0;text-align:center}
 .rw-figure-image-stage{position:relative;width:100%;max-width:100%}
 .rw-figure-image-stage>img{display:block;box-sizing:border-box;width:100%;max-width:100%;height:auto;margin:0 auto;padding:0;object-fit:contain}
+.rw-figure-image-stage>.rw-report-pdf{display:block;box-sizing:border-box;width:100%;height:clamp(360px,70vh,900px);border:1px solid var(--v2-border);border-radius:8px;background:#fff}
+.rw-report-pdf-placeholder{min-height:360px}
 .rw-figure-resize-handle{position:absolute;right:-10px;bottom:-10px;display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;padding:0;border:0;border-radius:0;background:transparent;color:var(--v2-muted);box-shadow:none;cursor:nwse-resize;touch-action:none;user-select:none}
 .rw-figure-resize-handle:hover,.rw-figure-resize-handle:focus-visible,.rw-figure-resize-shell.is-resizing .rw-figure-resize-handle{color:var(--v2-accent);outline:none}
 .rw-figure-resize-icon{position:relative;display:block;width:10px;height:10px}

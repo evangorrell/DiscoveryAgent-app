@@ -325,7 +325,7 @@ test('Advanced Settings and model select keep comfortable chevron insets without
     assert.match(advancedControlCss, /:disabled/);
     assert.equal((template.match(/class="v2-input v2-advanced-control/g) || []).length, 3);
     assert.match(style, /\.v2-advanced-model-field > \.v2-field-help\s*\{[^}]*margin-bottom:\s*10px/s);
-    assert.match(baseTemplate, /style\.css'\) \}\}\?v=20260908-round-launch-settings-1/);
+    assert.match(baseTemplate, /style\.css'\) \}\}\?v=20260909-report-pdf-figures-1/);
     assert.match(template, /projects\.js'\) \}\}\?v=20260908-data-files-project-draft-1/);
 });
 
