@@ -11,10 +11,13 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from da_selection_ui import app as app_module
+import pytest
+
 from da_selection_ui.project_import import (
     MAX_METADATA_BYTES,
     ProjectImportMetadataError,
     inspect_project_metadata,
+    recognized_layout,
 )
 
 
@@ -86,6 +89,31 @@ def _legacy_root(tmp_path: Path) -> tuple[Path, dict[Path, bytes]]:
     return root, files
 
 
+def _split_legacy_root(tmp_path: Path) -> Path:
+    root = tmp_path / "archived-run-bundle"
+    suffix = "study_20260213_120509"
+    code = root / f"code_{suffix}"
+    checkpoints = root / f"logs_{suffix}" / "checkpoints"
+    round_zero = checkpoints / "round_0"
+    (code / "data").mkdir(parents=True)
+    (code / "reports" / "figures").mkdir(parents=True)
+    round_zero.mkdir(parents=True)
+    (code / "data" / "README.txt").write_text(
+        "# Data overview\n\nExample perturbation dataset.\n",
+        encoding="utf-8",
+    )
+    (code / "analysis.py").write_text("print('analysis')\n", encoding="utf-8")
+    (code / "reports" / "figures" / "relay.png").write_bytes(b"figure")
+    (checkpoints / "config.yaml").write_text(
+        "dataset_name: Archived study\nworking_directory: /stale/hpc/code\n",
+        encoding="utf-8",
+    )
+    (round_zero / "memory_report.md").write_text(
+        "# Accumulated findings\n", encoding="utf-8",
+    )
+    return root
+
+
 def _tree_snapshot(root: Path) -> dict[str, tuple]:
     """Capture names, kinds, modes, targets, and exact regular-file bytes."""
     snapshot: dict[str, tuple] = {}
@@ -131,6 +159,82 @@ def test_bounded_metadata_prepopulation_and_conflicts(tmp_path):
     assert empty["task_description"] == ""
     assert empty["dataset_context"] == ""
 
+
+def test_split_hpc_bundle_is_recognized_and_imported_in_place(tmp_path):
+    client = _client()
+    root = _split_legacy_root(tmp_path)
+    suffix = "study_20260213_120509"
+    code = root / f"code_{suffix}"
+    round_zero = root / f"logs_{suffix}" / "checkpoints" / "round_0"
+
+    metadata = inspect_project_metadata(root)
+    assert metadata["project_name"] == "Archived study"
+    assert metadata["dataset_context"] == (
+        "Example perturbation dataset."
+    )
+    assert metadata["recognized_files"] == [
+        f"logs_{suffix}/checkpoints/config.yaml",
+        f"code_{suffix}/data/README.txt",
+    ]
+    layout = recognized_layout(root)
+    assert layout == {
+        "code_dir": code,
+        "data_dir": code / "data",
+        "checkpoint_dir": round_zero,
+        "readme_path": code / "data" / "README.txt",
+    }
+
+    response = client.post(
+        "/api/projects/import",
+        data=_form(
+            client,
+            root,
+            project_name="Archived study",
+            dataset_context=metadata["dataset_context"],
+        ),
+    )
+    assert response.status_code == 200, response.get_data(as_text=True)
+    record = app_module._v2_get_project(response.get_json()["project_id"])
+    assert Path(record["code_dir"]) == code
+    assert Path(record["data_dir"]) == code / "data"
+    assert Path(record["checkpoint_dir"]) == round_zero
+    assert Path(record["readme_path"]) == code / "data" / "README.txt"
+    assert (round_zero / "config.json").is_file()
+    code_response = client.get(
+        "/api/round_workspace_code_artifact",
+        query_string={"path": "analysis.py"},
+    )
+    assert code_response.status_code == 200
+    assert code_response.data == b"print('analysis')\n"
+
+
+
+def test_split_layout_rejects_multiple_runs(tmp_path):
+    root = _split_legacy_root(tmp_path)
+    (root / "code_other").mkdir()
+    (root / "logs_other/checkpoints/round_0").mkdir(parents=True)
+    with pytest.raises(ProjectImportMetadataError, match="Multiple matching"):
+        inspect_project_metadata(root)
+    with pytest.raises(ProjectImportMetadataError, match="Multiple matching"):
+        recognized_layout(root)
+
+
+def test_canonical_layout_does_not_borrow_archived_checkpoints(tmp_path):
+    root = _split_legacy_root(tmp_path)
+    (root / "code").mkdir()
+    layout = recognized_layout(root)
+    assert layout["code_dir"] == root / "code"
+    assert layout["checkpoint_dir"] is None
+    assert inspect_project_metadata(root)["recognized_files"] == []
+
+
+def test_split_layout_does_not_follow_symlinked_code(tmp_path):
+    root = tmp_path / "bundle"
+    (root / "logs_study/checkpoints/round_0").mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (root / "code_study").symlink_to(outside, target_is_directory=True)
+    assert recognized_layout(root)["checkpoint_dir"] is None
 
 
 def test_changed_preview_and_malformed_registry_fail_closed(tmp_path):

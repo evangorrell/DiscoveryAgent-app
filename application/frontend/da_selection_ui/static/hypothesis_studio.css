@@ -1830,3 +1830,6 @@
     }
     .hs-welcome-actions { flex-wrap: wrap; }
 }
+.hs-inline-figure { display: block; margin: 16px 0; }
+.hs-inline-figure img { display: block; max-width: 100%; height: auto; border-radius: 4px; }
+.hs-figure-unavailable { color: #777; font-size: 0.9em; }

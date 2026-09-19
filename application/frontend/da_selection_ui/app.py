@@ -14590,6 +14590,7 @@ ROUND_WORKSPACE_CODE_REFERENCE_ROOTS = {
     'outputs',
     'analysis_output',
     'figures',
+    'reports',
 }
 ROUND_WORKSPACE_RELATIVE_REFERENCE_ROOTS = (
     ROUND_WORKSPACE_CODE_REFERENCE_ROOTS | {'images', 'logs'}

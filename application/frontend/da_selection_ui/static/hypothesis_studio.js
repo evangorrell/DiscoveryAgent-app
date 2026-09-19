@@ -1351,6 +1351,22 @@
             codeTokens.push('<code>' + esc(code) + '</code>');
             return '@@HS_CODE_' + (codeTokens.length - 1) + '@@';
         });
+        source = source.replace(/!\[([^\]\n]*)\]\(([^)\n]+)\)/g, (_, label, destination) => {
+            let path = destination.trim().replace(/^<([^>]+)>$/, '$1');
+            path = path.replace(/^\.\//, '').replace(/^code\//, '');
+            const project = typeof CFG !== 'undefined' && CFG.projectSlug;
+            if (!project || !/^(reports|results|figures|plots|outputs|analysis_output)\//.test(path) ||
+                    /[\\\x00-\x1f]/.test(path) || path.split('/').some((part) => !part || part.startsWith('.')) ||
+                    !/\.(png|jpe?g|gif|webp|svg)$/i.test(path)) {
+                linkTokens.push('<span class="hs-figure-unavailable">Figure unavailable: ' + esc(label || destination) + '</span>');
+            } else {
+                const url = '/api/round_workspace_code_artifact?project=' + encodeURIComponent(project) + '&path=' + encodeURIComponent(path);
+                linkTokens.push('<span class="hs-inline-figure"><a href="' + esc(url) + '" target="_blank" rel="noopener noreferrer">' +
+                    '<img src="' + esc(url) + '" alt="' + esc(label) + '" loading="lazy"></a>' +
+                    '<span class="hs-figure-unavailable" hidden>Figure unavailable: ' + esc(path) + '</span></span>');
+            }
+            return '@@HS_LINK_' + (linkTokens.length - 1) + '@@';
+        });
         source = source.replace(/\[([^\]\n]+)\]\(([^)\s]+)\)/g, (_, label, href) => {
             const safeHref = safeMarkdownHref(href);
             if (!safeHref) return label + ' (' + href + ')';
@@ -2326,6 +2342,13 @@
         const body = el('div', 'hs-turn-body' + (role === 'assistant' ? ' v2-prose' : ''), contentHtml);
         if (pending) body.classList.add('is-pending');
         turn.appendChild(body);
+        body.querySelectorAll('.hs-inline-figure img').forEach((img) => {
+            img.addEventListener('error', () => {
+                const wrapper = img.closest('.hs-inline-figure');
+                wrapper.querySelector('a').hidden = true;
+                wrapper.querySelector('.hs-figure-unavailable').hidden = false;
+            });
+        });
         return turn;
     }
 

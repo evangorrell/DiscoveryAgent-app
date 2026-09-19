@@ -429,7 +429,7 @@ Your hypotheses should advance scientific understanding and be actionable throug
                         self.last_response_documents = documents or []
                     return response.choices[0].message.content
                 else:  # anthropic
-                    response = self.client.messages.create(**api_params)
+                    response = self._stream_anthropic_message(self.client, api_params)
                     if track_citations:
                         text, citations = self._extract_text_and_citations(response)
                         self.last_response_citations = citations
@@ -501,13 +501,13 @@ Your hypotheses should advance scientific understanding and be actionable throug
                     )
                     return response.choices[0].message.content
 
-                response = self.client.messages.create(
-                    model=self.llm_config.model_name,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    system=system_prompt,
-                    messages=[{"role": "user", "content": user_prompt}],
-                )
+                response = self._stream_anthropic_message(self.client, {
+                    "model": self.llm_config.model_name,
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
+                    "system": system_prompt,
+                    "messages": [{"role": "user", "content": user_prompt}],
+                })
                 return self._extract_text_from_anthropic_response(response)
 
             except (anthropic.InternalServerError, anthropic.APIError, openai.APIError) as e:
@@ -532,6 +532,18 @@ Your hypotheses should advance scientific understanding and be actionable throug
         if last_error:
             raise Exception(f"API call failed: {str(last_error)}")
         raise Exception("API call failed for unknown reason")
+
+    @staticmethod
+    def _stream_anthropic_message(client, api_params: dict):
+        """Consume an Anthropic SSE response and return its final Message.
+
+        Hypothesis responses can take several minutes. Streaming lets Anthropic
+        send lifecycle and content events during that interval, avoiding idle
+        connection limits while retaining the same response object used for
+        text, citations, usage, and stop-reason handling.
+        """
+        with client.messages.stream(**api_params) as stream:
+            return stream.get_final_message()
 
     def add_user_message(self, content) -> None:
         """Append a user message (string or structured content) to the conversation and log it."""
@@ -967,14 +979,14 @@ Format your response as:
                 )
                 judge_response = response.choices[0].message.content
             else:  # anthropic
-                response = self.judge_client.messages.create(
-                    model=self.judge_llm_config.model_name,
-                    max_tokens=2000,
-                    system=HYPOTHESIS_JUDGE_PROMPT,
-                    messages=[
+                response = self._stream_anthropic_message(self.judge_client, {
+                    "model": self.judge_llm_config.model_name,
+                    "max_tokens": 2000,
+                    "system": HYPOTHESIS_JUDGE_PROMPT,
+                    "messages": [
                         {"role": "user", "content": judge_prompt}
-                    ]
-                )
+                    ],
+                })
                 judge_response = self._extract_text_from_anthropic_response(response)
 
             self.logger.log_response(judge_response, "hypothesis_judge")
