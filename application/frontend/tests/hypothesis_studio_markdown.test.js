@@ -31,13 +31,28 @@ const markdownSource = sourceBetween(
 );
 const renderMarkdown = new Function(
     'esc',
+    'CFG',
     markdownSource + '\nreturn renderMarkdown;'
 )((value) => String(value == null ? '' : value)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;'));
+    .replace(/'/g, '&#39;'), { projectSlug: 'example-project' });
+
+test('project figures render as project-scoped images instead of text links', () => {
+    const html = renderMarkdown('![Regulatory Rewiring](reports/figures/regulatory_rewiring.png)');
+    assert.match(html, /<img src="\/api\/round_workspace_code_artifact\?project=example-project&amp;path=reports%2Ffigures%2Fregulatory_rewiring.png"/);
+    assert.match(html, /alt="Regulatory Rewiring"/);
+    assert.match(html, /Figure unavailable:/);
+    assert.doesNotMatch(renderMarkdown('![bad](reports/../../private.png)'), /<img/);
+    assert.doesNotMatch(renderMarkdown('![remote](https:\/\/example.com\/track.png)'), /<img/);
+    assert.doesNotMatch(renderMarkdown('`![example](reports/figures/example.png)`'), /<img/);
+    assert.doesNotMatch(renderMarkdown('![hidden](reports/.private/example.png)'), /<img/);
+    assert.doesNotMatch(renderMarkdown('![escape](reports/..\\\\private.png)'), /<img/);
+    assert.match(renderMarkdown('![Output](./code/outputs/figure.png)'), /<img/);
+    assert.match(renderMarkdown('![Analysis](analysis_output/figure.png)'), /<img/);
+});
 
 function parseFragment(html) {
     const root = { tagName: '#fragment', attributes: {}, children: [] };
