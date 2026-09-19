@@ -70,7 +70,7 @@ def test_edit_uses_the_same_unified_data_selection_as_create():
     assert "Click to select data" in markup
     assert 'id="np-data-library-add-data"' in markup
     assert '<a class="v2-data-action" id="np-data-library-add-data"' in markup
-    assert """url_for('discoveryagent_data', open_data_picker='1')""" in markup
+    assert """url_for('discoveryagent_data', open_data_picker='1', project_draft='1')""" in markup
     assert "to use it in a project." not in markup
     assert "Click to browse DiscoveryAgent Data" not in markup
     assert "Open Data Folder" not in markup

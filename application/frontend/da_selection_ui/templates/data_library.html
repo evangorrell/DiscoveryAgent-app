@@ -7,7 +7,7 @@
          id="data-library-root" data-page-scroll-root>
     <header class="v2-app-page-header v2-data-library-header">
         <h1 class="v2-title v2-app-page-title" id="data-library-title">Data</h1>
-        <p class="v2-app-page-description v2-data-library-description">Add folders once, then choose which projects can access them. Files stay in their original locations.</p>
+        <p class="v2-app-page-description v2-data-library-description">Add files or folders once, then choose which projects can access them. Data stays in its original location.</p>
     </header>
 
     <div class="v2-app-page-content v2-data-library-content" id="data-library-content">
@@ -34,10 +34,13 @@
             </div>
 
             <ul class="v2-data-source-list" id="data-library-list" role="tree"
-                aria-label="Registered data folders" hidden></ul>
+                aria-label="Registered data files and folders" hidden></ul>
         </div>
         <p class="v2-data-library-feedback" id="data-library-feedback" role="status"
            aria-live="polite" aria-atomic="true" hidden></p>
+        <a class="v2-btn v2-btn-secondary v2-data-library-return-project-draft"
+           id="data-library-return-project-draft"
+           href="{{ url_for('projects', resume_project_draft='1') }}" hidden>Back to project draft</a>
     </div>
 
     <div class="v2-app-page-action v2-sticky-action-tray" id="data-library-primary-action" hidden>
@@ -65,7 +68,7 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="{{ url_for('static', filename='data_tree.js') }}?v=20260822-data-tree-row-geometry-1"></script>
+<script src="{{ url_for('static', filename='data_tree.js') }}?v=20260908-file-sources-1"></script>
 <script src="{{ url_for('static', filename='app_page_action.js') }}?v=20260822-sticky-action-tray-1"></script>
-<script src="{{ url_for('static', filename='data_library.js') }}?v=20260822-unsaved-size-1"></script>
+<script src="{{ url_for('static', filename='data_library.js') }}?v=20260908-data-files-project-draft-1"></script>
 {% endblock %}

@@ -21,8 +21,8 @@ import pytest
 from da_selection_ui import app as app_module
 
 
-PACKAGED_HELPER_SHA256 = "80edd7a18f0fd952a81686df5519b91ecc992d113698c157e9de6c64022c7a71"
-ADD_DATA_PICKER_INSTRUCTION = "Select a folder containing the data you want to add."
+PACKAGED_HELPER_SHA256 = "3a4f915077c5db65578361bf74afba90855adb25e74a55eb4d8f918867f3e25a"
+ADD_DATA_PICKER_INSTRUCTION = "Select the data files or folders you want to add."
 
 
 def native_paths() -> tuple[Path, Path, Path, Path]:
@@ -124,6 +124,15 @@ def test_native_panel_displays_the_add_data_instruction_above_its_browser():
     message = f'panel.message = @"{ADD_DATA_PICKER_INSTRUCTION}";'
     assert message in source
     assert source.index(message) < source.index("[panel makeKeyAndOrderFront:nil];")
+
+
+def test_native_panel_accepts_individual_files_and_directories():
+    source_path, _bundle, _plist, _executable = native_paths()
+    source = source_path.read_text(encoding="utf-8")
+
+    assert "panel.canChooseDirectories = YES;" in source
+    assert "panel.canChooseFiles = YES;" in source
+    assert "panel.allowsMultipleSelection = YES;" in source
 
 
 def test_bundled_instruction_is_isolated_from_project_picker_flows():

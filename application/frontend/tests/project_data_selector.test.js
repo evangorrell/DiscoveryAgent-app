@@ -227,7 +227,7 @@ test('Select data stays lazy and hierarchical while Add Data navigates to the sh
     assert.match(template, /class="v2-data-selector-sources v2-data-source-list" id="np-data-library-sources" role="tree"/);
     assert.match(template, /id="np-data-library-cancel">Cancel/);
     assert.match(template, /id="np-data-library-save">Save/);
-    assert.match(template, /<a class="v2-data-action" id="np-data-library-add-data"\s+href="\{\{ url_for\('discoveryagent_data', open_data_picker='1'\) \}\}">[\s\S]*<span class="v2-data-action-label">Add Data<\/span>[\s\S]*&#8599;/);
+    assert.match(template, /<a class="v2-data-action" id="np-data-library-add-data"\s+href="\{\{ url_for\('discoveryagent_data', open_data_picker='1', project_draft='1'\) \}\}">[\s\S]*<span class="v2-data-action-label">Add Data<\/span>[\s\S]*&#8599;/);
     assert.doesNotMatch(template.slice(template.indexOf('id="np-data-library-overlay"')), /Browse on Mac/);
     assert.match(source, /\/tree\?path=/);
     assert.match(source, /const selectorDataTree = window\.DiscoveryAgentDataTree\.createRenderer/);
@@ -325,22 +325,25 @@ test('modal Add Data is a focus-trapped canonical navigation link outside the so
     const selectorMarkup = template.slice(selectorStart, browserStart);
     const trap = block('function trapDataSelectorFocus(event)', 'function clearInvalid(el)');
     assert.ok(selectorStart >= 0 && actionStart > selectorStart && actionStart < browserStart);
-    assert.match(selectorMarkup, /<a class="v2-data-action" id="np-data-library-add-data"\s+href="\{\{ url_for\('discoveryagent_data', open_data_picker='1'\) \}\}">/);
+    assert.match(selectorMarkup, /<a class="v2-data-action" id="np-data-library-add-data"\s+href="\{\{ url_for\('discoveryagent_data', open_data_picker='1', project_draft='1'\) \}\}">/);
     assert.doesNotMatch(selectorMarkup, /<button[^>]+np-data-library-add-data|target=|onclick=|role="button"|Browse on Mac/);
     assert.match(trap, /\[href\]/);
     assert.match(style, /\.v2-data-action\s*\{[^}]*color:\s*var\(--v2-accent\)/s);
     assert.match(style, /\.v2-data-action:hover \.v2-data-action-label/);
     assert.match(style, /\.v2-data-action:focus-visible\s*\{[^}]*outline:/s);
-    assert.doesNotMatch(source, /dataLibraryAddData|addDataLibrarySources|DiscoveryAgentDataPicker/);
+    assert.doesNotMatch(source, /addDataLibrarySources|DiscoveryAgentDataPicker/);
+    assert.match(source, /dataLibraryAdd\.addEventListener\('click', preserveCreateDraftBeforeAddingData\)/);
     assert.match(baseTemplate, /data_picker\.js/);
 });
 
-test('modal navigation leaves project drafts unpersisted and delegates picker work to Data', () => {
+test('modal navigation persists create drafts and delegates picker work to Data', () => {
     const selectorMarkup = template.slice(template.indexOf('id="np-data-library-overlay"'));
     const loader = block('async function loadLibrarySources(options)', 'async function openDataLibrarySelector()');
-    assert.match(selectorMarkup, /href="\{\{ url_for\('discoveryagent_data', open_data_picker='1'\) \}\}"/);
+    assert.match(selectorMarkup, /href="\{\{ url_for\('discoveryagent_data', open_data_picker='1', project_draft='1'\) \}\}"/);
     assert.doesNotMatch(selectorMarkup, /form=|download=|target=/);
     assert.doesNotMatch(source, /addDataLibrarySources|registrationFailureMessage/);
+    assert.match(source, /localStorage\.setItem\(CREATE_DRAFT_STORAGE_KEY/);
+    assert.match(source, /function applyCreateProjectDraft\(draft\)/);
     assert.match(loader, /if \(!config\.preserveProjectSelection\)[\s\S]*selectedDataSources = selectedDataSources\.filter/);
     assert.match(source, /expandedDatasetIds[\s\S]*restoreSelectorView\(config\.viewState\)/);
     assert.doesNotMatch(librarySource, /selectedDataSources|draftDataSources|submitForm|persistProject/);

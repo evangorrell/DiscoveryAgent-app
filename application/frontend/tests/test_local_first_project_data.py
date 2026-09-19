@@ -382,7 +382,7 @@ def test_project_modal_always_opens_at_the_top_of_its_scroll_boundary():
     assert "els.name.focus({ preventScroll: true })" in source
     assert show_rule.count("resetProjectModalScroll()") == 2
     assert "setTimeout(focusProjectNameAtTop, 30)" in show_rule
-    assert "projects.js') }}?v=20260826-import-project-list-navigation-1" in template
+    assert "projects.js') }}?v=20260908-data-files-project-draft-1" in template
 
 
 def test_closing_the_modal_never_removes_a_created_project(monkeypatch, tmp_path):

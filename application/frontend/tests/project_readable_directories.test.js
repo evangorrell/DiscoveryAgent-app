@@ -151,5 +151,5 @@ test('duplicate-name response uses inline V2 error and restores Project Name foc
 });
 
 test('slug-only preview ships under a fresh ordinary-reload cache key', () => {
-    assert.match(template, /projects\.js'\) \}\}\?v=20260826-import-project-list-navigation-1/);
+    assert.match(template, /projects\.js'\) \}\}\?v=20260908-data-files-project-draft-1/);
 });

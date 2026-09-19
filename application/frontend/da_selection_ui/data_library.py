@@ -1,7 +1,8 @@
 """App-wide references to scientist-owned, read-only input data.
 
 The registry contains metadata only.  It never creates entries in a project,
-copies source data, or treats a source as an output location.
+copies source data, or treats a source as an output location.  A source may be
+either one regular file or one directory tree.
 """
 
 from __future__ import annotations
@@ -128,28 +129,29 @@ def _save_unlocked(payload: dict[str, Any], path: Path | None = None) -> None:
 def _validate_source(raw: str) -> tuple[Path, Path]:
     text = str(raw or "").strip()
     if not text:
-        raise DataLibraryError("data_source_required", "Choose a data folder.")
+        raise DataLibraryError("data_source_required", "Choose a data file or folder.")
     source = Path(text).expanduser()
     if not source.is_absolute():
-        raise DataLibraryError("data_source_not_absolute", "Choose a folder using its full absolute path.")
+        raise DataLibraryError("data_source_not_absolute", "Choose a file or folder using its full absolute path.")
     try:
         if source.is_symlink():
-            raise DataLibraryError("data_source_symlink", "Choose the source folder itself rather than a symbolic link.")
+            raise DataLibraryError("data_source_symlink", "Choose the source itself rather than a symbolic link.")
         canonical = source.resolve(strict=True)
     except OSError as exc:
-        raise DataLibraryError("data_source_unavailable", f"The data folder is unavailable: {source}.", 409) from exc
-    if not canonical.is_dir():
-        raise DataLibraryError("data_source_not_directory", f"The selected path is not a folder: {source}.")
-    if canonical == Path(canonical.anchor) or canonical == Path.home().resolve():
+        raise DataLibraryError("data_source_unavailable", f"The data source is unavailable: {source}.", 409) from exc
+    if not canonical.is_dir() and not canonical.is_file():
+        raise DataLibraryError("data_source_not_supported", f"The selected path is not a regular file or folder: {source}.")
+    if canonical.is_dir() and (canonical == Path(canonical.anchor) or canonical == Path.home().resolve()):
         raise DataLibraryError("data_source_too_broad", "Choose a specific data folder rather than your home folder or disk.")
     data_root = get_data_root().resolve()
     projects_root = get_projects_root().resolve()
     if canonical == data_root or canonical.is_relative_to(data_root) or canonical == projects_root or canonical.is_relative_to(projects_root):
         raise DataLibraryError(
             "project_data_not_allowed",
-            "Project-owned files cannot be registered as shared input data. Choose a folder outside DiscoveryAgent projects.",
+            "Project-owned files cannot be registered as shared input data. Choose a source outside DiscoveryAgent projects.",
         )
-    if not os.access(canonical, os.R_OK | os.X_OK):
+    required_access = os.R_OK | (os.X_OK if canonical.is_dir() else 0)
+    if not os.access(canonical, required_access):
         raise DataLibraryError("data_source_unreadable", f"DiscoveryAgent cannot read {source}.", 403)
     return source.absolute(), canonical
 
@@ -162,8 +164,8 @@ def _source_is_usable(record: dict[str, Any]) -> bool:
         canonical = source.resolve(strict=True)
         return (
             _canonical_key(canonical) == _canonical_key(Path(record["canonical_path"]))
-            and canonical.is_dir()
-            and os.access(canonical, os.R_OK | os.X_OK)
+            and (canonical.is_dir() or canonical.is_file())
+            and os.access(canonical, os.R_OK | (os.X_OK if canonical.is_dir() else 0))
         )
     except OSError:
         return False
@@ -216,10 +218,10 @@ def add_sources(raw_paths: list[str] | tuple[str, ...], *, path: Path | None = N
 
     A bad or previously registered selection does not discard valid peers.  No
     source contents are enumerated or copied: validation records only the
-    canonical identity of each selected top-level folder.
+    canonical identity of each selected top-level file or folder.
     """
     if not isinstance(raw_paths, (list, tuple)) or not raw_paths:
-        raise DataLibraryError("data_source_required", "Choose one or more data folders.")
+        raise DataLibraryError("data_source_required", "Choose one or more data files or folders.")
 
     added: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []

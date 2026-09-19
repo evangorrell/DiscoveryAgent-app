@@ -1,0 +1,57 @@
+{# Shared per-round configuration surface. Only the allowlisted fields rendered
+   here are accepted by /api/rounds/start; project identity and filesystem state
+   remain server-owned. #}
+<div class="v2-modal-overlay v2-round-launch-overlay" id="round-launch-overlay" hidden>
+    <div class="v2-modal v2-round-launch-modal" role="dialog" aria-modal="true"
+         aria-labelledby="round-launch-title" aria-describedby="round-launch-description"
+         data-round-launch-surface>
+        <div class="v2-modal-head">
+            <div>
+                <p class="v2-section-label">NEW ROUND</p>
+                <h2 class="v2-modal-title" id="round-launch-title">Launch round</h2>
+            </div>
+        </div>
+        <div class="v2-modal-body v2-round-launch-body">
+            <p class="v2-field-help" id="round-launch-description">
+                Review the project defaults and adjust only the settings supported for this new round.
+                The project objective, README, data, skills, paths, and safety settings remain unchanged.
+            </p>
+            <div class="v2-round-launch-grid">
+                <label class="v2-round-launch-field" for="round-launch-queries">
+                    <span class="v2-field-label">QUERY COUNT</span>
+                    <input class="v2-input" id="round-launch-queries" type="number" inputmode="numeric" required>
+                    <span class="v2-field-help" id="round-launch-query-help"></span>
+                </label>
+
+                <div class="v2-round-launch-tools">
+                    <p class="v2-field-label">RESEARCH TOOLS</p>
+                    <label class="v2-checkbox-row" for="round-launch-deep-research">
+                        <input type="checkbox" id="round-launch-deep-research">
+                        <span class="v2-checkbox-label">Deep Research</span>
+                    </label>
+                    <label class="v2-checkbox-row" for="round-launch-web-search">
+                        <input type="checkbox" id="round-launch-web-search">
+                        <span class="v2-checkbox-label">Web Search</span>
+                    </label>
+                </div>
+
+                <label class="v2-round-launch-field" for="round-launch-reasoning-model">
+                    <span class="v2-field-label">REASONING MODEL</span>
+                    <select class="v2-input v2-select" id="round-launch-reasoning-model"></select>
+                </label>
+                <label class="v2-round-launch-field" for="round-launch-execution-model">
+                    <span class="v2-field-label">EXECUTION MODEL</span>
+                    <select class="v2-input v2-select" id="round-launch-execution-model"></select>
+                </label>
+            </div>
+            <p class="v2-start-round-note" id="round-launch-error" data-start-round-note
+               role="alert" hidden></p>
+        </div>
+        <div class="v2-modal-footer">
+            <button type="button" class="v2-btn v2-btn-secondary"
+                    id="round-launch-cancel" data-round-launch-dismiss>Cancel</button>
+            <button type="button" class="v2-btn v2-btn-primary v2-start-round-btn"
+                    id="round-launch-confirm">Start round</button>
+        </div>
+    </div>
+</div>

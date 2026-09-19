@@ -10080,6 +10080,14 @@ def _v2_project_is_running(project: dict) -> bool:
 
 def _data_library_source_payload(source: dict) -> dict:
     payload = dict(source)
+    source_path = Path(str(source.get('source_path') or ''))
+    payload['kind'] = 'file' if source_path.is_file() else 'directory'
+    payload['size_bytes'] = None
+    if payload['kind'] == 'file':
+        try:
+            payload['size_bytes'] = source_path.stat().st_size
+        except OSError:
+            pass
     payload['projects'] = _data_library_project_references(str(source.get('id') or ''))
     payload['project_count'] = len(payload['projects'])
     return payload
@@ -10121,7 +10129,7 @@ def _data_library_reconcile_missing_sources() -> list[dict]:
 
 @app.route('/data')
 def discoveryagent_data():
-    """App-wide registry of user-supplied, read-only input folders."""
+    """App-wide registry of user-supplied, read-only input files and folders."""
     return render_template(
         'data_library.html', bare_shell=True, page_class='v2-page-data',
         global_nav_active='data',
@@ -10161,13 +10169,13 @@ def api_data_library_add():
 
 @app.route('/api/data-library/choose', methods=['POST'])
 def api_data_library_choose():
-    """Register one foreground native multi-folder picker batch."""
+    """Register one foreground native multi-item picker batch."""
     if not _V2_DATA_LIBRARY_PICKER_LOCK.acquire(blocking=False):
         app.logger.info('Data Library picker request rejected because another picker is active.')
         return jsonify({
             'success': False,
             'code': 'native_picker_busy',
-            'error': 'A folder chooser is already open. Finish or cancel it before trying again.',
+            'error': 'A data chooser is already open. Finish or cancel it before trying again.',
         }), 409
     try:
         return _v2_run_data_library_picker()
@@ -10193,7 +10201,7 @@ def _v2_run_data_library_picker():
         return jsonify({
             'success': False,
             'code': 'native_picker_launch_failed',
-            'error': 'The folder chooser could not be opened. No data folders were added.',
+            'error': 'The data chooser could not be opened. No data sources were added.',
         }), 500
     completed = None
     try:
@@ -10211,14 +10219,14 @@ def _v2_run_data_library_picker():
         return jsonify({
             'success': False,
             'code': 'native_picker_timeout',
-            'error': 'The folder chooser stopped responding. No data folders were added.',
+            'error': 'The data chooser stopped responding. No data sources were added.',
         }), 504
     except OSError:
         app.logger.warning('Data Library picker helper could not be launched.')
         return jsonify({
             'success': False,
             'code': 'native_picker_launch_failed',
-            'error': 'The folder chooser could not be opened. No data folders were added.',
+            'error': 'The data chooser could not be opened. No data sources were added.',
         }), 500
     finally:
         picker_output = _v2_data_library_picker_output(result_path)
@@ -10232,14 +10240,14 @@ def _v2_run_data_library_picker():
         return jsonify({
             'success': False,
             'code': 'native_picker_failed',
-            'error': 'The folder chooser failed. No data folders were added.',
+            'error': 'The data chooser failed. No data sources were added.',
         }), 500
     try:
         picker_result = _v2_parse_data_library_picker_result(picker_output)
         if completed.returncode != 0:
             raise data_library.DataLibraryError(
                 'native_picker_failed',
-                'The folder chooser failed. No data folders were added.',
+                'The data chooser failed. No data sources were added.',
                 500,
             )
         if picker_result['status'] == 'cancelled':
@@ -10271,7 +10279,7 @@ def _v2_run_data_library_picker():
         if completed.returncode != 0 and exc.code == 'native_picker_invalid_result':
             exc = data_library.DataLibraryError(
                 'native_picker_failed',
-                'The folder chooser failed. No data folders were added.',
+                'The data chooser failed. No data sources were added.',
                 500,
             )
         if exc.code == 'native_picker_invalid_result':
@@ -10283,7 +10291,7 @@ def _v2_run_data_library_picker():
         return jsonify({
             'success': False,
             'code': 'data_library_write_failed',
-            'error': 'The selected folders could not be saved. The Data Library was left unchanged.',
+            'error': 'The selected data sources could not be saved. The Data Library was left unchanged.',
         }), 500
 
 
@@ -10576,13 +10584,30 @@ def api_local_round_options():
     try:
         _api_round_request_identity(project)
         round_number = local_round_runner.next_round_number(project)
+        defaults = local_round_runner.round_option_defaults(round_number, project)
+        model_warning = None
+        try:
+            defaults.update(model_catalog.resolve_project_models(project))
+        except model_catalog.UnsupportedProjectModel as exc:
+            defaults.update({
+                'reasoning_model': model_catalog.DEFAULT_REASONING_MODEL,
+                'execution_model': model_catalog.DEFAULT_EXECUTION_MODEL,
+            })
+            model_warning = (
+                f'{exc} Choose supported models below for this round.'
+            )
     except local_round_runner.RoundLaunchError as exc:
         return jsonify({'ok': False, 'code': exc.code, 'message': exc.message}), exc.http_status
     return jsonify({
         'ok': True,
         'project_id': str(project['id']),
         'round': round_number,
-        'defaults': local_round_runner.round_option_defaults(round_number, project),
+        'defaults': defaults,
+        'model_warning': model_warning,
+        'models': [
+            {'id': model['id'], 'display_name': model['display_name']}
+            for model in model_catalog.SUPPORTED_PROJECT_MODELS
+        ],
     })
 
 
@@ -10598,9 +10623,15 @@ def api_start_local_round():
         }), 400
     try:
         _api_round_request_identity(project)
-        # Fresh rounds snapshot the trusted project-level Advanced Settings.
-        # Round Start has no parallel browser-owned configuration path.
-        result = local_round_runner.start_round(project)
+        requested = request.get_json(silent=True)
+        options = local_round_runner.normalize_round_options(requested)
+        # Only the allowlisted, validated per-round settings above can override
+        # the trusted project defaults. Paths, README/context, selected data,
+        # skills, sandboxing, and runtime configuration remain server-owned.
+        result = (
+            local_round_runner.start_round(project, options=options)
+            if options else local_round_runner.start_round(project)
+        )
     except local_round_runner.RoundLaunchError as exc:
         return jsonify({'ok': False, 'code': exc.code, 'message': exc.message}), exc.http_status
     return jsonify({
@@ -12220,7 +12251,7 @@ def _v2_data_library_picker_helper_sha256() -> str:
             for chunk in iter(lambda: stream.read(1024 * 1024), b''):
                 digest.update(chunk)
     except OSError as exc:
-        raise RuntimeError('The native folder chooser helper is missing or unreadable.') from exc
+        raise RuntimeError('The native data chooser helper is missing or unreadable.') from exc
     return digest.hexdigest()
 
 
@@ -12231,13 +12262,13 @@ def _v2_data_library_picker_command(
     """Launch the bundled first-class macOS picker through LaunchServices."""
     platform_name = platform_name or sys.platform
     if platform_name != 'darwin':
-        raise RuntimeError('Choosing folders is only supported on macOS.')
+        raise RuntimeError('Choosing data files or folders is only supported on macOS.')
     bundle, executable = _v2_data_library_picker_helper_paths()
     if not bundle.is_dir() or not executable.is_file() or not os.access(executable, os.X_OK):
-        raise RuntimeError('The native folder chooser helper is unavailable.')
+        raise RuntimeError('The native data chooser helper is unavailable.')
     output = Path(result_path)
     if not output.is_absolute():
-        raise RuntimeError('The native folder chooser result path must be absolute.')
+        raise RuntimeError('The native data chooser result path must be absolute.')
     return ['/usr/bin/open', '-W', '-n', str(bundle), '--args', str(output)]
 
 
@@ -12278,25 +12309,25 @@ def _v2_parse_data_library_picker_result(stdout: str | None) -> dict:
     except (TypeError, ValueError) as exc:
         raise data_library.DataLibraryError(
             'native_picker_invalid_result',
-            'The folder chooser returned an invalid result. No data folders were added.',
+            'The data chooser returned an invalid result. No data sources were added.',
             500,
         ) from exc
     if isinstance(value, dict) and value.get('status') == 'error':
         if value.get('code') == 'picker_not_ready':
             raise data_library.DataLibraryError(
                 'native_picker_not_ready',
-                'The folder chooser could not become ready for input. No data folders were added.',
+                'The data chooser could not become ready for input. No data sources were added.',
                 500,
             )
         raise data_library.DataLibraryError(
             'native_picker_failed',
-            'The folder chooser failed. No data folders were added.',
+            'The data chooser failed. No data sources were added.',
             500,
         )
     if not isinstance(value, dict) or value.get('status') not in {'selected', 'cancelled'}:
         raise data_library.DataLibraryError(
             'native_picker_invalid_result',
-            'The folder chooser returned an invalid result. No data folders were added.',
+            'The data chooser returned an invalid result. No data sources were added.',
             500,
         )
     paths = value.get('paths')
@@ -12304,7 +12335,7 @@ def _v2_parse_data_library_picker_result(stdout: str | None) -> dict:
         if paths not in (None, []):
             raise data_library.DataLibraryError(
                 'native_picker_invalid_result',
-                'The folder chooser returned an invalid result. No data folders were added.',
+                'The data chooser returned an invalid result. No data sources were added.',
                 500,
             )
         return {'status': 'cancelled', 'paths': []}
@@ -12314,7 +12345,7 @@ def _v2_parse_data_library_picker_result(stdout: str | None) -> dict:
     ):
         raise data_library.DataLibraryError(
             'native_picker_invalid_result',
-            'The folder chooser returned an invalid result. No data folders were added.',
+            'The data chooser returned an invalid result. No data sources were added.',
             500,
         )
     return {'status': 'selected', 'paths': paths}
@@ -14576,6 +14607,9 @@ ROUND_WORKSPACE_HIDDEN_DIRS = {
 ROUND_WORKSPACE_FIGURE_EXTENSIONS = {
     '.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.tif', '.tiff',
 }
+ROUND_WORKSPACE_REPORT_MEDIA_EXTENSIONS = (
+    ROUND_WORKSPACE_FIGURE_EXTENSIONS | {'.pdf'}
+)
 ROUND_WORKSPACE_SCIENTIFIC_OUTPUT_ROOTS = {
     'figures', 'figure', 'images', 'visualizations', 'visualization',
     'outputs', 'output', 'results', 'result',
@@ -14583,9 +14617,7 @@ ROUND_WORKSPACE_SCIENTIFIC_OUTPUT_ROOTS = {
 ROUND_WORKSPACE_TECHNICAL_EXTENSIONS = {
     '.py', '.r', '.js', '.ts', '.sh', '.sql', '.yaml', '.yml', '.tex', '.log', '.jsonl',
 }
-ROUND_WORKSPACE_EXTERNAL_ARTIFACT_EXTENSIONS = (
-    ROUND_WORKSPACE_FIGURE_EXTENSIONS | {'.pdf'}
-)
+ROUND_WORKSPACE_EXTERNAL_ARTIFACT_EXTENSIONS = ROUND_WORKSPACE_REPORT_MEDIA_EXTENSIONS
 ROUND_WORKSPACE_CODE_REFERENCE_ROOTS = {
     'outputs',
     'analysis_output',
@@ -14742,6 +14774,9 @@ def _round_workspace_reference_strings(round_dir: Path) -> set[str]:
         rf'(?P<path>(?:/[^\s`"\'<>()\[\]]+|(?:{relative_roots})/[^\s`"\'<>()\[\]]+)\.(?:{suffixes}))',
         re.IGNORECASE,
     )
+    markdown_image_pattern = re.compile(
+        r'!\[[^\]\r\n]*\]\(\s*(?P<dest><[^>\r\n]+>|[^\s)\r\n]+)',
+    )
 
     candidates: list[Path] = []
     try:
@@ -14758,6 +14793,22 @@ def _round_workspace_reference_strings(round_dir: Path) -> set[str]:
             continue
         for match in pattern.finditer(text):
             references.add(match.group('path').rstrip('.,;:'))
+        # A report is written from the project code directory, so a one-part
+        # Markdown destination such as ``plot.pdf`` names a file at that code
+        # root rather than beside the persisted report in round_N. Keep this
+        # compatibility path scoped to actual Markdown images and approved
+        # media extensions; arbitrary bare filenames in prose are not exposed.
+        for match in markdown_image_pattern.finditer(text):
+            destination = match.group('dest')
+            if destination.startswith('<') and destination.endswith('>'):
+                destination = destination[1:-1]
+            relative = _round_workspace_safe_relative(destination)
+            if (
+                relative is not None
+                and len(relative.parts) == 1
+                and relative.suffix.lower() in ROUND_WORKSPACE_REPORT_MEDIA_EXTENSIONS
+            ):
+                references.add(relative.as_posix())
     return references
 
 
@@ -14889,6 +14940,10 @@ def _build_round_workspace_artifact_registry(round_index: int) -> dict[str, dict
             if relative is None:
                 continue
             if relative.parts[0].lower() in ROUND_WORKSPACE_CODE_REFERENCE_ROOTS:
+                source_root, display, target_files = code_root, relative, output_files
+            elif len(relative.parts) == 1:
+                # Legacy/local agents often saved a figure directly in their
+                # working directory and persisted only its basename.
                 source_root, display, target_files = code_root, relative, output_files
             elif relative.parts[0].lower() == 'images':
                 source_root, display, target_files = run_root, PurePosixPath('logs') / relative, run_files
@@ -21308,7 +21363,7 @@ def _prepare_round_workspace_report_figures(
         raw_dest = match.group('dest')
         dest = raw_dest[1:-1] if raw_dest.startswith('<') and raw_dest.endswith('>') else raw_dest
         suffix = PurePosixPath(dest).suffix.lower()
-        if suffix == '.pdf' or suffix not in ROUND_WORKSPACE_FIGURE_EXTENSIONS:
+        if suffix not in ROUND_WORKSPACE_REPORT_MEDIA_EXTENSIONS:
             return match.group(0)
 
         dest_path = PurePosixPath(dest.replace('\\', '/'))
@@ -21394,6 +21449,10 @@ def _prepare_round_workspace_report_figures(
                 or any(marker in lowered for marker in (
                     '/outputs/', '/analysis_output/', '/images/',
                 ))
+                or (
+                    not PurePosixPath(lowered).is_absolute()
+                    and len(PurePosixPath(lowered).parts) == 1
+                )
             )
         )
         if resolved_url is None and not trusted_missing:
@@ -21408,6 +21467,8 @@ def _prepare_round_workspace_report_figures(
             'available': resolved_url is not None,
             'url': resolved_url,
         }
+        if suffix == '.pdf':
+            descriptor['media_type'] = 'pdf'
         if include_context:
             descriptor['context'] = resolved_context
         figures.append(descriptor)

@@ -265,18 +265,34 @@
     }
 
 
+    function hydrateReportPdfs(element, figureMap) {
+        element.querySelectorAll('[data-rw-report-pdf-token]').forEach((placeholder) => {
+            const token = placeholder.getAttribute('data-rw-report-pdf-token');
+            const figure = figureMap.get(token);
+            if (!figure || !figure.available || figure.media_type !== 'pdf') return;
+            const frame = node('iframe', 'rw-report-pdf');
+            frame.src = figure.url;
+            frame.title = figure.alt ? 'Figure: ' + figure.alt : 'PDF figure';
+            frame.loading = 'lazy';
+            frame.referrerPolicy = 'no-referrer';
+            placeholder.replaceWith(frame);
+        });
+    }
+
     function collapseEmbeddedFigures(element) {
         const candidates = Array.from(element.querySelectorAll('figure, img')).filter(
             (item) => item.matches('figure') || !item.closest('figure'),
         );
         candidates.forEach((content, index) => {
             if (content.closest('details.rw-embedded-figure')) return;
-            const image = content.matches('img') ? content : content.querySelector('img');
-            if (!image && !content.classList.contains('is-unavailable')) return;
+            const visual = content.matches('img')
+                ? content
+                : content.querySelector('img, iframe.rw-report-pdf');
+            if (!visual && !content.classList.contains('is-unavailable')) return;
             const caption = content.matches('figure') ? content.querySelector('figcaption') : null;
             const title = (
                 (caption && caption.textContent.trim())
-                || (image && image.alt && image.alt.trim())
+                || (visual && visual.alt && visual.alt.trim())
                 || ''
             );
             const details = node('details', 'rw-embedded-figure');
@@ -289,12 +305,12 @@
             const parent = content.parentNode;
             if (!parent) return;
             parent.insertBefore(details, content);
-            if (image) {
+            if (visual) {
                 const shell = node('div', 'rw-figure-resize-shell');
                 const stage = node('div', 'rw-figure-image-stage');
                 if (content.matches('figure')) {
-                    content.insertBefore(stage, image);
-                    stage.append(image);
+                    content.insertBefore(stage, visual);
+                    stage.append(visual);
                     shell.append(content);
                 } else {
                     stage.append(content);
@@ -378,11 +394,17 @@
                     + '</div></figure>';
             }
             const caption = safeAlt ? '<figcaption>' + safeAlt + '</figcaption>' : '';
+            if (figure.media_type === 'pdf') {
+                return '<figure class="rw-report-figure rw-report-pdf-figure">'
+                    + '<div class="rw-report-pdf-placeholder" data-rw-report-pdf-token="'
+                    + escapeHtml(figure.token) + '"></div>' + caption + '</figure>';
+            }
             return '<figure class="rw-report-figure"><img src="' + figure.url
                 + '" alt="' + safeAlt + '" loading="lazy">' + caption + '</figure>';
         };
         const html = root.marked.parse(text || '', { gfm: true, breaks: true, renderer });
         element.innerHTML = root.DOMPurify ? root.DOMPurify.sanitize(html) : html;
+        hydrateReportPdfs(element, figureMap);
         collapseEmbeddedFigures(element);
         attachAuditFigureDragging(element, figures, options);
     }
@@ -391,6 +413,7 @@
         attachFigureResizer,
         attachEmbeddedFigureResizer,
         attachAuditFigureDragging,
+        hydrateReportPdfs,
         collapseEmbeddedFigures,
         renderFallbackMarkdown,
         renderMarkdown,

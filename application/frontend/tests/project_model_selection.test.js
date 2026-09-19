@@ -325,14 +325,20 @@ test('Advanced Settings and model select keep comfortable chevron insets without
     assert.match(advancedControlCss, /:disabled/);
     assert.equal((template.match(/class="v2-input v2-advanced-control/g) || []).length, 3);
     assert.match(style, /\.v2-advanced-model-field > \.v2-field-help\s*\{[^}]*margin-bottom:\s*10px/s);
-    assert.match(baseTemplate, /style\.css'\) \}\}\?v=20260823-active-round-skill-import-1/);
-    assert.match(template, /projects\.js'\) \}\}\?v=20260826-import-project-list-navigation-1/);
+    assert.match(baseTemplate, /style\.css'\) \}\}\?v=20260909-report-pdf-figures-1/);
+    assert.match(template, /projects\.js'\) \}\}\?v=20260908-data-files-project-draft-1/);
 });
 
-test('Round Start no longer renders or submits reasoning/execution model overrides', () => {
-    assert.doesNotMatch(roundStart, /REASONING MODEL|EXECUTION MODEL|MODEL_ROLES|modelField/);
-    assert.doesNotMatch(roundStart, /chosen\[['"](?:reasoning_model|execution_model)['"]\]/);
-    assert.doesNotMatch(roundStart, /QUERIES THIS ROUND|Deep research|Web search|rounds\/options/);
+test('Round Start offers validated per-round model and research overrides', () => {
+    const launchTemplate = fs.readFileSync(path.join(ROOT, 'da_selection_ui/templates/_round_launch_dialog.html'), 'utf8');
+    assert.match(launchTemplate, /id="round-launch-reasoning-model"/);
+    assert.match(launchTemplate, /id="round-launch-execution-model"/);
+    assert.match(launchTemplate, /id="round-launch-queries"/);
+    assert.match(launchTemplate, /id="round-launch-deep-research"/);
+    assert.match(launchTemplate, /id="round-launch-web-search"/);
+    assert.match(roundStart, /\/api\/rounds\/options\?project_id=/);
+    assert.match(roundStart, /reasoning_model:\s*els\.reasoningModel\.value/);
+    assert.match(roundStart, /execution_model:\s*els\.executionModel\.value/);
 });
 
 test('Research Tools align each native checkbox with its title row', () => {

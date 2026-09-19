@@ -35,7 +35,7 @@ def test_start_route_returns_monitor_redirect(monkeypatch):
     }
 
 
-def test_start_route_ignores_browser_round_overrides(monkeypatch):
+def test_start_route_forwards_only_validated_round_overrides(monkeypatch):
     client, _project = client_with_project(monkeypatch)
     seen = {}
 
@@ -48,6 +48,9 @@ def test_start_route_ignores_browser_round_overrides(monkeypatch):
         "project_id": "project-1",
         "num_queries": 9,
         "deep_research": False,
+        "web_search": True,
+        "reasoning_model": "claude-sonnet-4-6",
+        "execution_model": "claude-haiku-4-5-20251001",
         # Agents that need outside authorization, and a setting that is no
         # longer a choice — all dropped rather than forwarded.
         "opentargets": True,
@@ -58,36 +61,75 @@ def test_start_route_ignores_browser_round_overrides(monkeypatch):
     })
 
     assert response.status_code == 202
-    assert seen["options"] is None
+    assert seen["options"]["num_queries"] == 9
+    assert seen["options"]["omit_deepresearch"] is True
+    assert seen["options"]["omit_singlesearch"] is False
+    assert {seen["options"][field] for field in app_module.model_catalog.REASONING_MODEL_CONFIG_FIELDS} == {
+        "claude-sonnet-4-6"
+    }
+    assert seen["options"]["execution_model"] == "claude-haiku-4-5-20251001"
+    assert "working_directory" not in seen["options"]
+    assert "no_sandbox" not in seen["options"]
+    assert "sub_agent_architecture" not in seen["options"]
 
 
-def test_options_route_contains_only_per_round_settings(monkeypatch):
+def test_options_route_contains_only_supported_per_round_settings(monkeypatch):
     client, _project = client_with_project(monkeypatch)
     monkeypatch.setattr(app_module.local_round_runner, "next_round_number", lambda _project: 0)
 
     payload = client.get("/api/rounds/options", query_string={"project_id": "project-1"}).get_json()
 
     assert payload["ok"] is True
-    assert "models" not in payload
-    assert "models_source" not in payload
-    assert "reasoning_model" not in payload["defaults"]
-    assert "execution_model" not in payload["defaults"]
+    assert {model["id"] for model in payload["models"]} == app_module.model_catalog.known_model_ids()
+    assert payload["defaults"]["reasoning_model"] == app_module.model_catalog.DEFAULT_REASONING_MODEL
+    assert payload["defaults"]["execution_model"] == app_module.model_catalog.DEFAULT_EXECUTION_MODEL
+    assert set(payload["defaults"]) == {
+        "num_queries", "query_count", "minimum_queries", "maximum_queries",
+        "deep_research", "web_search", "reasoning_model", "execution_model",
+    }
 
 
-def test_start_route_does_not_accept_an_out_of_range_browser_override(monkeypatch):
+def test_options_route_lets_a_retired_project_model_be_replaced_for_the_new_round(monkeypatch):
+    client, project = client_with_project(monkeypatch)
+    project["project_model"] = "gpt-4o"
+    monkeypatch.setattr(app_module.local_round_runner, "next_round_number", lambda _project: 2)
+
+    response = client.get("/api/rounds/options", query_string={"project_id": "project-1"})
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["defaults"]["reasoning_model"] == app_module.model_catalog.DEFAULT_REASONING_MODEL
+    assert payload["defaults"]["execution_model"] == app_module.model_catalog.DEFAULT_EXECUTION_MODEL
+    assert "gpt-4o" in payload["model_warning"]
+    assert "Choose supported models below" in payload["model_warning"]
+
+
+def test_start_route_rejects_an_out_of_range_browser_override(monkeypatch):
     client, _project = client_with_project(monkeypatch)
+    launched = []
     monkeypatch.setattr(
         app_module.local_round_runner,
-        "start_round",
-        lambda actual, options=None: {
-            "project_id": actual["id"], "round": 0, "run_id": RUN_ID,
-            "status": "starting", "pid": 10,
-        },
+        "start_round", lambda *_args, **_kwargs: launched.append(True),
     )
 
     response = client.post("/api/rounds/start", json={"project_id": "project-1", "num_queries": 500})
 
-    assert response.status_code == 202
+    assert response.status_code == 400
+    assert response.get_json()["code"] == "invalid_round_options"
+    assert launched == []
+
+
+def test_start_route_rejects_non_boolean_tools_and_unsupported_models(monkeypatch):
+    client, _project = client_with_project(monkeypatch)
+    for override in (
+        {"deep_research": "false"},
+        {"web_search": 1},
+        {"reasoning_model": "gpt-4o"},
+        {"execution_model": "claude-retired-1"},
+    ):
+        response = client.post("/api/rounds/start", json={"project_id": "project-1", **override})
+        assert response.status_code == 400
+        assert response.get_json()["code"] in {"invalid_round_options", "unsupported_project_model"}
 
 
 def test_start_route_returns_actionable_runner_error(monkeypatch):

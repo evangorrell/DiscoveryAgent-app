@@ -599,13 +599,19 @@ def test_round_options_override_the_preset_budget_and_agent_roster(monkeypatch, 
         "num_queries": 17,
         "deep_research": False,
         "web_search": True,
+        "reasoning_model": "claude-sonnet-4-6",
+        "execution_model": "claude-haiku-4-5-20251001",
     })
     runner.start_round(project, env=launch_env(backend), options=options)
 
     config = json.loads(config_file.read_text(encoding="utf-8"))["config"]
-    assert config["num_queries"] == runner.EXPLORATORY_ROUND_QUERY_BUDGET
+    assert config["num_queries"] == 17
     assert config["omit_deepresearch"] is True
     assert config["omit_singlesearch"] is False
+    assert {config[field] for field in runner.model_catalog.REASONING_MODEL_CONFIG_FIELDS} == {
+        "claude-sonnet-4-6"
+    }
+    assert config["execution_model"] == "claude-haiku-4-5-20251001"
 
 
 def test_agents_needing_outside_authorization_cannot_be_switched_on(monkeypatch, project, backend):
@@ -687,12 +693,42 @@ def test_an_invalid_saved_project_model_is_refused_before_process_launch(monkeyp
     assert "gpt-4o" in refused.value.message
 
 
-def test_hidden_round_model_overrides_are_ignored():
-    assert runner.normalize_round_options({
-        "reasoning_model": "gpt-4o",
-        "execution_model": "claude-retired-1",
+def test_a_fresh_round_can_replace_an_invalid_saved_model_without_mutating_the_project(
+    monkeypatch, project, backend,
+):
+    project["project_model"] = "gpt-4o"
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess())
+    monkeypatch.setattr(runner.threading, "Thread", NoopThread)
+    options = runner.normalize_round_options({
+        "reasoning_model": "claude-sonnet-4-6",
+        "execution_model": "claude-haiku-4-5-20251001",
+    })
+
+    runner.start_round(project, env=launch_env(backend), options=options)
+
+    config = json.loads((Path(project["checkpoint_dir"]) / "config.json").read_text())["config"]
+    assert {config[field] for field in runner.model_catalog.REASONING_MODEL_CONFIG_FIELDS} == {
+        "claude-sonnet-4-6"
+    }
+    assert config["execution_model"] == "claude-haiku-4-5-20251001"
+    assert project["project_model"] == "gpt-4o"
+
+
+def test_round_model_overrides_are_curated_and_expanded():
+    options = runner.normalize_round_options({
+        "reasoning_model": "claude-sonnet-4-6",
+        "execution_model": "claude-haiku-4-5-20251001",
         "num_queries": 3,
-    }) == {"num_queries": 3}
+    })
+    assert options["num_queries"] == 3
+    assert {options[field] for field in runner.model_catalog.REASONING_MODEL_CONFIG_FIELDS} == {
+        "claude-sonnet-4-6"
+    }
+    assert options["execution_model"] == "claude-haiku-4-5-20251001"
+
+    with pytest.raises(runner.RoundLaunchError) as refused:
+        runner.normalize_round_options({"reasoning_model": "gpt-4o"})
+    assert refused.value.code == "unsupported_project_model"
 
 
 def test_round_option_defaults_have_no_model_override():
@@ -899,7 +935,7 @@ def test_new_continuation_snapshots_the_projects_current_model(monkeypatch, proj
     assert config["omit_singlesearch"] is True
 
 
-def test_new_continuation_ignores_request_query_override_and_uses_project_snapshot(
+def test_new_continuation_applies_request_query_override_after_project_snapshot(
     monkeypatch, project, backend,
 ):
     source, _selection = make_continuation(project)
@@ -914,7 +950,7 @@ def test_new_continuation_ignores_request_query_override_and_uses_project_snapsh
     )
 
     config = json.loads((source.parent / "round_4" / "config.json").read_text())["config"]
-    assert config["num_queries"] == 19
+    assert config["num_queries"] == 17
 
 
 def test_continuation_captures_current_project_skills_for_new_round(monkeypatch, project, backend):

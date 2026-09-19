@@ -22,7 +22,7 @@ test('successful Create closes its workflow and replaces history with the server
     assert.match(createSuccess, /resetSubmitState\(\)[\s\S]*closeModal\(\{ force: true \}\)[\s\S]*window\.location\.replace\(data\.projects_url\)/);
     assert.doesNotMatch(createSuccess, /window\.location\.href\s*=\s*data\.destination/);
     assert.doesNotMatch(createSuccess, /['"]\/projects(?:['"]|\/)/);
-    assert.match(template, /projects\.js'\) \}\}\?v=20260826-import-project-list-navigation-1/);
+    assert.match(template, /projects\.js'\) \}\}\?v=20260908-data-files-project-draft-1/);
 });
 
 test('clicking a project card title still opens that project through its canonical home URL', () => {
@@ -54,6 +54,74 @@ test('Create failure stays in the modal and duplicate submission protection rema
     assert.match(busy, /els\.submit\.classList\.add\('is-busy'\)/);
     assert.match(persist, /if \(projectSubmissionRunning\) return false/);
     assert.ok(persist.indexOf('setSubmitBusy()') < persist.indexOf('await fetch(endpoint'));
+});
+
+test('Add Data persists and restores the complete create-project draft', () => {
+    const draftSource = sourceBlock('function createProjectDraftState()', 'function applyMode()');
+    const storage = new Map();
+    const localStorage = {
+        setItem(key, value) { storage.set(key, value); },
+        getItem(key) { return storage.get(key) || null; },
+        removeItem(key) { storage.delete(key); },
+    };
+    const control = (value) => ({ value, checked: true });
+    const els = {
+        dataLibraryOverlay: { hidden: false },
+        dataLibraryError: { hidden: true, textContent: '' },
+        name: control('Draft Project'),
+        objective: control('Preserve this objective exactly.'),
+        context: control('Preserve this dataset context exactly.'),
+        queryCount: control('17'),
+        deepResearch: { checked: false }, webSearch: { checked: true },
+        reasoningModel: { value: 'reasoner', options: [{ value: 'reasoner' }] },
+        executionModel: { value: 'executor', options: [{ value: 'executor' }] },
+        advancedSettingsToggle: { getAttribute() { return 'true'; } },
+    };
+    const factory = new Function('window', 'els', [
+        "const CREATE_DRAFT_STORAGE_KEY = 'discoveryagent.create-project-draft.v1';",
+        'const CREATE_DRAFT_VERSION = 1;',
+        "let modalMode = 'create';",
+        "let pendingProjectParent = '/tmp/project-parent';",
+        'let pendingCanonicalDefaultLocation = false;',
+        "let selectedDataSources = [{ dataset_id: 'saved', selected_paths: ['.'], excluded_paths: [] }];",
+        "let draftDataSources = [{ dataset_id: 'pending', selected_paths: ['measurements.csv'], excluded_paths: [] }];",
+        'const normalizeEditableDataSelection = (value) => JSON.parse(JSON.stringify(value || []));',
+        'const copySelection = normalizeEditableDataSelection;',
+        'let advancedExpanded = false;',
+        'function setAdvancedSettingsExpanded(value) { advancedExpanded = value; }',
+        draftSource,
+        'return { createProjectDraftState, saveCreateProjectDraft, readCreateProjectDraft, clearCreateProjectDraft, applyCreateProjectDraft, preserveCreateDraftBeforeAddingData, state: () => ({ pendingProjectParent, pendingCanonicalDefaultLocation, selectedDataSources, draftDataSources, advancedExpanded }) };',
+    ].join('\n'));
+    const draft = factory({ localStorage }, els);
+
+    assert.equal(draft.saveCreateProjectDraft(), true);
+    const persisted = JSON.parse(storage.values().next().value);
+    assert.equal(persisted.project_name, 'Draft Project');
+    assert.equal(persisted.research_objective, 'Preserve this objective exactly.');
+    assert.equal(persisted.project_context, 'Preserve this dataset context exactly.');
+    assert.equal(persisted.query_count, '17');
+    assert.deepEqual(persisted.data_sources.map((item) => item.dataset_id), ['pending']);
+
+    els.name.value = ''; els.objective.value = ''; els.context.value = ''; els.queryCount.value = '';
+    els.deepResearch.checked = true; els.webSearch.checked = false;
+    draft.applyCreateProjectDraft(draft.readCreateProjectDraft());
+    assert.equal(els.name.value, 'Draft Project');
+    assert.equal(els.objective.value, 'Preserve this objective exactly.');
+    assert.equal(els.context.value, 'Preserve this dataset context exactly.');
+    assert.equal(els.queryCount.value, '17');
+    assert.equal(els.deepResearch.checked, false);
+    assert.equal(els.webSearch.checked, true);
+    assert.deepEqual(draft.state().selectedDataSources.map((item) => item.dataset_id), ['pending']);
+    assert.equal(draft.state().advancedExpanded, true);
+});
+
+test('project draft handoff has an explicit return route and refuses navigation if storage fails', () => {
+    assert.match(template, /open_data_picker='1', project_draft='1'/);
+    assert.match(source, /els\.dataLibraryAdd\.addEventListener\('click', preserveCreateDraftBeforeAddingData\)/);
+    assert.match(source, /function preserveCreateDraftBeforeAddingData\(event\)[\s\S]*if \(saveCreateProjectDraft\(\)\) return;[\s\S]*event\.preventDefault\(\)/);
+    assert.match(source, /pendingCreateDraftRestore = initialParams\.get\('resume_project_draft'\) === '1'/);
+    assert.match(source, /if \(pendingCreateDraftRestore\)[\s\S]*openCreate\(\)[\s\S]*replaceState\(\{\}, '', '\/projects'\)/);
+    assert.match(source, /clearCreateProjectDraft\(\)[\s\S]*window\.location\.replace\(data\.projects_url\)/);
 });
 
 test('Edit Save and explicit Continue retain their established destinations', () => {

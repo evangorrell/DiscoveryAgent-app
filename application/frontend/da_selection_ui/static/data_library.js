@@ -7,7 +7,7 @@
         primaryAction: $('data-library-primary-action'),
         loading: $('data-library-loading'), error: $('data-library-error'), errorDetail: $('data-library-error-detail'),
         empty: $('data-library-empty'), list: $('data-library-list'),
-        feedback: $('data-library-feedback'),
+        feedback: $('data-library-feedback'), returnProjectDraft: $('data-library-return-project-draft'),
         removeOverlay: $('data-library-remove-overlay'), removeCopy: $('data-library-remove-copy'),
         removeProjects: $('data-library-remove-projects'), removeError: $('data-library-remove-error'),
         removeCancel: $('data-library-remove-cancel'), removeConfirm: $('data-library-remove-confirm'),
@@ -16,6 +16,7 @@
     let pendingRemove = null;
     let lastFocused = null;
     const AUTO_PICKER_QUERY_PARAMETER = 'open_data_picker';
+    const PROJECT_DRAFT_QUERY_PARAMETER = 'project_draft';
     let autoPickerLaunchStarted = false;
     let pageActionLayout = null;
 
@@ -45,13 +46,13 @@
         const skipped = Array.isArray(data.skipped) ? data.skipped : [];
         const rejected = Array.isArray(data.rejected) ? data.rejected : [];
         const parts = [];
-        if (added.length) parts.push('Added ' + added.length + ' data folder' + (added.length === 1 ? '.' : 's.'));
-        if (skipped.length) parts.push(skipped.length + ' folder' + (skipped.length === 1 ? ' was' : 's were') + ' already registered.');
+        if (added.length) parts.push('Added ' + added.length + ' data source' + (added.length === 1 ? '.' : 's.'));
+        if (skipped.length) parts.push(skipped.length + ' source' + (skipped.length === 1 ? ' was' : 's were') + ' already registered.');
         if (rejected.length) {
             const detail = rejected.slice(0, 2).map((item) => item.error).filter(Boolean).join(' ');
-            parts.push(rejected.length + ' folder' + (rejected.length === 1 ? ' could' : 's could') + ' not be added.' + (detail ? ' ' + detail : ''));
+            parts.push(rejected.length + ' source' + (rejected.length === 1 ? ' could' : 's could') + ' not be added.' + (detail ? ' ' + detail : ''));
         }
-        return { message: parts.join(' ') || 'No folders were added.', isError: rejected.length > 0 && added.length === 0 };
+        return { message: parts.join(' ') || 'No data sources were added.', isError: rejected.length > 0 && added.length === 0 };
     }
 
     async function fetchTreeChildren(source, relative, cursor) {
@@ -85,6 +86,11 @@
             location.pathname + location.search + location.hash
         );
         return true;
+    }
+    function showProjectDraftReturnIfRequested() {
+        if (!els.returnProjectDraft) return;
+        const location = new window.URL(window.location.href);
+        els.returnProjectDraft.hidden = location.searchParams.get(PROJECT_DRAFT_QUERY_PARAMETER) !== '1';
     }
     function afterPagePaint() {
         return new Promise((resolve) => {
@@ -120,7 +126,7 @@
     async function add(trigger) {
         const picker = window.DiscoveryAgentDataPicker;
         if (!picker) {
-            showFeedback('The folder chooser is unavailable. Reload DiscoveryAgent and try again.', true);
+            showFeedback('The data chooser is unavailable. Reload DiscoveryAgent and try again.', true);
             return;
         }
         if (picker.isPending()) return;
@@ -152,7 +158,7 @@
     }
     function openRemove(source, button) {
         pendingRemove = source; lastFocused = button;
-        els.removeCopy.textContent = 'DiscoveryAgent will forget “' + source.display_name + '” and detach it from affected current project configurations. The original folder and every file in it will remain untouched.';
+        els.removeCopy.textContent = 'DiscoveryAgent will forget “' + source.display_name + '” and detach it from affected current project configurations. The original data will remain untouched.';
         els.removeProjects.replaceChildren();
         if (source.project_count) {
             els.removeProjects.appendChild(node('p', 'v2-muted', source.project_count + ' project' + (source.project_count === 1 ? ' uses' : 's use') + ' this source:'));
@@ -193,6 +199,7 @@
             root: els.pageRoot, content: els.pageContent, action: els.primaryAction,
         });
         const shouldAutoOpenPicker = consumeAutoPickerSignal();
+        showProjectDraftReturnIfRequested();
         els.add.addEventListener('click', (event) => { event.preventDefault(); void add(els.add); });
         els.retry.addEventListener('click', load);
         els.empty.addEventListener('click', (event) => { event.preventDefault(); void add(els.empty); });

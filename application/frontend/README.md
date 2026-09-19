@@ -130,9 +130,21 @@ the normalized display name and remain stable across ordinary display-name edits
 Immutable project IDs live in `projects.json`, project markers, and internal
 identity references—not in managed folder names. Imported-in-place projects
 are recorded in the same `projects.json` while retaining their external roots.
-Project context and scientific inputs live under `code/data/`. Checkpoints,
-reports, generated code, interactions, and imported Skills remain within the
-managed local project.
+Project context and project-owned scientific inputs live under `code/data/`.
+Checkpoints, reports, generated code, interactions, and imported Skills remain
+within the managed local project.
+
+The app-wide Data Library can register either individual files or directories.
+These entries remain in their original locations: DiscoveryAgent stores only
+their paths and gives selected projects read-only access; it does not copy them
+into `code/data/`.
+
+After research begins, Round Workspace exposes the project objective, canonical
+README, selected DiscoveryAgent Data, and saved execution defaults through its
+read-only **Configuration** view. Starting a fresh round opens a launch dialog
+where Query Count, Deep Research, Web Search, Reasoning Model, and Execution
+Model can be overridden for that round only. Project content, data, skills,
+paths, and safety settings cannot be changed by the round launcher.
 
 ## Import an older HPC project
 
