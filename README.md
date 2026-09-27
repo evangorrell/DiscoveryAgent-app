@@ -100,6 +100,29 @@ You can follow the investigation as it runs in **Round Workspace**.
 
 Once the round is complete, review the findings and continue into **Hypothesis Studio** to develop the next research direction.
 
+## Updating stable releases
+
+Once a public stable release includes this updater, updating requires only:
+
+```bash
+discoveryagent update
+```
+
+Public release downloads use HTTPS directly: no GitHub CLI, GitHub login, or
+manual asset downloads are needed. The updater verifies the package checksum,
+preserves project data and settings, and refuses to update during active research.
+Run `discoveryagent` afterward to launch the updated application.
+
+The command follows GitHub's latest stable release, not prereleases. Private
+releases retain an authenticated GitHub CLI fallback; beta releases still use
+their manual installation instructions. Existing installations with an older
+updater need the new updater installed before gaining login-free public downloads.
+
+Release maintainers must build in `production` mode and attach both the matching
+application archive and `discoveryagent-update.json` to every latest stable
+release. A GitHub release label alone does not convert a development build into
+a production package. `install.sh` is also provided for first-time installation.
+
 ## Research workflow
 
 DiscoveryAgent organizes research into an iterative cycle:

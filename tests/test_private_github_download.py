@@ -5,6 +5,7 @@ import json
 import subprocess
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -74,6 +75,9 @@ class PrivateGitHubDownloadTests(unittest.TestCase):
         with mock.patch.dict(update.os.environ, environment, clear=True), mock.patch(
             "manager.discoveryagent_cli.update.subprocess.run",
             side_effect=self.fake_run,
+        ), mock.patch(
+            "manager.discoveryagent_cli.update.urllib.request.urlopen",
+            side_effect=urllib.error.HTTPError(url, 404, "Not Found", {}, None),
         ):
             contents = update.fetch_manifest(url)
 
@@ -97,6 +101,9 @@ class PrivateGitHubDownloadTests(unittest.TestCase):
         with mock.patch.dict(update.os.environ, environment, clear=True), mock.patch(
             "manager.discoveryagent_cli.update.subprocess.run",
             side_effect=self.fake_run,
+        ), mock.patch(
+            "manager.discoveryagent_cli.update.urllib.request.urlopen",
+            side_effect=urllib.error.HTTPError(url, 404, "Not Found", {}, None),
         ):
             digest = update.download_artifact(url, destination)
 

@@ -161,13 +161,18 @@ def _download_private_github_asset(asset: _GitHubReleaseAsset, destination: Path
 
 
 def fetch_manifest(url: str) -> bytes:
-    private_asset = _github_release_asset(url)
-    if private_asset is not None:
-        return _private_github_asset_bytes(private_asset, MAXIMUM_MANIFEST_BYTES)
     request = urllib.request.Request(url, headers={"User-Agent": "DiscoveryAgent-manager"})
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
             contents = response.read(MAXIMUM_MANIFEST_BYTES + 1)
+    except urllib.error.HTTPError as exc:
+        # Public releases need no credentials or GitHub CLI. Only retry an
+        # access-related response through authenticated GitHub asset access.
+        exc.close()
+        private_asset = _github_release_asset(url)
+        if private_asset is not None and exc.code in {401, 403, 404}:
+            return _private_github_asset_bytes(private_asset, MAXIMUM_MANIFEST_BYTES)
+        raise UpdateError(f"Could not download the update manifest: {exc}") from exc
     except (OSError, urllib.error.URLError) as exc:
         raise UpdateError(f"Could not download the update manifest: {exc}") from exc
     if len(contents) > MAXIMUM_MANIFEST_BYTES:
@@ -176,9 +181,6 @@ def fetch_manifest(url: str) -> bytes:
 
 
 def download_artifact(url: str, destination: Path) -> str:
-    private_asset = _github_release_asset(url)
-    if private_asset is not None:
-        return _download_private_github_asset(private_asset, destination)
     request = urllib.request.Request(url, headers={"User-Agent": "DiscoveryAgent-manager"})
     digest = hashlib.sha256()
     try:
@@ -189,6 +191,12 @@ def download_artifact(url: str, destination: Path) -> str:
                     break
                 digest.update(chunk)
                 stream.write(chunk)
+    except urllib.error.HTTPError as exc:
+        exc.close()
+        private_asset = _github_release_asset(url)
+        if private_asset is not None and exc.code in {401, 403, 404}:
+            return _download_private_github_asset(private_asset, destination)
+        raise UpdateError(f"Could not download the DiscoveryAgent update: {exc}") from exc
     except (OSError, urllib.error.URLError) as exc:
         raise UpdateError(f"Could not download the DiscoveryAgent update: {exc}") from exc
     return digest.hexdigest()

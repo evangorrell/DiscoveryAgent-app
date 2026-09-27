@@ -16,7 +16,9 @@ from manager.discoveryagent_cli.state import InstalledReleaseState, load_state, 
 from manager.discoveryagent_cli.testing import create_fake_installation
 from manager.discoveryagent_cli.update import (
     UpdateDependencies,
+    download_artifact,
     extract_install_artifact,
+    fetch_manifest,
     run_new_installer,
     update_installed_application,
 )
@@ -164,6 +166,47 @@ class UpdateFlowTests(unittest.TestCase):
         self.assertIn(self.state.active_release_id, state.installed_releases)
         self.assertIn("updated to " + new_release, self.output.getvalue())
         self.assertIn("Run `discoveryagent` to launch.", self.output.getvalue())
+
+    def test_default_stable_update_downloads_public_assets_without_github_cli(self) -> None:
+        release_id = "prod-aaaaaaaaaaaa-bbbbbbbbbbbb"
+        archive = b"synthetic production package"
+        manifest = json.loads(self.manifest(release_id))
+        manifest.update(release_type="production", release_tag="v1.0.0")
+        artifact = manifest["platforms"]["macos-arm64"]
+        artifact["artifact_url"] = (
+            "https://github.com/evangorrell/DiscoveryAgent-app/releases/download/"
+            "v1.0.0/" + artifact["artifact_filename"]
+        )
+        artifact["artifact_sha256"] = hashlib.sha256(archive).hexdigest()
+        dependencies = self.dependencies(
+            release_id,
+            manifest_fetcher=fetch_manifest,
+            artifact_downloader=download_artifact,
+            payload_validator=lambda _payload: SimpleNamespace(
+                release_id=release_id, release_type="production"
+            ),
+        )
+        with mock.patch(
+            "manager.discoveryagent_cli.update.urllib.request.urlopen",
+            side_effect=[io.BytesIO(json.dumps(manifest).encode()), io.BytesIO(archive)],
+        ) as network, mock.patch(
+            "manager.discoveryagent_cli.update.subprocess.run",
+            side_effect=AssertionError("public update must not invoke gh"),
+        ):
+            # Exercise the default channel, with no internal manifest override.
+            # Extraction and installation use the existing isolated state fixture.
+            self.assertEqual(update_installed_application(
+                self.paths, environ={}, stdout=self.output, dependencies=dependencies,
+            ), 0)
+        self.assertEqual(
+            [call.args[0].full_url for call in network.call_args_list],
+            [PUBLIC_UPDATE_MANIFEST_URL, artifact["artifact_url"]],
+        )
+        self.assertEqual(self.events, ["research", "frontend", "install"])
+        state = load_state(self.paths.state_file)
+        self.assertEqual(state.active_release_id, release_id)
+        self.assertEqual(state.data_root, self.state.data_root)
+        self.assertIn(self.state.active_release_id, state.installed_releases)
 
     def test_sha_and_install_failures_preserve_old_state(self) -> None:
         before = self.paths.state_file.read_bytes()
