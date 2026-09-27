@@ -43,7 +43,9 @@
     const AUDIT_CHAT_STORAGE_MAX_MESSAGES = 120;
     const AUDIT_CHAT_STORAGE_MAX_CHARS = 350000;
     const projectId = (typeof config.projectId === 'string') ? config.projectId.trim() : '';
-    const hasProjectIdentity = /^prj_[A-Za-z0-9]+$/.test(projectId);
+    // IDs are opaque: registered imports can predate the prj_* format.
+    // The server validates registration; responses must still match exactly.
+    const hasProjectIdentity = projectId.length > 0;
     const auditChatStorageKey = hasProjectIdentity
         ? `da_audit_chat_state_v${CHAT_STORAGE_VERSION}_project_${projectId}`
         : '';
