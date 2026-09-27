@@ -19,9 +19,9 @@ DiscoveryAgent installs and manages everything else it needs.
 
 ### 1. Install and launch the private beta
 
-DiscoveryAgent `v0.3.0-beta.2` is a private beta for Apple Silicon Macs. Accept
+DiscoveryAgent `v0.3.0-beta.3` is a private beta for Apple Silicon Macs. Accept
 the collaborator invitation to `evangorrell/DiscoveryAgent-app`, then open the
-private `v0.3.0-beta.2` GitHub Release while signed in.
+private `v0.3.0-beta.3` GitHub Release while signed in.
 
 Remove any older DiscoveryAgent beta downloads, confirm `gh auth status`
 succeeds, then download `install.sh` from the release. The installer retrieves
@@ -38,7 +38,7 @@ directory; the verified local archive takes precedence over network access:
 
 ```bash
 install.sh
-discoveryagent-dev-4327cc97576a-412b7bd78bc1-macos-arm64.tar.gz
+discoveryagent-dev-2ec4c6ac47b7-412b7bd78bc1-macos-arm64.tar.gz
 ```
 
 After installation, open a new Terminal window or follow the PATH instruction

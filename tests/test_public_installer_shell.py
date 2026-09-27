@@ -281,7 +281,7 @@ exit 2
         self.assertEqual(result.returncode, 0, result.stderr)
         invocations = log.read_text(encoding="utf-8")
         self.assertIn("auth status --hostname github.com", invocations)
-        self.assertIn("release download v0.3.0-beta.2", invocations)
+        self.assertIn("release download v0.3.0-beta.3", invocations)
         self.assertIn("--repo evangorrell/DiscoveryAgent-app", invocations)
         self.assertIn(f"--pattern {self.artifact_name}", invocations)
         self.assertTrue((self.home / ".local/bin/discoveryagent").is_file())

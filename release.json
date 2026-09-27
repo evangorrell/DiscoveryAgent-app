@@ -16,7 +16,7 @@
     }
   },
   "frontend": {
-    "commit": "fc035d95d087981169430da3d4af75c16ffae8e9",
+    "commit": "c54f1b90766460ca1880580e4a150a601f2d2a8d",
     "provenance": {
       "branch": "v2-ui",
       "commit": "823dc588d2eba138ecac8c00dd7da00662b83986",
@@ -28,14 +28,14 @@
     "remote_url": "https://github.com/evangorrell/DiscoveryAgent-app",
     "repository": "DiscoveryAgent-app",
     "source_path": "application/frontend",
-    "tree": "4327cc97576a29c4604f0f88fc523f630f308d25",
+    "tree": "2ec4c6ac47b76734936c1ea5e42127ae2a045be9",
     "uv_lock_sha256": "bbdcf1dff4ad2768430c7226147d5ebd6ea87dd7b45948b3aa28ba8660a95a1b",
     "validation": {
       "commit_exists": true,
       "reachable_from_known_remote": true,
-      "reachable_from_origin_main": true,
+      "reachable_from_origin_main": false,
       "reachable_remote_refs": [
-        "refs/remotes/origin/main"
+        "refs/remotes/origin/codex/prerelease-beta3"
       ]
     }
   },
@@ -43,7 +43,7 @@
     "sha256": "036362c1408eb872183f7614d1784e1d5c2a770456878d2c6e02808cad593db8",
     "vendored_wheel": "vendor/gxl_paperclip-0.7.24-py3-none-any.whl"
   },
-  "release_id": "dev-4327cc97576a-412b7bd78bc1",
+  "release_id": "dev-2ec4c6ac47b7-412b7bd78bc1",
   "release_type": "development",
   "required_cpython_version": "3.11.11",
   "schema_version": 1
