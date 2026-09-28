@@ -52,6 +52,7 @@ if load_dotenv:
 from . import local_round_runner
 from . import model_catalog
 from . import data_library
+from .local_request_security import enforce_local_request_boundary
 from .project_skills import (
     MAX_ARCHIVE_BYTES,
     SkillImportError,
@@ -175,6 +176,7 @@ def _open_browser_if_no_app_tab(url: str, port: int) -> bool:
     return True
 
 app = Flask(__name__)
+app.before_request(enforce_local_request_boundary)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', os.urandom(24).hex())
 app.config['SESSION_TYPE'] = 'filesystem'
 _flask_session_dir = get_flask_session_dir()
