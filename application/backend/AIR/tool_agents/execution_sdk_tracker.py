@@ -17,6 +17,9 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from AIR.utils.query_artifacts import execution_log_filename, query_directory
+from AIR.utils.scientific_audit import (
+    known_secret_values as _known_secret_values, sanitize_text, sanitize_record,
+)
 
 try:  # POSIX is the supported local runtime; keep imports testable elsewhere.
     import fcntl
@@ -26,50 +29,9 @@ except ImportError:  # pragma: no cover
 
 EXECUTION_LOG_MAX_BYTES = 8 * 1024 * 1024
 EXECUTION_LOG_TRUNCATION_MARKER = "\n[Execution log truncated at the 8 MiB persisted limit.]\n"
-_ANSI_CSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
-_ANSI_OSC_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
-_AUTH_RE = re.compile(r"(?i)(['\"]?authorization['\"]?\s*[:=]\s*['\"]?)(?:bearer\s+)?[^\s,;'\"]+")
-_BEARER_RE = re.compile(r"(?i)(\bbearer\s+)[A-Za-z0-9._~+/=-]+")
-_SECRET_ARGUMENT_RE = re.compile(
-    r"(?i)((?:--|/)(?:api[_-]?key|token|secret|password|credential)(?:=|\s+))[^\s,;]+"
-)
-_ANTHROPIC_KEY_RE = re.compile(r"\bsk-ant-[A-Za-z0-9_-]{8,}\b")
-_ASSIGNMENT_RE = re.compile(
-    r"(?i)(['\"]?\b(?:[A-Z0-9_]*(?:api[_-]?key|token|secret|password|credential)[A-Z0-9_]*)\b['\"]?\s*[:=]\s*['\"]?)"
-    r"(?:['\"])?[^\s,'\";}]+(?:['\"])?"
-)
-_SENSITIVE_ENV_NAME_RE = re.compile(
-    r"(?i)(?:anthropic_api_key|acs_.+|authorization|.+(?:api_?key|token|secret|password|credential).*)"
-)
-
-
-def _known_secret_values(environment: Optional[dict[str, str]] = None) -> tuple[str, ...]:
-    source = os.environ if environment is None else environment
-    values = {
-        str(value) for name, value in source.items()
-        if _SENSITIVE_ENV_NAME_RE.fullmatch(str(name)) and value and len(str(value)) >= 4
-    }
-    return tuple(sorted(values, key=len, reverse=True))
-
-
 def sanitize_execution_output(value: Any, *, known_secrets: tuple[str, ...] = ()) -> str:
-    """Remove terminal controls and credentials before anything is persisted."""
-    text = str(value)
-    text = _ANSI_OSC_RE.sub("", text)
-    text = _ANSI_CSI_RE.sub("", text)
-    text = text.replace("\r\n", "\n").replace("\r", "\n").replace("\x00", "")
-    text = "".join(
-        character for character in text
-        if character in {"\n", "\t"} or ord(character) >= 32
-    )
-    for secret in known_secrets:
-        text = text.replace(secret, "[REDACTED]")
-    text = _AUTH_RE.sub(r"\1[REDACTED]", text)
-    text = _BEARER_RE.sub(r"\1[REDACTED]", text)
-    text = _SECRET_ARGUMENT_RE.sub(r"\1[REDACTED]", text)
-    text = _ANTHROPIC_KEY_RE.sub("[REDACTED]", text)
-    text = _ASSIGNMENT_RE.sub(r"\1[REDACTED]", text)
-    return text
+    """Use the same credential redactor as scientific audit records."""
+    return sanitize_text(value, known_secrets)
 
 
 class ExecutionLogWriter:
@@ -206,9 +168,8 @@ class ExecutionSDKTracker:
         self._current_phase = phase
 
     def _safe_json_dumps(self, payload: Dict[str, Any]) -> str:
-        serialized = json.dumps(payload, ensure_ascii=False, default=str)
         secrets = self.execution_log._known_secrets if self.execution_log else _known_secret_values()
-        return sanitize_execution_output(serialized, known_secrets=secrets)
+        return json.dumps(sanitize_record(payload, secrets), ensure_ascii=False)
 
     def _write_jsonl(self, fp, payload: Dict[str, Any]):
         if fp is None:

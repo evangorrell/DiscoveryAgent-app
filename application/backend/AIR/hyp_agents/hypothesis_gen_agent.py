@@ -449,7 +449,11 @@ Your hypotheses should advance scientific understanding and be actionable throug
                     if track_citations:
                         self.last_response_citations = []
                         self.last_response_documents = documents or []
-                    return response.choices[0].message.content
+                    text = response.choices[0].message.content
+                    log_api_exchange(self.logger, "HypothesisGenAgent", {
+                        "model": self.llm_config.model_name, "messages": self.messages,
+                    }, response, text)
+                    return text
                 else:  # anthropic
                     response = self.client.messages.create(**api_params)
                     if track_citations:
@@ -519,8 +523,7 @@ Your hypotheses should advance scientific understanding and be actionable throug
         self.messages.append({"role": "user", "content": content})
         # Log stringified preview to avoid huge dumps
         try:
-            preview = content if isinstance(content, str) else str(content)[:500]
-            self.logger.log_prompt("user", preview, "Hypothesis Generation")
+            self.logger.log_prompt("user", content, "Hypothesis Generation")
         except Exception:
             pass
 
@@ -967,7 +970,19 @@ Format your response as:
 **Justification**: [your reasoning]
 """
 
-        self.logger.log_prompt("judge", judge_prompt, "hypothesis_judging")
+        from uuid import uuid4
+        evaluation_id = uuid4().hex
+        judge_identity = {
+            "evaluation_id": evaluation_id,
+            "agent": "hypothesis_judge",
+            "provider": self.judge_llm_config.api_provider,
+            "model": self.judge_llm_config.model_name,
+        }
+        self.logger.log_action("hypothesis_judge_requested", {
+            **judge_identity, "status": "started", "candidates": hypotheses,
+            "system_prompt": HYPOTHESIS_JUDGE_PROMPT, "prompt": judge_prompt,
+            "max_tokens": 2000,
+        })
 
         try:
             # Call judge LLM
@@ -992,17 +1007,22 @@ Format your response as:
                 )
                 judge_response = self._extract_text_from_anthropic_response(response)
 
-            self.logger.log_response(judge_response, "hypothesis_judge")
-
             # Parse the selected hypothesis number
             selected_idx = self._parse_judge_selection(judge_response, len(hypotheses))
+            self.logger.log_action("hypothesis_judge_decision", {
+                **judge_identity,
+                "status": "success" if selected_idx is not None else "fallback",
+                "response": judge_response,
+                "selected_index": selected_idx if selected_idx is not None else 0,
+                "selected_hypothesis": hypotheses[selected_idx if selected_idx is not None else 0],
+                "fallback_reason": None if selected_idx is not None else "unparseable_selection",
+            })
 
             if selected_idx is not None:
                 selected_hypothesis = hypotheses[selected_idx]
                 self.logger.log_action("hypothesis_selected",
                     f"Judge selected hypothesis {selected_idx + 1}")
                 print(f"✓ Judge selected hypothesis {selected_idx + 1}")
-                self.logger.log_response(judge_response, source="hypothesis_judge")
 
                 # Log the full selected hypothesis
                 self.logger.log_action("selected_hypothesis_full",
@@ -1016,7 +1036,14 @@ Format your response as:
                 return hypotheses[0]
 
         except Exception as e:
-            error_msg = f"Error during hypothesis judging: {str(e)}"
+            self.logger.log_action("hypothesis_judge_failure", {
+                **judge_identity, "status": "error", "error_type": type(e).__name__,
+                "error": str(e), "http_status": getattr(e, "status_code", None),
+                "request_id": getattr(e, "request_id", None),
+                "fallback_reason": "provider_failure", "selected_index": 0,
+                "selected_hypothesis": hypotheses[0],
+            })
+            error_msg = "Error during hypothesis judging; details saved in scientific audit"
             self.logger.log_error(error_msg)
             print(f"⚠️ {error_msg}, using first hypothesis")
             # Fallback: return first hypothesis on error

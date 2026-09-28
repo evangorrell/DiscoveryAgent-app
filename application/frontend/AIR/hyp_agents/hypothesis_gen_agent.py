@@ -396,6 +396,14 @@ Your hypotheses should advance scientific understanding and be actionable throug
         except Exception:
             return "", []
 
+    def _audit_exchange(self, params, response=None, text=None, error=None, attempt=None):
+        from AIR.utils.scientific_audit import provider_exchange_details
+        logger = getattr(self, "logger", None)
+        if logger is not None:
+            logger.log_action("api_exchange", provider_exchange_details(
+                "HypothesisGenAgent", params, response, text=text, error=error,
+                provider=self.llm_config.api_provider, attempt=attempt))
+
     def _call_api_with_retry(self, api_params: dict, max_retries: int = 5, wait_time: int = 60, track_citations: bool = False, documents: Optional[List[dict]] = None) -> str:
         """
         Call the LLM API with retry logic for handling transient errors.
@@ -427,19 +435,26 @@ Your hypotheses should advance scientific understanding and be actionable throug
                     if track_citations:
                         self.last_response_citations = []
                         self.last_response_documents = documents or []
-                    return response.choices[0].message.content
+                    text = response.choices[0].message.content
+                    self._audit_exchange({"model": self.llm_config.model_name,
+                                          "messages": self.messages}, response, text, attempt=attempt)
+                    return text
                 else:  # anthropic
                     response = self._stream_anthropic_message(self.client, api_params)
                     if track_citations:
                         text, citations = self._extract_text_and_citations(response)
                         self.last_response_citations = citations
                         self.last_response_documents = documents or []
+                        self._audit_exchange(api_params, response, text, attempt=attempt)
                         return text
-                    return self._extract_text_from_anthropic_response(response)
+                    text = self._extract_text_from_anthropic_response(response)
+                    self._audit_exchange(api_params, response, text, attempt=attempt)
+                    return text
 
             except (anthropic.InternalServerError, anthropic.APIError, openai.APIError) as e:
                 last_error = e
                 error_msg = str(e)
+                self._audit_exchange(api_params, error=e, attempt=attempt)
 
                 # Check if this is a retryable error
                 if "Overloaded" in error_msg or "500" in error_msg or "503" in error_msg or "429" in error_msg:
@@ -460,6 +475,7 @@ Your hypotheses should advance scientific understanding and be actionable throug
 
             except Exception as e:
                 # For unexpected errors, raise immediately without retry
+                self._audit_exchange(api_params, error=e, attempt=attempt)
                 last_error = e
                 raise
 
@@ -486,6 +502,13 @@ Your hypotheses should advance scientific understanding and be actionable throug
         if max_tokens is None:
             max_tokens = self.config.max_tokens
 
+        logger = getattr(self, "logger", None)
+        if logger is not None:
+            logger.log_action("hypothesis_helper_request", {
+                "model": self.llm_config.model_name, "provider": self.llm_config.api_provider,
+                "system_prompt": system_prompt, "user_prompt": user_prompt,
+                "max_tokens": max_tokens, "temperature": temperature,
+            })
         last_error = None
         for attempt in range(max_retries + 1):
             try:
@@ -499,7 +522,13 @@ Your hypotheses should advance scientific understanding and be actionable throug
                         max_tokens=max_tokens,
                         temperature=temperature,
                     )
-                    return response.choices[0].message.content
+                    text = response.choices[0].message.content
+                    if logger is not None:
+                        logger.log_response(text, "hypothesis_helper")
+                    self._audit_exchange({"model": self.llm_config.model_name,
+                                          "max_tokens": max_tokens, "temperature": temperature},
+                                         response, text, attempt=attempt)
+                    return text
 
                 response = self._stream_anthropic_message(self.client, {
                     "model": self.llm_config.model_name,
@@ -508,11 +537,18 @@ Your hypotheses should advance scientific understanding and be actionable throug
                     "system": system_prompt,
                     "messages": [{"role": "user", "content": user_prompt}],
                 })
-                return self._extract_text_from_anthropic_response(response)
+                text = self._extract_text_from_anthropic_response(response)
+                if logger is not None:
+                    logger.log_response(text, "hypothesis_helper")
+                self._audit_exchange({"model": self.llm_config.model_name,
+                                      "max_tokens": max_tokens, "temperature": temperature},
+                                     response, text, attempt=attempt)
+                return text
 
             except (anthropic.InternalServerError, anthropic.APIError, openai.APIError) as e:
                 last_error = e
                 error_msg = str(e)
+                self._audit_exchange({"model": self.llm_config.model_name}, error=e, attempt=attempt)
                 if "Overloaded" in error_msg or "500" in error_msg or "503" in error_msg or "429" in error_msg:
                     if attempt < max_retries:
                         self.logger.log_action(
@@ -526,6 +562,7 @@ Your hypotheses should advance scientific understanding and be actionable throug
                     raise Exception(f"API call failed after {max_retries} retries: {error_msg}")
                 raise
             except Exception as e:
+                self._audit_exchange({"model": self.llm_config.model_name}, error=e, attempt=attempt)
                 last_error = e
                 raise
 
@@ -550,8 +587,7 @@ Your hypotheses should advance scientific understanding and be actionable throug
         self.messages.append({"role": "user", "content": content})
         # Log stringified preview to avoid huge dumps
         try:
-            preview = content if isinstance(content, str) else str(content)[:500]
-            self.logger.log_prompt("user", preview, "Hypothesis Generation")
+            self.logger.log_prompt("user", content, "Hypothesis Generation")
         except Exception:
             pass
 
@@ -964,7 +1000,19 @@ Format your response as:
 **Justification**: [your reasoning]
 """
 
-        self.logger.log_prompt("judge", judge_prompt, "hypothesis_judging")
+        from uuid import uuid4
+        evaluation_id = uuid4().hex
+        judge_identity = {
+            "evaluation_id": evaluation_id,
+            "agent": "hypothesis_judge",
+            "provider": self.judge_llm_config.api_provider,
+            "model": self.judge_llm_config.model_name,
+        }
+        self.logger.log_action("hypothesis_judge_requested", {
+            **judge_identity, "status": "started", "candidates": hypotheses,
+            "system_prompt": HYPOTHESIS_JUDGE_PROMPT, "prompt": judge_prompt,
+            "max_tokens": 2000,
+        })
 
         try:
             # Call judge LLM
@@ -989,17 +1037,22 @@ Format your response as:
                 })
                 judge_response = self._extract_text_from_anthropic_response(response)
 
-            self.logger.log_response(judge_response, "hypothesis_judge")
-
             # Parse the selected hypothesis number
             selected_idx = self._parse_judge_selection(judge_response, len(hypotheses))
+            self.logger.log_action("hypothesis_judge_decision", {
+                **judge_identity,
+                "status": "success" if selected_idx is not None else "fallback",
+                "response": judge_response,
+                "selected_index": selected_idx if selected_idx is not None else 0,
+                "selected_hypothesis": hypotheses[selected_idx if selected_idx is not None else 0],
+                "fallback_reason": None if selected_idx is not None else "unparseable_selection",
+            })
 
             if selected_idx is not None:
                 selected_hypothesis = hypotheses[selected_idx]
                 self.logger.log_action("hypothesis_selected",
                     f"Judge selected hypothesis {selected_idx + 1}")
                 print(f"✓ Judge selected hypothesis {selected_idx + 1}")
-                self.logger.log_response(judge_response, source="hypothesis_judge")
 
                 # Log the full selected hypothesis
                 self.logger.log_action("selected_hypothesis_full",
@@ -1013,7 +1066,14 @@ Format your response as:
                 return hypotheses[0]
 
         except Exception as e:
-            error_msg = f"Error during hypothesis judging: {str(e)}"
+            self.logger.log_action("hypothesis_judge_failure", {
+                **judge_identity, "status": "error", "error_type": type(e).__name__,
+                "error": str(e), "http_status": getattr(e, "status_code", None),
+                "request_id": getattr(e, "request_id", None),
+                "fallback_reason": "provider_failure", "selected_index": 0,
+                "selected_hypothesis": hypotheses[0],
+            })
+            error_msg = "Error during hypothesis judging; details saved in scientific audit"
             self.logger.log_error(error_msg)
             print(f"⚠️ {error_msg}, using first hypothesis")
             # Fallback: return first hypothesis on error

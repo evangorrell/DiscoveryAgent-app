@@ -1018,6 +1018,9 @@ class HypothesisBrancher:
 
                         # Update with verbose=False to avoid cluttering the output
                         # Set to True if you want detailed integration logs
+                        analyzer = getattr(self.results_memory, "analyzer", None)
+                        if analyzer is not None:
+                            analyzer.audit_logger = workflow.logger
                         self.results_memory.update_report(final_report, verbose=False)
 
                         # Get updated accumulated report stats
