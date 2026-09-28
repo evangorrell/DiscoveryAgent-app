@@ -199,6 +199,8 @@ class ExecutionAgentCC(BaseAgent):
         Print directly to stdout bypassing the StreamToLogger to avoid duplicate output.
         Used for real-time streaming messages from Claude Code.
         """
+        from AIR.utils.scientific_audit import sanitize_text, known_secret_values
+        message = sanitize_text(message, known_secret_values())
         sys.__stdout__.write(message + '\n')
         sys.__stdout__.flush()
         tracker = getattr(self, "execution_tracker", None)

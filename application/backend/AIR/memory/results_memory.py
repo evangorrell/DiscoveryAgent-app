@@ -340,6 +340,8 @@ class AnalyzerAgent:
             get_cost=True
         )
 
+        # Retain the provider's exact text if parsing falls back.
+        raw_analysis_text = analysis_text
         # Parse JSON response
         try:
             # Clean the response to extract JSON
@@ -356,8 +358,19 @@ class AnalyzerAgent:
         except json.JSONDecodeError as e:
             # If parsing fails, return empty redundancies
             print(f"Warning: Failed to parse analyzer output as JSON: {e}")
-            if os.environ.get('DISCOVERYAGENT_DEBUG_PROMPTS') == '1':
-                print(f"Raw output: {analysis_text[:500]}...")
+            audit_logger = getattr(self, "audit_logger", None)
+            if audit_logger is not None:
+                audit_logger.log_action("memory_analysis_parse_failure", {
+                    "agent": "memory_analyzer", "status": "error",
+                    "response": raw_analysis_text, "error": str(e),
+                    "fallback": {"redundancies": []},
+                })
+            else:
+                # Legacy standalone/recovery callers may not supply a run logger.
+                # Preserve their diagnostic, but never claim durable auditing.
+                from AIR.utils.scientific_audit import sanitize_text, known_secret_values
+                print("Warning: Memory analysis has no audit logger; this failure is not durably audited.")
+                print(f"Raw output: {sanitize_text(raw_analysis_text, known_secret_values())[:500]}...")
             analysis_dict = {"redundancies": []}
 
         return analysis_dict, cost

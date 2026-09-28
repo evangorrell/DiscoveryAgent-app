@@ -5,12 +5,14 @@ exceptions through here so that silent failures (empty completions, truncation,
 refusals, swallowed SDK errors) leave a searchable trace in ai_researcher.log
 instead of an empty string travelling downstream.
 
-Nothing here may raise: diagnostics must never take down the run they describe.
+Legacy diagnostic adapters remain best-effort. The durable audit logger raises
+on persistence failure rather than silently claiming a fully audited run.
 """
 
 from __future__ import annotations
 
 import traceback
+from .scientific_audit import AuditLoggerMixin, provider_exchange_details
 from typing import Any, Dict, Optional
 
 # Cap on any single value rendered into a log line.
@@ -180,6 +182,11 @@ def log_api_exchange(
     An empty completion is the failure this exists to catch: downstream code
     sees only "" and reports a formatting problem it cannot diagnose.
     """
+    if isinstance(logger, AuditLoggerMixin):
+        logger.log_action("api_exchange", provider_exchange_details(
+            source, api_params, response, text=text,
+            provider="anthropic" if hasattr(response, "content") else "openai"))
+        return
     try:
         detail = (
             f"source={source}\n"
@@ -251,6 +258,11 @@ def log_api_exception(
     retryable: bool = False,
 ) -> None:
     """Log an API exception with full SDK detail before it propagates."""
+    if isinstance(logger, AuditLoggerMixin):
+        logger.log_action("api_failure", provider_exchange_details(
+            source, api_params, error=exc, retryable=retryable))
+        logger._display("[ERROR] Provider call failed; details saved in scientific audit.", error=True)
+        return
     try:
         context = {"Source": source, "Retryable": "yes" if retryable else "no"}
         if api_params is not None:

@@ -1,3 +1,4 @@
+from AIR.utils.scientific_audit import AuditTrail, AuditLoggerMixin, RedactingFilter
 import os
 import datetime
 import logging
@@ -82,7 +83,7 @@ class StreamToLogger:
             self._buffer = ""
 
 
-class Logger:
+class Logger(AuditLoggerMixin):
     """Centralized logger for the AIR codebase.
 
     Writes structured entries to a single rotating log file located at
@@ -99,6 +100,10 @@ class Logger:
     _round_lock = Lock()
 
     def __init__(self, analysis_name: str = "ai_researcher", log_dir: str = "logs"):
+        # Standalone callers historically supply relative run directories.
+        # Resolve that configured destination, never fall back to another sink.
+        log_dir = str(Path(log_dir).expanduser().resolve())
+        self.audit_trail = AuditTrail(log_dir, analysis_name)
         # Ensure log directory exists
         if not os.path.exists(log_dir):
             os.makedirs(log_dir, exist_ok=True)
@@ -110,6 +115,8 @@ class Logger:
         # Create or get the shared logger
         self.logger = logging.getLogger("ai_researcher")
         self.logger.setLevel(logging.INFO)
+        if not any(isinstance(f, RedactingFilter) for f in self.logger.filters):
+            self.logger.addFilter(RedactingFilter())
         # Prevent propagation to root logger to avoid deadlock with libraries
         # that configure the root logger with handlers using sys.stdout (e.g., RichHandler)
         self.logger.propagate = False
@@ -176,51 +183,8 @@ class Logger:
         # Keep analysis_name for contextual log entries
         self.analysis_name = analysis_name
 
-    def log_prompt(self, role, prompt_text, prompt_name=""):
-        """Log a prompt sent to a model with a clear tag for searching."""
-        if os.environ.get('DISCOVERYAGENT_DEBUG_PROMPTS') != '1':
-            return
-        header = f"[PROMPT] [{prompt_name}] ({role})" if prompt_name else f"[PROMPT] ({role})"
-        self.logger.info(f"{header} - {self.analysis_name}\n{prompt_text}")
-
-    def log_response(self, response_text, source="model"):
-        """Log a response from the model or an analysis output."""
-        if os.environ.get('DISCOVERYAGENT_DEBUG_PROMPTS') != '1':
-            return
-        header = f"[RESPONSE] [{source}]"
-        self.logger.info(f"{header} - {self.analysis_name}\n{response_text}")
-
-    def log_code(self, code, iteration=None, analysis=None):
-        """Log code blocks in a searchable manner."""
-        if os.environ.get('DISCOVERYAGENT_DEBUG_PROMPTS') != '1':
-            return
-        meta = []
-        if iteration is not None:
-            meta.append(f"iter={iteration}")
-        if analysis is not None:
-            meta.append(f"analysis={analysis}")
-        meta_str = " ".join(meta)
-        header = f"[CODE] {meta_str}" if meta_str else "[CODE]"
-        # Preserve indentation and fence the code
-        self.logger.info(f"{header} - {self.analysis_name}\n```python\n{code}\n```")
-
     def format_traceback(self, error_name, error_value, traceback):
         return f"ERROR: {error_name}: {error_value}\n\n{traceback}"
-
-    def log_error(self, error_msg, code=None):
-        """Log critical errors with ERROR level and optional code context."""
-        msg = f"[ERROR] - {self.analysis_name}\n{error_msg}"
-        if code and os.environ.get('DISCOVERYAGENT_DEBUG_PROMPTS') == '1':
-            msg += f"\nIn code:\n```python\n{code}\n```"
-        self.logger.error(msg)
-
-    def log_action(self, action, details=None):
-        """General-purpose action logger for high-level events."""
-        msg = f"[ACTION] {action} - {self.analysis_name}"
-        if details and (os.environ.get('DISCOVERYAGENT_DEBUG_PROMPTS') == '1' or action in {
-                'round_started', 'query_start', 'query_completed', 'analysis_end', 'iteration'}):
-            msg += f"\n{details}"
-        self.logger.info(msg)
 
     def log_analysis_start(self, analysis_idx, hypothesis=None):
         self.log_action("analysis_start", f"analysis_idx={analysis_idx}\nhypothesis={hypothesis}")
@@ -243,6 +207,7 @@ class Logger:
     def attach_round_log_handler(self, round_dir, resume_marker: bool = True) -> None:
         """Attach a per-round FileHandler that writes live_round.log inside round_dir."""
         round_dir = Path(round_dir)
+        self.audit_trail.context["round_dir"] = str(round_dir)
         round_dir.mkdir(parents=True, exist_ok=True)
         log_path = round_dir / "live_round.log"
         with Logger._round_lock:
