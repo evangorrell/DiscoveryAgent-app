@@ -100,6 +100,11 @@ Fresh backend validation imports NumPy, Pydantic Core, Claude SDK, Paperclip,
 PyMuPDF, pypdf, nbformat, nbclient and jupyter_client. Neither optional LightGBM
 nor paid-provider calls are part of default-runtime validation.
 
+Native audit inspected **396 Mach-O files** in the fresh default environments.
+The highest declared minimum is macOS **15.0**, in bundled Pandoc and debugpy's
+attachment library. Python/uv target 11 and the bundled Claude executable targets
+13. The enforced default-bundle minimum is therefore 15, not the picker's 13.
+
 Central request tests and live isolated-server probes verify foreign Host, foreign
 Origin and cross-site form requests fail with 403 while the registry is unchanged;
 same-origin local requests succeed. GET is covered because legacy read routes can
@@ -117,6 +122,6 @@ a case-sensitive-path test on this case-insensitive filesystem. Exact paid backe
 exclusions and the production build/upgrade procedure are listed in
 [RELEASE_HARDENING.md](RELEASE_HARDENING.md).
 
-Final artifact acceptance remains: actual macOS 13 clean-machine installation,
+Final artifact acceptance remains: actual macOS 15 clean-machine installation,
 Gatekeeper/quarantine behavior, and user-approved live-provider checks. Publication
 and redistribution decisions remain in [PUBLICATION_REVIEW.md](PUBLICATION_REVIEW.md).

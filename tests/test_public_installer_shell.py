@@ -57,7 +57,7 @@ class PublicInstallerShellTests(unittest.TestCase):
                 "PATH": f"{poison}:/usr/bin:/bin:/usr/sbin:/sbin",
                 "DISCOVERYAGENT_INTERNAL_PLATFORM": "Darwin",
                 "DISCOVERYAGENT_INTERNAL_ARCHITECTURE": "arm64",
-                "DISCOVERYAGENT_INTERNAL_MACOS_VERSION": "13.0",
+                "DISCOVERYAGENT_INTERNAL_MACOS_VERSION": "15.0",
                 "DISCOVERYAGENT_INTERNAL_ARTIFACT_URL": self.artifact.as_uri(),
                 "DISCOVERYAGENT_INTERNAL_ARTIFACT_SHA256": self.sha256(
                     self.artifact
@@ -162,10 +162,10 @@ esac
 
     def test_old_macos_is_rejected_before_download(self):
         env = self.environment()
-        env['DISCOVERYAGENT_INTERNAL_MACOS_VERSION'] = '12.7'
+        env['DISCOVERYAGENT_INTERNAL_MACOS_VERSION'] = '14.7'
         result = self.run_installer(env)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('macOS 13 or newer', result.stderr)
+        self.assertIn('macOS 15 or newer', result.stderr)
 
     def colocated_installer(self, artifact: Path | None = None) -> Path:
         directory = self.root / "release-download"

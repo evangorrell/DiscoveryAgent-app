@@ -2,7 +2,7 @@
 
 set -eu
 umask 077
-MINIMUM_MACOS_MAJOR=13
+MINIMUM_MACOS_MAJOR=15
 
 RELEASE_TAG="v0.3.0-beta.2"
 RELEASE_ID="dev-4327cc97576a-412b7bd78bc1"
@@ -37,7 +37,7 @@ fi
 macos_version=${DISCOVERYAGENT_INTERNAL_MACOS_VERSION:-$(sw_vers -productVersion)}
 macos_major=${macos_version%%.*}
 case "$macos_major" in ''|*[!0-9]*) fail "could not determine macOS version" ;; esac
-[ "$macos_major" -ge "$MINIMUM_MACOS_MAJOR" ] || fail "macOS 13 or newer is required"
+[ "$macos_major" -ge "$MINIMUM_MACOS_MAJOR" ] || fail "macOS $MINIMUM_MACOS_MAJOR or newer is required"
 
 case $0 in
     */*) script_directory=${0%/*}; [ -n "$script_directory" ] || script_directory=/ ;;

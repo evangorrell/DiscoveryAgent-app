@@ -21,7 +21,7 @@ from .errors import RuntimeAcquisitionError
 
 UV_VERSION = "0.11.17"
 PYTHON_VERSION = "3.11.11"
-MINIMUM_MACOS_MAJOR = 13
+MINIMUM_MACOS_MAJOR = 15  # Bundled Pandoc's Mach-O target; picker/Claude require 13.
 UV_APPLE_SILICON_ARTIFACT = "uv-aarch64-apple-darwin.tar.gz"
 UV_APPLE_SILICON_URL = (
     "https://releases.astral.sh/github/uv/releases/download/"

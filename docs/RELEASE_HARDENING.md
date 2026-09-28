@@ -2,10 +2,14 @@
 
 ## Runtime and privacy
 
-Apple Silicon macOS **13 or newer** is required. The native picker targets 13;
-the pinned Python/uv runtime and selected native wheels have compatible builds.
-NumPy and SciPy also publish optimized macOS 14 wheels; installers on 13 select
-their macOS 11/12 alternatives. Acceptance on an actual macOS 13 clean machine
+Apple Silicon macOS **15 or newer** is required by the current default bundle.
+Actual Mach-O load-command inspection found: Python/uv target 11, the picker and
+bundled Claude executable target 13, and bundled Pandoc/debugpy attachment library
+target **15**. Pandoc's
+wheel metadata alone understates that requirement, so the installer uses the real
+binary floor. NumPy/SciPy have compatible macOS 11/12 and optimized macOS 14 builds.
+Supporting 13/14 would require a separately validated compatible Pandoc build;
+it must not be claimed from wheel tags alone. Clean-machine macOS 15 acceptance
 remains a final-artifact check, not a claim established by unit tests.
 
 LightGBM is not referenced by product code and is no longer a default dependency.
