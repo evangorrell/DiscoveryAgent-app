@@ -840,60 +840,11 @@ class InteractiveHypothesisGenerator:
     def initialize_agent(self):
         """Initialize HypothesisGenAgent with checkpoint configuration."""
         try:
-            # Create a minimal file-only logger for this interactive script
-            # We don't want the AIR Logger's console output duplicating our UI
-            log_dir = str(self.checkpoint_dir / "interactive_generation_logs")
-            os.makedirs(log_dir, exist_ok=True)
-
-            # Create a simple logger that only writes to file, no console output
-            import logging
-            from logging.handlers import RotatingFileHandler
-
-            file_logger = logging.getLogger("interactive_hyp_gen")
-            file_logger.setLevel(logging.INFO)
-
-            # Clear any existing handlers
-            if file_logger.handlers:
-                for h in list(file_logger.handlers):
-                    file_logger.removeHandler(h)
-
-            # Add file handler only (no console handler)
-            log_file = os.path.join(log_dir, "interactive_session.log")
-            file_handler = RotatingFileHandler(
-                log_file,
-                maxBytes=50 * 1024 * 1024,
-                backupCount=5,
-                encoding="utf-8"
-            )
-            formatter = logging.Formatter(
-                "%(asctime)s - %(levelname)s - %(message)s",
-                datefmt="%Y-%m-%d %H:%M:%S"
-            )
-            file_handler.setFormatter(formatter)
-            file_logger.addHandler(file_handler)
-
-            # Create a minimal logger wrapper compatible with AIR's Logger interface
-            class MinimalLogger:
-                def __init__(self, logger):
-                    self._logger = logger
-                    self.analysis_name = "interactive_hyp_gen"
-
-                def log_action(self, action, details):
-                    message = f"[ACTION] {action}"
-                    if os.environ.get('DISCOVERYAGENT_DEBUG_PROMPTS') == '1':
-                        message += f": {details}"
-                    self._logger.info(message)
-
-                def log_error(self, error):
-                    self._logger.error(f"[ERROR] {error}")
-
-                def log_prompt(self, role, prompt_text, prompt_name=""):
-                    self._logger.info(f"[PROMPT] {role} {prompt_name}")
-
-                def log_response(self, response_text, source="model"):
-                    self._logger.info(f"[RESPONSE] {source}")
-
-            self.logger = MinimalLogger(file_logger)
+            # Keep scientific details in this project's checkpoint, independently
+            # of process-wide loggers and terminal verbosity.
+            from AIR.utils.scientific_audit import ProjectAuditLogger
+            self.logger = ProjectAuditLogger(
+                self.checkpoint_dir.resolve() / "interactive_generation_logs")
 
             # Extract multi-hypothesis parameters
             n_hypotheses = getattr(self.hypothesis_config, 'n_candidate_hypotheses', 3)

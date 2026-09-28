@@ -4596,11 +4596,12 @@ def _write_interaction_log(event_type: str, payload: dict) -> Path | None:
         except Exception:
             pass
 
+        from AIR.utils.scientific_audit import sanitize_record
         record = {
             'timestamp': datetime.utcnow().replace(tzinfo=timezone.utc).isoformat().replace('+00:00', 'Z'),
             'event_type': event_type,
             **ctx,
-            **payload,
+            **sanitize_record(payload),
         }
         # Payload callers cannot redirect a record into another project's
         # identity; the active managed registry record is authoritative.
@@ -19241,6 +19242,13 @@ def api_chat():
                     **_response_time_payload(request_started_at),
                 })
             if isinstance(reply, dict) and reply.get('error'):
+                _write_interaction_log('provider_failure', {
+                    'operation': 'audit_chat', 'provider': 'claude_agent_sdk',
+                    'model': model_name, 'status': 'error',
+                    'message': message, 'error': reply['error'],
+                    'error_type': reply.get('error_type'),
+                    **_response_time_payload(request_started_at),
+                })
                 reset_hint = reply.get('reset_hint')
                 return jsonify({
                     'success': False,
@@ -19288,6 +19296,13 @@ def api_chat():
 
             source = 'code'
             if isinstance(reply, dict) and reply.get('error'):
+                _write_interaction_log('provider_failure', {
+                    'operation': 'code_chat', 'provider': 'claude_agent_sdk',
+                    'model': _resolve_code_chat_model(generator), 'status': 'error',
+                    'message': message, 'error': reply['error'],
+                    'error_type': reply.get('error_type'),
+                    **_response_time_payload(request_started_at),
+                })
                 reset_hint = reply.get('reset_hint')
                 return jsonify({
                     'success': False,
