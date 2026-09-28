@@ -689,10 +689,11 @@ def test_resume_keeps_captured_selection_and_fails_structurally_after_source_is_
 
 
 def test_navigation_and_project_selector_use_one_unified_data_section():
-    base = Path("da_selection_ui/templates/base.html").read_text(encoding="utf-8")
-    projects = Path("da_selection_ui/templates/projects.html").read_text(encoding="utf-8")
-    data_page = Path("da_selection_ui/templates/data_library.html").read_text(encoding="utf-8")
-    script = Path("da_selection_ui/static/projects.js").read_text(encoding="utf-8")
+    package = Path(__file__).resolve().parents[1] / "da_selection_ui"
+    base = (package / "templates/base.html").read_text(encoding="utf-8")
+    projects = (package / "templates/projects.html").read_text(encoding="utf-8")
+    data_page = (package / "templates/data_library.html").read_text(encoding="utf-8")
+    script = (package / "static/projects.js").read_text(encoding="utf-8")
 
     assert '<h1 class="v2-title v2-app-page-title">Projects</h1>' in projects and 'id="pj-list"' in projects
     assert 'Start new investigations or continue work across your existing research projects.' in projects

@@ -402,7 +402,7 @@ def test_unproven_repeated_legacy_start_is_not_synthesized_as_resume(tmp_path):
 def test_backend_emits_native_resume_lifecycle_event():
     backend = (
         Path(app_module.__file__).resolve().parents[2]
-        / "discoveryagent" / "AIR" / "hypothesis_brancher.py"
+        / "backend" / "AIR" / "hypothesis_brancher.py"
     ).read_text(encoding="utf-8")
 
     assert '"round_resumed" if mid_round_resume_state is not None else "round_started"' in backend
