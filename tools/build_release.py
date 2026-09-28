@@ -32,6 +32,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, default=REPOSITORY_ROOT)
     parser.add_argument("--package-revision", type=int, default=0)
     parser.add_argument(
+        "--backend-only", action="store_true",
+        help="Development snapshot refresh only: preserve the existing frontend directory",
+    )
+    parser.add_argument(
         "--mode",
         choices=("development", "production"),
         required=True,
@@ -48,6 +52,7 @@ def main() -> int:
             mode=arguments.mode,
             destination_root=arguments.output_dir,
             package_revision=arguments.package_revision,
+            backend_only=arguments.backend_only,
         )
     except ReleaseBuildError as exc:
         print(f"release build failed: {exc}", file=sys.stderr)

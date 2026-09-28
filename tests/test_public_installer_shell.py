@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shlex
 import shutil
 import stat
@@ -24,12 +25,12 @@ class PublicInstallerShellTests(unittest.TestCase):
         self.home.mkdir()
         self.tmpdir.mkdir()
         self.script = Path(__file__).resolve().parents[1] / "install.sh"
-        release = json.loads(
-            self.script.with_name("release.json").read_text(encoding="utf-8")
-        )
-        self.artifact_name = (
-            f"discoveryagent-{release['release_id']}-macos-arm64.tar.gz"
-        )
+        # The installer pins a published asset; development snapshot metadata
+        # changes independently and must not redefine that artifact's identity.
+        template = self.script.read_text(encoding="utf-8")
+        release_id = re.search(r'^RELEASE_ID="([^"]+)"$', template, re.M).group(1)
+        artifact_name = re.search(r'^ARTIFACT_NAME="([^"]+)"$', template, re.M).group(1)
+        self.artifact_name = artifact_name.replace('${RELEASE_ID}', release_id)
         self.artifact = self.root / "artifact.tar.gz"
         self.uv_archive = self.root / "uv.tar.gz"
         self._make_fake_artifact(self.artifact)

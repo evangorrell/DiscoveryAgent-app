@@ -12,6 +12,37 @@ from da_selection_ui import app as app_module
 PNG_BYTES = b"\x89PNG\r\n\x1a\n" + (b"viewer-context" * 8)
 
 
+def test_failed_audit_chat_is_persisted_as_error_not_assistant_answer(monkeypatch):
+    import json
+    client = app_module.app.test_client()
+    project, _ = _create_project_with_viewer_artifacts(client)
+    generator = SimpleNamespace(
+        code_dir=project["code_dir"], checkpoint_dir=project["checkpoint_dir"],
+        report_code_chat_conversations={}, memory_report_summary="", memory_report="",
+        research_paper_path=None, citation_documents=[],
+    )
+    monkeypatch.setattr(app_module, "get_or_restore_generator", lambda: generator)
+    monkeypatch.setattr(app_module, "_run_code_chat_with_timeout", lambda *a, **kw: {
+        "error": "Provider unavailable; password=fake-error-secret",
+        "error_type": "provider_error", "answer": "",
+    })
+    response = client.post("/api/chat", json={
+        "project_id": project["id"], "mode": "audit",
+        "message": "Explain the ribosomal result", "messages": [],
+    })
+    assert response.status_code == 200
+    assert response.get_json()["success"] is False
+    path = Path(project["project_root"]) / ".discoveryagent/interactions/audit_interactions.jsonl"
+    events = [json.loads(line) for line in path.read_text().splitlines()]
+    failures = [event for event in events if event["event_type"] == "provider_failure"]
+    assert len(failures) == 1
+    assert failures[0]["message"] == "Explain the ribosomal result"
+    assert failures[0]["status"] == "error"
+    assert failures[0]["provider"] == "claude_agent_sdk"
+    assert "fake-error-secret" not in path.read_text()
+    assert not any(event["event_type"] == "chat" for event in events)
+
+
 def _create_project_with_viewer_artifacts(client, name="Viewer Context Project"):
     response = client.post(
         "/api/projects",

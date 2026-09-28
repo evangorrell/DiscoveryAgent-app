@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import shutil
 import stat
@@ -17,6 +18,8 @@ from release_builder.builder import (
     SourceRequest,
     build_release,
     snapshot_manifest,
+    snapshot_git_tree,
+    verify_backend_snapshot,
 )
 
 
@@ -167,21 +170,98 @@ class ReleaseBuilderTests(unittest.TestCase):
         with self.assertRaisesRegex(ReleaseBuildError, "origin/main"):
             self._build(frontend, sha, backend, backend_sha, self.root / "stale", mode="production")
 
-    def test_canonical_backend_patches_keep_upstream_provenance(self):
+    def test_production_ignores_committed_umbrella_backend_patches(self):
         frontend, sha, backend, backend_sha = self._pair(app={"on_main": True}, backend={"on_main": True})
         shutil.copytree(backend, frontend / 'application/backend', ignore=shutil.ignore_patterns('.git'))
-        _write(frontend / 'application/backend/AIR/__init__.py', '# reviewed security patch\n')
-        _write(frontend / 'release.json', json.dumps({'backend': {'commit': backend_sha}}))
+        _write(frontend / 'application/backend/AIR/__init__.py', '# independent umbrella edit\n')
+        _write(frontend / 'application/backend/umbrella_only.py', '# must never ship\n')
+        # Even stale umbrella provenance cannot override explicit source selection.
+        _write(frontend / 'release.json', json.dumps({'backend': {'commit': '0' * 40}}))
         _git(frontend, 'add', '--all')
-        _git(frontend, 'commit', '-m', 'reviewed backend patch')
+        _git(frontend, 'commit', '-m', 'stale umbrella snapshot')
         sha = _git(frontend, 'rev-parse', 'HEAD')
         _git(frontend, 'push', 'origin', 'HEAD:refs/heads/main')
         output = self.root / 'canonical'
         metadata = self._build(frontend, sha, backend, backend_sha, output, mode='production')
-        self.assertEqual((output / 'application/backend/AIR/__init__.py').read_text(), '# reviewed security patch\n')
+        self.assertEqual((output / 'application/backend/AIR/__init__.py').read_text(), '')
+        self.assertFalse((output / 'application/backend/umbrella_only.py').exists())
         self.assertEqual(metadata['backend']['commit'], backend_sha)
-        self.assertEqual(metadata['backend']['canonical_commit'], sha)
-        self.assertEqual(metadata['backend']['canonical_tree'], _git(frontend, 'rev-parse', 'HEAD:application/backend'))
+        self.assertEqual(metadata['backend']['tree'], _git(backend, 'rev-parse', f'{backend_sha}^{{tree}}'))
+        self.assertEqual(metadata['backend']['uv_lock_sha256'], hashlib.sha256((backend / 'uv.lock').read_bytes()).hexdigest())
+        self.assertFalse({'canonical_commit', 'canonical_tree', 'source_path'} & metadata['backend'].keys())
+        self.assertEqual(snapshot_git_tree(output / 'application/backend'), metadata['backend']['tree'])
+        with self.assertRaisesRegex(ReleaseBuildError, 'upstream Git tree'):
+            verify_backend_snapshot(frontend / 'application/backend', metadata['backend'])
+
+    def test_explicit_backend_commit_controls_generated_content(self):
+        frontend, sha, backend, old_sha = self._pair()
+        _write(backend / 'AIR/__init__.py', '# new upstream functionality\n')
+        _git(backend, 'add', '--all')
+        _git(backend, 'commit', '-m', 'upstream change')
+        new_sha = _git(backend, 'rev-parse', 'HEAD')
+        _git(backend, 'push', 'origin', 'HEAD:refs/heads/v2-ui')
+        for backend_sha, content in ((old_sha, ''), (new_sha, '# new upstream functionality\n')):
+            output = self.root / backend_sha
+            metadata = self._build(frontend, sha, backend, backend_sha, output)
+            self.assertEqual((output / 'application/backend/AIR/__init__.py').read_text(), content)
+            self.assertEqual(metadata['backend']['commit'], backend_sha)
+            self.assertEqual(snapshot_git_tree(output / 'application/backend'), _git(backend, 'rev-parse', f'{backend_sha}^{{tree}}'))
+
+    def test_backend_verifier_rejects_content_inventory_mode_and_provenance_drift(self):
+        frontend, sha, backend, backend_sha = self._pair()
+        for change in ('content', 'extra', 'missing', 'mode', 'tree', 'lock', 'override'):
+            with self.subTest(change=change):
+                output = self.root / change
+                metadata = self._build(frontend, sha, backend, backend_sha, output)
+                root = output / 'application/backend'
+                provenance = metadata['backend']
+                if change == 'content':
+                    _write(root / 'AIR/__init__.py', 'tampered')
+                elif change == 'extra':
+                    _write(root / 'extra.py', 'independent code')
+                elif change == 'missing':
+                    (root / 'AIR/__init__.py').unlink()
+                elif change == 'mode':
+                    (root / 'scripts/run_hb_sherlock.py').chmod(0o644)
+                elif change == 'tree':
+                    provenance['tree'] = '0' * 40
+                elif change == 'lock':
+                    provenance['uv_lock_sha256'] = '0' * 64
+                else:
+                    provenance['canonical_commit'] = sha
+                with self.assertRaises(ReleaseBuildError):
+                    verify_backend_snapshot(root, provenance)
+
+    def test_backend_tree_verifier_preserves_symlinks_modes_and_git_sort_order(self):
+        frontend, sha, backend, backend_sha = self._pair()
+        _write(backend / 'a.c', 'file next to similarly named directory\n')
+        _write(backend / 'a/nested.txt', 'nested\n')
+        (backend / 'dangling-link').symlink_to('missing-target')
+        _git(backend, 'add', '--all')
+        _git(backend, 'commit', '-m', 'tree fidelity fixtures')
+        backend_sha = _git(backend, 'rev-parse', 'HEAD')
+        _git(backend, 'push', 'origin', 'HEAD:refs/heads/v2-ui')
+        output = self.root / 'tree-fidelity'
+        metadata = self._build(frontend, sha, backend, backend_sha, output)
+        root = output / 'application/backend'
+        verify_backend_snapshot(root, metadata['backend'])
+        self.assertEqual(snapshot_git_tree(root), _git(backend, 'rev-parse', 'HEAD^{tree}'))
+        self.assertEqual(os.readlink(root / 'dangling-link'), 'missing-target')
+        (root / 'dangling-link').unlink()
+        (root / 'dangling-link').symlink_to('different-target')
+        with self.assertRaisesRegex(ReleaseBuildError, 'upstream Git tree'):
+            verify_backend_snapshot(root, metadata['backend'])
+
+    def test_package_verification_checks_upstream_tree_even_if_inventory_is_recomputed(self):
+        from manager.discoveryagent_cli.package_identity import package_source_manifest
+        from release_builder.builder import verify_package_source
+        frontend, sha, backend, backend_sha = self._pair(app={'on_main': True}, backend={'on_main': True})
+        output = self.root / 'production-tree'
+        metadata = self._build(frontend, sha, backend, backend_sha, output, mode='production')
+        _write(output / 'application/backend/AIR/__init__.py', '# independent edit\n')
+        metadata['package_sources'] = json.loads(json.dumps(package_source_manifest(output)))
+        with self.assertRaisesRegex(ReleaseBuildError, 'upstream Git tree'):
+            verify_package_source(output, metadata)
 
     def test_identical_inputs_produce_identical_snapshots_and_metadata(self) -> None:
         frontend, frontend_sha, backend, backend_sha = self._pair()
@@ -209,6 +289,27 @@ class ReleaseBuilderTests(unittest.TestCase):
         self.assertNotIn(str(frontend), serialized)
         self.assertNotIn(str(backend), serialized)
         self.assertNotIn("timestamp", serialized.lower())
+
+    def test_backend_only_refresh_preserves_frontend_and_its_local_environment(self):
+        frontend, sha, backend, backend_sha = self._pair()
+        output = self.root / 'refresh'
+        self._build(frontend, sha, backend, backend_sha, output)
+        _write(output / 'application/frontend/.venv/local-marker', 'retain local environment')
+        _write(output / 'application/frontend/da_selection_ui/__init__.py', '# local frontend work\n')
+        _write(output / 'application/backend/old_umbrella_patch.py', '# discard independent backend edit\n')
+        before = snapshot_manifest(output / 'application/frontend')
+        metadata = build_release(SourceRequest(frontend, sha), SourceRequest(backend, backend_sha),
+                                 mode='development', destination_root=output, backend_only=True)
+        self.assertEqual(snapshot_manifest(output / 'application/frontend'), before)
+        self.assertFalse((output / 'application/backend/old_umbrella_patch.py').exists())
+        verify_backend_snapshot(output / 'application/backend', metadata['backend'])
+
+    def test_backend_only_refresh_cannot_bypass_production_build_contract(self):
+        frontend, sha, backend, backend_sha = self._pair()
+        with self.assertRaisesRegex(ReleaseBuildError, 'development mode'):
+            build_release(SourceRequest(frontend, sha), SourceRequest(backend, backend_sha),
+                          mode='production', package_revision=1,
+                          destination_root=self.root / 'invalid', backend_only=True)
 
     def test_app_metadata_commit_does_not_change_frontend_release_identity(self) -> None:
         frontend, frontend_sha, backend, backend_sha = self._pair()

@@ -76,6 +76,27 @@ def test_new_interaction_is_project_local_and_never_writes_package_storage(tmp_p
     assert _source_log_snapshot() == source_before
 
 
+def test_interaction_redaction_preserves_science_and_prior_records(tmp_path):
+    client = _client()
+    project_id = _create(client, "Redacted Interactions")["project_id"]
+    path = _write_for(project_id, "Redacted Interactions", "chat", {
+        "message": "Earlier scientific question", "reply": "Earlier answer",
+    })
+    before = path.read_bytes()
+    _write_for(project_id, "Redacted Interactions", "provider_failure", {
+        "query": "Ribosomal stoichiometry", "status": "error",
+        "nested": {"access_token": "fake-oauth-credential"},
+        "error": "Authorization: Bearer fake-header-credential",
+    })
+    assert path.read_bytes().startswith(before)
+    assert "fake-oauth-credential" not in path.read_text()
+    assert "fake-header-credential" not in path.read_text()
+    saved = json.loads(path.read_text().splitlines()[-1])
+    assert saved["query"] == "Ribosomal stoichiometry"
+    assert saved["status"] == "error"
+    assert saved["project_id"] == project_id
+
+
 def test_two_managed_projects_have_isolated_interaction_histories(monkeypatch, tmp_path):
     client = _client()
     project_a = _create(client, "Interaction Project A")["project_id"]
