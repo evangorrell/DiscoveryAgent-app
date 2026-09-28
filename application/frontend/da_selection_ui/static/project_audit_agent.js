@@ -1416,12 +1416,13 @@
             renderAssistantReplyIntoPendingTurn(chatId, replyContent, replyText, data.response_time_ms);
         } else {
             const errorText = `Error: ${(data && data.error) ? data.error : 'Audit agent response failed.'}`;
-            appendAssistantMessageToChat(chatId, errorText, null);
+            // A failed request is a retryable UI status, not an assistant answer.
             markChatUnreadIfNeeded(chatId);
             if (activeChatId === chatId) {
                 if (replyContent && replyContent.isConnected) {
                     replyContent.classList.remove('is-pending');
-                    replyContent.innerHTML = `<em>${errorText}</em>`;
+                    replyContent.textContent = errorText;
+                    replyContent.setAttribute('role', 'alert');
                 } else {
                     renderStoredChatHistory(chatHistory);
                 }

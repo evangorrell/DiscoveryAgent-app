@@ -31,10 +31,11 @@ class FakeOptions:
 
 
 class FakeResultMessage:
-    def __init__(self, session_id, result, subtype="success"):
+    def __init__(self, session_id, result, subtype="success", is_error=False):
         self.session_id = session_id
         self.result = result
         self.subtype = subtype
+        self.is_error = is_error
 
 
 def test_run_code_chat_serializes_conversation_even_with_sdk_session(monkeypatch, tmp_path):

@@ -215,6 +215,27 @@ class CodeChatCancelledError(Exception):
     """Raised when a code chat request is cancelled by the caller."""
 
 
+class CodeChatProviderError(RuntimeError):
+    """A terminal SDK failure, not model-authored answer text."""
+
+
+def _safe_provider_error(message: str) -> str:
+    """Classify without echoing provider payloads, keys, or scientific context."""
+    value = message.lower()
+    for terms, public in (
+        (("credit", "balance", "billing"), "The provider reports insufficient credits or a billing problem. Check your account and retry."),
+        (("workspace", "organization", "account"), "The provider rejected the account/workspace configuration. Check your provider account and retry."),
+        (("auth", "api key", "api_key", "401", "403"), "Provider authentication failed. Check your API key and permissions, then retry."),
+        (("model",), "The requested model is unavailable or not permitted for this account. Choose an available model and retry."),
+        (("rate", "429", "overload"), "The provider is rate limited or busy. Wait briefly and retry."),
+        (("timeout", "timed out"), "The provider request timed out. Try a narrower question and retry."),
+        (("max_turns", "maximum number of turns"), "Code agent reached maximum number of turns. Narrow the question and retry."),
+    ):
+        if any(term in value for term in terms):
+            return public
+    return "The provider could not complete this request. Check your account and model availability, then retry."
+
+
 def _estimate_tokens_for_text(text: str) -> int:
     # Rough heuristic: ~4 chars per token
     if not text:
@@ -680,7 +701,6 @@ async def _run_code_chat_stream(
     final_answer: Optional[str] = None
     trace_chunks: list[str] = []
     stream_text_parts: list[str] = []
-    error_max_turns_message: Optional[str] = None
     active_session_id: Optional[str] = None
 
     def _cancelled() -> bool:
@@ -790,13 +810,11 @@ async def _run_code_chat_stream(
 
             if ResultMessage and isinstance(msg, ResultMessage):
                 subtype = getattr(msg, "subtype", None)
-                if subtype == "error_max_turns":
-                    error_max_turns_message = (
-                        "Code agent reached maximum number of turns. Please retry your query and, if possible, narrow the scope so the query can be accomplished in fewer steps. "
-                        "Tip: break down your query into multiple sub-queries that you send in sequence."
-                    )
-                    final_answer = error_max_turns_message
+                if getattr(msg, "is_error", False) or str(subtype or '').startswith('error'):
+                    raise CodeChatProviderError(str(getattr(msg, 'result', None) or subtype))
 
+            if AssistantMessage and isinstance(msg, AssistantMessage) and getattr(msg, 'error', None):
+                raise CodeChatProviderError(_extract_message_text(msg) or str(msg.error))
             text = _extract_message_text(msg)
             if text:
                 final_answer = text
@@ -812,9 +830,6 @@ async def _run_code_chat_stream(
 
     if not final_answer and stream_text_parts:
         final_answer = "".join(stream_text_parts)
-
-    if not final_answer and error_max_turns_message:
-        final_answer = error_max_turns_message
 
     if final_answer:
         return final_answer.strip(), trace_output, active_session_id
@@ -845,14 +860,12 @@ def run_code_chat(
     if not working_dir.exists() or not working_dir.is_dir():
         raise ValueError(f"working_dir does not exist or is not a directory: {working_dir}")
 
+    conversation_snapshot = [dict(m) for m in conversation.messages] if conversation is not None else None
+    conversation_session_snapshot = conversation.sdk_session_id if conversation is not None else None
     try:
         effective_multi_agent = multi_agent and _is_multiagent_code_chat_enabled(working_dir)
         prompt_text = question
-        conversation_snapshot: Optional[list[dict]] = None
-        conversation_session_snapshot: Optional[str] = None
         if conversation is not None:
-            conversation_snapshot = [dict(m) for m in conversation.messages]
-            conversation_session_snapshot = conversation.sdk_session_id
             conversation.add_user_message(question)
             # The installed SDK documents query() as stateless; serialize turns
             # explicitly instead of relying on CLI resume semantics for context.
@@ -907,8 +920,16 @@ def run_code_chat(
             'thinking': None
         } if include_trace else "Interrupted."
     except Exception as e:
+        if conversation is not None and conversation_snapshot is not None:
+            conversation.messages = conversation_snapshot
+            conversation.sdk_session_id = conversation_session_snapshot
+        if isinstance(e, CodeChatProviderError):
+            message = _safe_provider_error(str(e))
+            return {'answer': '', 'thinking': None, 'error': message,
+                    'error_type': 'provider_error'} if include_trace else message
         anth_error = _extract_anthropic_error_message(e)
         if anth_error:
+            anth_error = _safe_provider_error(anth_error)
             reset_hint = "Reset the chat context and try the query again."
             error_type = "timeout" if _is_timeout_like_error_message(anth_error) else "provider_error"
             message = anth_error
@@ -921,7 +942,7 @@ def run_code_chat(
                 )
             if include_trace:
                 return {
-                    'answer': f"{message}\n\n{reset_hint}",
+                    'answer': '',
                     'thinking': None,
                     'error': message,
                     'error_type': error_type,
@@ -936,14 +957,14 @@ def run_code_chat(
                 "(CLAUDE_AGENT_SDK_TIMEOUT_MS / server timeout)."
             )
             return {
-                'answer': error_text,
+                'answer': '',
                 'thinking': None,
                 'error': error_text,
                 'error_type': 'timeout',
             } if include_trace else error_text
-        error_text = f"Error running code chat ({type(e).__name__}): {raw_error}"
+        error_text = "The Audit request could not be completed. Please retry; if it persists, check the provider configuration."
         return {
-            'answer': error_text,
+            'answer': '',
             'thinking': None,
             'error': error_text,
             'error_type': 'runtime_error',
