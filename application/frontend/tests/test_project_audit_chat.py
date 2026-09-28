@@ -65,7 +65,7 @@ def test_audit_assistant_markdown_reuses_shared_scientific_presentation():
     assert "table-layout: fixed" not in audit_css
     assert ".aa-turn-user .aa-turn-body.markdown-body" in audit_css
     assert "filename='report_figures.js'" in html
-    assert "dompurify@3" in html
+    assert "dompurify-3.4.16" in html
     assert "20260818-audit-figure-drag" in html
 
     for selector in (

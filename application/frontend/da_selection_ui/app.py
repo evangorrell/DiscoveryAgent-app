@@ -13749,27 +13749,38 @@ def _load_readme_content(readme_path: str):
 
 
 def render_markdown_to_html(md_text: str) -> str:
-    """Render markdown to HTML with a safe fallback."""
+    """Render untrusted Markdown only through a sanitizer; fail closed."""
     if not md_text:
         return ""
 
     try:
         import markdown
+        import bleach
 
-        return markdown.markdown(
+        rendered = markdown.markdown(
             md_text,
             extensions=["extra", "sane_lists", "smarty", "tables", "toc"],
             output_format="html5",
         )
-    except Exception as exc:
-        # Fall back to a minimal renderer if the markdown package is missing
-        print(f"⚠️  Falling back to minimal markdown rendering: {exc}")
+        return bleach.clean(
+            rendered,
+            tags=set(bleach.sanitizer.ALLOWED_TAGS) | {
+                'p', 'br', 'hr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+                'pre', 'code', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'img',
+            },
+            attributes={'a': ['href', 'title'], 'img': ['src', 'alt', 'title'],
+                        'th': ['align'], 'td': ['align']},
+            protocols={'http', 'https', 'mailto'}, strip=True,
+        )
+    except Exception:
+        # A missing or failing parser/sanitizer must never expose raw HTML.
+        from html import escape
         paragraphs = []
         for para in md_text.split("\n\n"):
             para = para.strip()
             if not para:
                 continue
-            paragraphs.append(f"<p>{para.replace(os.linesep, '<br>')}</p>")
+            paragraphs.append(f"<p>{escape(para).replace(os.linesep, '<br>')}</p>")
         return "\n".join(paragraphs)
 
 

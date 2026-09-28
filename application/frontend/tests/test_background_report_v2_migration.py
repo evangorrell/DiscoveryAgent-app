@@ -89,7 +89,7 @@ def test_v2_audit_does_not_embed_markdown_paper_when_pdf_is_absent(monkeypatch, 
     assert 'id="audit-resource-paper"' not in html
     assert 'id="audit-paper-modal"' not in html
     assert marker not in html
-    assert "dompurify@3" in html
+    assert "dompurify-3.4.16" in html
     assert "report_figures.js" in html
     assert 'href="/Users/' not in html
     assert 'src="/Users/' not in html

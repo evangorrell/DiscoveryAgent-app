@@ -85,8 +85,8 @@
 
     function renderMarkdown(text) {
         if (!text) return '';
-        if (window.marked) {
-            try { return marked.parse(text); } catch (_) {}
+        if (window.DiscoveryReportFigures) {
+            return window.DiscoveryReportFigures.safeMarkdownHtml(text);
         }
         return text
             .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
