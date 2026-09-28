@@ -120,6 +120,7 @@ class ProductionInstallerTests(unittest.TestCase):
         self.sync_calls.append((project_root, environment_root))
         python = environment_root / "bin" / "python"
         python.parent.mkdir(parents=True)
+        (environment_root / "pyvenv.cfg").write_text("version = 3.11.11\n")
         python.symlink_to(Path(sys.executable).resolve())
         return python
 
@@ -245,6 +246,26 @@ class ProductionInstallerTests(unittest.TestCase):
         self.assertTrue(second.reused_release)
         self.assertEqual(self.sync_calls, [])
         self.assertEqual(state_before, second.paths.state_file.read_bytes())
+
+    def test_package_only_install_gets_new_slot_without_changing_projects(self):
+        self.data.mkdir()
+        sentinel = self.data / 'project.json'
+        sentinel.write_text('scientific data')
+        first = self.install_release()
+        metadata_path = self.payload / 'release.json'
+        metadata = json.loads(metadata_path.read_text())
+        metadata['package_revision'] = 1
+        metadata_path.write_text(json.dumps(metadata))
+        second = self.install_release()
+        self.assertEqual(first.release.release_id, second.release.release_id)
+        self.assertNotEqual(first.state.active_release_id, second.state.active_release_id)
+        self.assertFalse(second.reused_release)
+        self.assertTrue(first.paths.release_root(first.state.active_release_id).exists())
+        self.assertEqual(sentinel.read_text(), 'scientific data')
+        metadata.pop('package_revision')
+        metadata_path.write_text(json.dumps(metadata))
+        with self.assertRaisesRegex(BootstrapError, 'older package'):
+            self.install_release()
 
     def test_different_release_is_side_by_side_and_becomes_active(self) -> None:
         first = self.install_release()

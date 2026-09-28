@@ -316,6 +316,10 @@ def validate_packaged_payload(payload_root: Path) -> ReleaseMetadata:
         raise BootstrapError(
             f"Release requires Python {metadata.required_cpython_version}; expected {PYTHON_VERSION}"
         )
+    if metadata.package_revision and metadata.release_type == "production":
+        from .package_identity import package_source_manifest
+        if raw.get("package_sources") != package_source_manifest(payload_root):
+            raise BootstrapError("Packaged program files differ from the approved source manifest")
     return metadata
 
 
@@ -365,12 +369,12 @@ def _state_for_installation(
     previous: ManagerState | None,
 ) -> ManagerState:
     releases = dict(previous.installed_releases) if previous else {}
-    releases[metadata.release_id] = InstalledReleaseState(
-        path=f"releases/{metadata.release_id}"
+    releases[metadata.installation_id] = InstalledReleaseState(
+        path=f"releases/{metadata.installation_id}"
     )
     return ManagerState(
         schema_version=STATE_SCHEMA_VERSION,
-        active_release_id=metadata.release_id,
+        active_release_id=metadata.installation_id,
         installed_releases=releases,
         manager_version=MANAGER_VERSION,
         runtime=RuntimeState(
@@ -436,7 +440,12 @@ def install_production_release(
                 paths.cache_root,
                 selected.bootstrap_runtime,
             )
-        final_release = paths.release_root(metadata.release_id)
+        if previous is not None:
+            from .installation import load_active_release
+            current = load_active_release(paths, previous)
+            if metadata.package_revision < current.metadata.package_revision:
+                raise BootstrapError("Refusing to install an older package revision")
+        final_release = paths.release_root(metadata.installation_id)
         reused_release = False
         if final_release.exists():
             reporter(f"Reusing the installed release {metadata.release_id}")
@@ -448,6 +457,14 @@ def install_production_release(
             _validate_canonical_release_copy(
                 selected.payload_root, final_release, metadata
             )
+            from .bootstrap import environment_needs_rebuild
+            for component in ("frontend", "backend"):
+                environment_root = final_release / "envs" / component
+                if environment_needs_rebuild(environment_root):
+                    reporter(f"Rebuilding incompatible {component} environment")
+                    environment_syncer(runtimes.uv, runtimes.python,
+                                       final_release / "application" / component,
+                                       environment_root, paths.cache_root)
             validation = release_validator(final_release, paths.cache_root)
             reused_release = True
         else:

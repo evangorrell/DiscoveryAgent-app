@@ -115,6 +115,7 @@ class DevelopmentBootstrapTests(unittest.TestCase):
         self.sync_calls.append((project_root, environment_root))
         python = environment_root / "bin" / "python"
         python.parent.mkdir(parents=True, exist_ok=True)
+        (environment_root / "pyvenv.cfg").write_text("version = 3.11.11\n")
         python.write_text("environment python\n", encoding="utf-8")
         return python
 

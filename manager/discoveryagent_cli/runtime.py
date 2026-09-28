@@ -21,6 +21,7 @@ from .errors import RuntimeAcquisitionError
 
 UV_VERSION = "0.11.17"
 PYTHON_VERSION = "3.11.11"
+MINIMUM_MACOS_MAJOR = 13
 UV_APPLE_SILICON_ARTIFACT = "uv-aarch64-apple-darwin.tar.gz"
 UV_APPLE_SILICON_URL = (
     "https://releases.astral.sh/github/uv/releases/download/"
@@ -69,6 +70,10 @@ def platform_identity(
         "arm64",
         "aarch64",
     }:
+        if platform_name is None:
+            version = platform.mac_ver()[0]
+            if not version or int(version.split(".")[0]) < MINIMUM_MACOS_MAJOR:
+                raise RuntimeAcquisitionError(f"DiscoveryAgent requires macOS {MINIMUM_MACOS_MAJOR} or newer")
         return "darwin", "arm64"
     raise RuntimeAcquisitionError(
         "Phase 2A.2 runtime acquisition supports only Apple Silicon macOS; "
