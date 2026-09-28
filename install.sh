@@ -2,6 +2,7 @@
 
 set -eu
 umask 077
+MINIMUM_MACOS_MAJOR=13
 
 RELEASE_TAG="v0.3.0-beta.2"
 RELEASE_ID="dev-4327cc97576a-412b7bd78bc1"
@@ -33,6 +34,10 @@ architecture=${DISCOVERYAGENT_INTERNAL_ARCHITECTURE:-$(uname -m)}
 if [ "$platform" != "Darwin" ] || [ "$architecture" != "arm64" ]; then
     fail "DiscoveryAgent currently supports Apple Silicon macOS."
 fi
+macos_version=${DISCOVERYAGENT_INTERNAL_MACOS_VERSION:-$(sw_vers -productVersion)}
+macos_major=${macos_version%%.*}
+case "$macos_major" in ''|*[!0-9]*) fail "could not determine macOS version" ;; esac
+[ "$macos_major" -ge "$MINIMUM_MACOS_MAJOR" ] || fail "macOS 13 or newer is required"
 
 case $0 in
     */*) script_directory=${0%/*}; [ -n "$script_directory" ] || script_directory=/ ;;
@@ -101,13 +106,22 @@ else
     step "Downloading the DiscoveryAgent release (${ARTIFACT_NAME})"
     artifact="$temporary_root/$ARTIFACT_NAME"
     if [ "$artifact_url" = "$PUBLIC_ARTIFACT_URL" ]; then
-        command -v gh >/dev/null 2>&1 || fail \
-            "private release access requires GitHub CLI; install gh and run gh auth login"
-        gh auth status --hostname github.com >/dev/null 2>&1 || fail \
-            "GitHub CLI is not authenticated; run gh auth login with an account that can access DiscoveryAgent"
-        gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
-            --pattern "$ARTIFACT_NAME" --output "$artifact" || fail \
-            "could not download the private DiscoveryAgent release through GitHub CLI"
+        if http_status=$(curl -fsSL --proto '=https' --proto-redir '=https' \
+                -w '%{http_code}' "$artifact_url" -o "$artifact"); then
+            : # Public release: no gh or account required.
+        else
+            # Discard partial responses before the optional private fallback.
+            rm -f -- "$artifact"
+            case "$http_status" in
+                401|403|404)
+                    command -v gh >/dev/null 2>&1 || fail "could not download the public release (HTTP $http_status); private releases require gh auth login"
+                    gh auth status --hostname github.com >/dev/null 2>&1 || fail "private release access requires gh auth login"
+                    gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+                        --pattern "$ARTIFACT_NAME" --output "$artifact" || fail "could not download the private release"
+                    ;;
+                *) fail "could not download the public release (HTTP $http_status)" ;;
+            esac
+        fi
     else
         curl -fsSL "$artifact_url" -o "$artifact" || fail \
             "could not download the DiscoveryAgent release"

@@ -57,6 +57,7 @@ class PublicInstallerShellTests(unittest.TestCase):
                 "PATH": f"{poison}:/usr/bin:/bin:/usr/sbin:/sbin",
                 "DISCOVERYAGENT_INTERNAL_PLATFORM": "Darwin",
                 "DISCOVERYAGENT_INTERNAL_ARCHITECTURE": "arm64",
+                "DISCOVERYAGENT_INTERNAL_MACOS_VERSION": "13.0",
                 "DISCOVERYAGENT_INTERNAL_ARTIFACT_URL": self.artifact.as_uri(),
                 "DISCOVERYAGENT_INTERNAL_ARTIFACT_SHA256": self.sha256(
                     self.artifact
@@ -114,6 +115,57 @@ exit 2
         environment["DISCOVERYAGENT_TEST_GH_LOG"] = str(log)
         environment["DISCOVERYAGENT_TEST_PRIVATE_ARTIFACT"] = str(self.artifact)
         return log
+
+    def public_download(self, environment, status='200', exit_code=0):
+        curl = self.root / 'poison' / 'curl'
+        curl.write_text('''#!/bin/sh
+case "$*" in
+  *https://github.com/evangorrell/DiscoveryAgent-app/releases/download/*)
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = "-o" ]; then cp "$DISCOVERYAGENT_TEST_ARTIFACT" "$2"; break; fi
+      shift
+    done
+    printf '%s' "$DISCOVERYAGENT_TEST_HTTP_STATUS"
+    exit "$DISCOVERYAGENT_TEST_CURL_EXIT"
+    ;;
+  *) exec /usr/bin/curl "$@" ;;
+esac
+''')
+        curl.chmod(0o755)
+        environment.pop('DISCOVERYAGENT_INTERNAL_ARTIFACT_URL', None)
+        environment.update(DISCOVERYAGENT_TEST_ARTIFACT=str(self.artifact),
+                           DISCOVERYAGENT_TEST_HTTP_STATUS=status,
+                           DISCOVERYAGENT_TEST_CURL_EXIT=str(exit_code))
+
+    def test_anonymous_public_download_needs_no_gh(self):
+        env = self.environment()
+        self.public_download(env)
+        result = self.run_installer(env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_public_http_failure_or_partial_response_is_not_installed(self):
+        for status in ['500', '200']:
+            env = self.environment()
+            self.public_download(env, status, 22)
+            result = self.run_installer(env)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse((self.home / '.local').exists())
+            self.assert_no_installer_temporary_directories()
+
+    def test_public_checksum_mismatch_is_rejected(self):
+        env = self.environment()
+        self.public_download(env)
+        env['DISCOVERYAGENT_INTERNAL_ARTIFACT_SHA256'] = '0' * 64
+        result = self.run_installer(env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('integrity verification failed', result.stderr)
+
+    def test_old_macos_is_rejected_before_download(self):
+        env = self.environment()
+        env['DISCOVERYAGENT_INTERNAL_MACOS_VERSION'] = '12.7'
+        result = self.run_installer(env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('macOS 13 or newer', result.stderr)
 
     def colocated_installer(self, artifact: Path | None = None) -> Path:
         directory = self.root / "release-download"
@@ -275,6 +327,7 @@ exit 2
         environment = self.environment()
         environment.pop("DISCOVERYAGENT_INTERNAL_ARTIFACT_URL")
         log = self.install_fake_authenticated_gh(environment)
+        self.public_download(environment, '404', 22)
 
         result = self.run_installer(environment)
 
