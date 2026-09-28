@@ -29,6 +29,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--backend-repo", type=Path, required=True)
     parser.add_argument("--backend-sha", required=True)
+    parser.add_argument("--output-dir", type=Path, default=REPOSITORY_ROOT)
+    parser.add_argument("--package-revision", type=int, default=0)
     parser.add_argument(
         "--mode",
         choices=("development", "production"),
@@ -44,7 +46,8 @@ def main() -> int:
             SourceRequest(REPOSITORY_ROOT, arguments.app_sha),
             SourceRequest(arguments.backend_repo, arguments.backend_sha),
             mode=arguments.mode,
-            destination_root=REPOSITORY_ROOT,
+            destination_root=arguments.output_dir,
+            package_revision=arguments.package_revision,
         )
     except ReleaseBuildError as exc:
         print(f"release build failed: {exc}", file=sys.stderr)

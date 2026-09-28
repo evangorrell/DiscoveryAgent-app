@@ -1002,7 +1002,7 @@ Format your response as:
                 self.logger.log_action("hypothesis_selected",
                     f"Judge selected hypothesis {selected_idx + 1}")
                 print(f"✓ Judge selected hypothesis {selected_idx + 1}")
-                print(f"   Judge response: {judge_response[:200]}...")
+                self.logger.log_response(judge_response, source="hypothesis_judge")
 
                 # Log the full selected hypothesis
                 self.logger.log_action("selected_hypothesis_full",

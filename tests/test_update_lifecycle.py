@@ -125,7 +125,7 @@ class UpdateFlowTests(unittest.TestCase):
             "artifact_downloader": downloader,
             "extractor": lambda _archive, _destination: payload,
             "payload_validator": lambda _payload: SimpleNamespace(
-                release_id=release_id, release_type="development"
+                release_id=release_id, release_type="development", package_revision=0, installation_id=release_id
             ),
             "research_guard": lambda _state, **_kwargs: self.events.append("research"),
             "frontend_stopper": lambda _paths, _state: self.events.append("frontend") or False,
@@ -157,6 +157,48 @@ class UpdateFlowTests(unittest.TestCase):
             ["Checking for updates...", "DiscoveryAgent is up to date."],
         )
 
+    def test_package_only_update_uses_distinct_slot_and_preserves_data(self):
+        from manager.discoveryagent_cli.installation import load_active_release
+        active = load_active_release(self.paths, self.state)
+        metadata = replace(active.metadata, package_revision=2)
+        manifest = json.loads(self.manifest(metadata.release_id))
+        manifest["package_revision"] = 2
+        sentinel = Path(self.state.data_root) / "scientific-project.txt"
+        sentinel.parent.mkdir(parents=True, exist_ok=True)
+        sentinel.write_text("preserve")
+        dependencies = self.dependencies(metadata.installation_id,
+            manifest_fetcher=lambda _url: json.dumps(manifest).encode(),
+            payload_validator=lambda _payload: metadata)
+        self.assertEqual(self.run_update(dependencies), 0)
+        self.assertEqual(load_state(self.paths.state_file).active_release_id, metadata.installation_id)
+        self.assertEqual(sentinel.read_text(), "preserve")
+        self.assertIn(self.state.active_release_id, load_state(self.paths.state_file).installed_releases)
+
+    def test_same_package_and_older_package_do_not_download(self):
+        from manager.discoveryagent_cli.installation import load_active_release
+        active = load_active_release(self.paths, self.state)
+        revised = replace(active.metadata, package_revision=2)
+        target = self.paths.release_root(revised.installation_id)
+        active.root.rename(target)
+        raw = json.loads((target / "release.json").read_text())
+        raw["package_revision"] = 2
+        (target / "release.json").write_text(json.dumps(raw))
+        state = replace(self.state, active_release_id=revised.installation_id,
+                        installed_releases={revised.installation_id: InstalledReleaseState(path=f"releases/{revised.installation_id}")})
+        write_state_atomic(self.paths.state_file, state)
+        for revision in (2, 1, 0):
+            with self.subTest(revision=revision):
+                manifest = json.loads(self.manifest(revised.release_id))
+                manifest["package_revision"] = revision
+                dependencies = self.dependencies(revised.release_id,
+                    manifest_fetcher=lambda _url: json.dumps(manifest).encode(),
+                    artifact_downloader=lambda *_args: self.fail("must not download"))
+                if revision == 2:
+                    self.assertEqual(self.run_update(dependencies), 0)
+                else:
+                    with self.assertRaisesRegex(UpdateError, "older package"):
+                        self.run_update(dependencies)
+
     def test_different_release_orders_guard_download_stop_install_and_keeps_old(self) -> None:
         new_release = "dev-aaaaaaaaaaaa-bbbbbbbbbbbb"
         self.assertEqual(self.run_update(self.dependencies(new_release)), 0)
@@ -183,7 +225,7 @@ class UpdateFlowTests(unittest.TestCase):
             manifest_fetcher=fetch_manifest,
             artifact_downloader=download_artifact,
             payload_validator=lambda _payload: SimpleNamespace(
-                release_id=release_id, release_type="production"
+                release_id=release_id, release_type="production", package_revision=0, installation_id=release_id
             ),
         )
         with mock.patch(

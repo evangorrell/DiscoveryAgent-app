@@ -356,7 +356,8 @@ class AnalyzerAgent:
         except json.JSONDecodeError as e:
             # If parsing fails, return empty redundancies
             print(f"Warning: Failed to parse analyzer output as JSON: {e}")
-            print(f"Raw output: {analysis_text[:500]}...")
+            if os.environ.get('DISCOVERYAGENT_DEBUG_PROMPTS') == '1':
+                print(f"Raw output: {analysis_text[:500]}...")
             analysis_dict = {"redundancies": []}
 
         return analysis_dict, cost

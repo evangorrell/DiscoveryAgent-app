@@ -37,6 +37,7 @@ class UpdateManifest:
     release_type: str
     release_tag: str
     platforms: dict[str, UpdateArtifact]
+    package_revision: int = 0
 
 
 def update_manifest_url(environ: Mapping[str, str]) -> tuple[str, bool]:
@@ -79,7 +80,7 @@ def parse_update_manifest(
     if not isinstance(payload, dict):
         raise UpdateError("Update manifest must be a JSON object")
     _exact_keys(
-        payload,
+        {key: value for key, value in payload.items() if key != "package_revision"},
         {"schema_version", "channel", "release_id", "release_type", "release_tag", "platforms"},
         "Update manifest",
     )
@@ -118,6 +119,9 @@ def parse_update_manifest(
         if not internal:
             _validate_immutable_url(url, tag=release_tag, filename=filename)
         platforms[platform_key] = UpdateArtifact(filename, url, digest)
+    revision = payload.get("package_revision", 0)
+    if type(revision) is not int or revision < 0:
+        raise UpdateError("package_revision must be a non-negative integer")
     return UpdateManifest(
         UPDATE_SCHEMA_VERSION,
         channel,
@@ -125,6 +129,7 @@ def parse_update_manifest(
         release_type,
         release_tag,
         platforms,
+        revision,
     )
 
 

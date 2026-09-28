@@ -15,6 +15,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Iterable, Literal
+from manager.discoveryagent_cli.package_identity import package_source_manifest
 
 
 SCHEMA_VERSION = 1
@@ -162,6 +163,13 @@ def resolve_source(request: SourceRequest, mode: ReleaseMode, label: str) -> Res
         raise ReleaseBuildError(f"{label} repository has no configured origin remote")
     remote_url = remote.stdout.strip()
 
+    if mode == "production":
+        if _run_git(repository, "status", "--porcelain").stdout.strip():
+            raise ReleaseBuildError(f"{label} production source must have a clean working tree")
+        if _run_git(repository, "rev-parse", "HEAD").stdout.strip() != commit:
+            raise ReleaseBuildError(f"{label} production source HEAD does not match the requested commit")
+        _run_git(repository, "fetch", "origin", "--prune")
+
     refs_output = _run_git(
         repository,
         "for-each-ref",
@@ -263,6 +271,10 @@ def archive_commit(
     try:
         with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as stream:
             members = _safe_archive_members(stream.getmembers())
+            # Git's tar.umask and Python's extraction defaults differ. Use
+            # one explicit permission contract on every supported interpreter.
+            for member in members:
+                member.mode = 0o755 if member.isdir() or member.mode & 0o111 else 0o644
             stream.extractall(destination, members=members)
     except (OSError, tarfile.TarError) as exc:
         raise ReleaseBuildError(
@@ -423,14 +435,21 @@ def build_release(
     *,
     mode: ReleaseMode,
     destination_root: Path,
+    package_revision: int = 0,
 ) -> dict:
     if mode not in ("development", "production"):
         raise ReleaseBuildError(f"Unsupported release mode: {mode}")
+    if type(package_revision) is not int or package_revision < 0 or (mode == "production" and package_revision == 0):
+        raise ReleaseBuildError("Production builds require a positive, monotonically increasing package_revision")
     destination_root = destination_root.expanduser().resolve()
-    destination_root.mkdir(parents=True, exist_ok=True)
 
     app = resolve_source(app_request, mode, "app frontend")
     backend = resolve_source(backend_request, mode, "backend")
+    if mode == "production" and (destination_root == app.repository or app.repository in destination_root.parents):
+        raise ReleaseBuildError("Production output must be outside the source checkout")
+    if mode == "production" and destination_root.exists() and any(destination_root.iterdir()):
+        raise ReleaseBuildError("Production output must be a new empty directory")
+    destination_root.mkdir(parents=True, exist_ok=True)
 
     staging_path = Path(
         tempfile.mkdtemp(prefix=".release-build-", dir=destination_root)
@@ -443,11 +462,40 @@ def build_release(
             application / "frontend",
             source_path=CANONICAL_FRONTEND_PATH,
         )
-        archive_commit(backend, application / "backend")
+        # Reviewed umbrella patches are canonical; retain the upstream commit
+        # separately instead of silently overwriting those patches at release time.
+        canonical_backend = _run_git(app.repository, "cat-file", "-t",
+                                     f"{app.commit}:application/backend", check=False).returncode == 0
+        if canonical_backend:
+            provenance = json.loads(_run_git(app.repository, "show", f"{app.commit}:release.json").stdout)["backend"]
+            if provenance["commit"] != backend.commit:
+                raise ReleaseBuildError("Canonical backend provenance does not match the requested upstream commit")
+            archive_commit(app, application / "backend", source_path="application/backend")
+        else:
+            archive_commit(backend, application / "backend")
         validate_snapshot(application / "frontend", application / "backend")
         metadata = create_release_metadata(mode, app, backend, application)
+        if canonical_backend:
+            metadata["backend"]["canonical_tree"] = _tree_id(app, "application/backend")
+            metadata["backend"]["canonical_commit"] = app.commit
+            metadata["backend"]["source_path"] = "application/backend"
+        if package_revision:
+            metadata["package_revision"] = package_revision
+        if mode == "production":
+            archive_commit(app, staging_path / "source")
+            source = staging_path / "source"
+            for relative in ("manager", "tools/install_local_release.py"):
+                target = staging_path / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(source / relative), str(target))
+            shutil.copy2(source / "install.sh", staging_path / "install.sh")
+            metadata["installer_template_sha256"] = _sha256(staging_path / "install.sh")
+            metadata["package_sources"] = package_source_manifest(staging_path)
         _write_release_json(staging_path / "release.json", metadata)
         _replace_snapshot(staging_path, destination_root)
+        if mode == "production":
+            for relative in ("manager", "tools", "install.sh"):
+                os.replace(staging_path / relative, destination_root / relative)
         return metadata
     except ReleaseBuildError:
         raise
@@ -468,3 +516,25 @@ def snapshot_manifest(root: Path) -> list[tuple[str, str, int, str]]:
         elif path.is_file():
             result.append((relative, "file", mode, _sha256(path)))
     return result
+
+
+def verify_package_source(root: Path, metadata: dict) -> None:
+    if metadata.get("release_type") != "production" or metadata.get("package_revision", 0) < 1:
+        raise ReleaseBuildError("Not a revisioned production snapshot")
+    expected = metadata.get("package_sources")
+    # JSON round-trip normalizes tuple/list representation.
+    actual = json.loads(json.dumps(package_source_manifest(root)))
+    if not expected or actual != expected:
+        raise ReleaseBuildError("Package files differ from the approved committed source snapshot")
+    if _sha256(root / "install.sh") != metadata.get("installer_template_sha256"):
+        raise ReleaseBuildError("Installer template differs from the approved source")
+    frontend, backend = metadata["frontend"], metadata["backend"]
+    if metadata["release_id"] != _release_id("production", frontend["tree"], backend["commit"]):
+        raise ReleaseBuildError("Production application identity mismatch")
+    for component in ("frontend", "backend"):
+        if not metadata[component]["validation"]["reachable_from_origin_main"]:
+            raise ReleaseBuildError("Production source is not approved on origin/main")
+        if _sha256(root / "application" / component / "uv.lock") != metadata[component]["uv_lock_sha256"]:
+            raise ReleaseBuildError("Production lock hash mismatch")
+    if _sha256(root / "application/backend" / PAPERCLIP_WHEEL) != metadata["paperclip"]["sha256"]:
+        raise ReleaseBuildError("Production vendored wheel hash mismatch")

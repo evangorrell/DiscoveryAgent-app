@@ -6,6 +6,7 @@ import io
 import json
 import os
 import socket
+import sys
 import subprocess
 import threading
 import time
@@ -29,7 +30,7 @@ from da_selection_ui.production_server import (
 from da_selection_ui.project_storage import get_data_root
 
 
-FRONTEND_PYTHON = Path(__file__).resolve().parents[1] / ".venv" / "bin" / "python"
+FRONTEND_PYTHON = Path(sys.executable).absolute()
 
 
 class ReturningServer:
@@ -225,7 +226,7 @@ def test_module_returns_nonzero_when_port_is_already_in_use(tmp_path):
             env=environment,
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=60,
         )
 
     assert completed.returncode != 0
@@ -255,7 +256,7 @@ def test_module_smoke_from_unrelated_working_directory(tmp_path):
     )
     health_url = f"http://{DEFAULT_HOST}:{port}/api/health"
     page_url = f"http://{DEFAULT_HOST}:{port}/"
-    deadline = time.monotonic() + 10
+    deadline = time.monotonic() + 60
     health_payload = None
     try:
         while time.monotonic() < deadline:

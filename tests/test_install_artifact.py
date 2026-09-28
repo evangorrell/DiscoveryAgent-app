@@ -15,6 +15,7 @@ from release_builder.install_artifact import (
     InstallArtifactError,
     build_install_artifact,
     verify_install_artifact,
+    write_public_installer,
 )
 
 
@@ -26,6 +27,14 @@ class InstallArtifactTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
+        # Test an explicit payload, not incidental developer caches/environments.
+        source = type(self).repository
+        self.repository = self.root / "source"
+        for relative in ("application", "manager", "tools"):
+            shutil.copytree(source / relative, self.repository / relative, symlinks=True,
+                            ignore=shutil.ignore_patterns(".venv", "__pycache__", ".pytest_cache", ".DS_Store"))
+        shutil.copy2(source / "release.json", self.repository / "release.json")
+        shutil.copy2(source / "install.sh", self.repository / "install.sh")
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -58,12 +67,11 @@ class InstallArtifactTests(unittest.TestCase):
         self.assertEqual(manifest["uv_version"], "0.11.17")
         self.assertNotIn("built_at", manifest)
         verify_install_artifact(first.archive, first.sha256)
-        public_installer = (self.repository / "install.sh").read_text(encoding="utf-8")
-        self.assertIn(
-            f'PUBLIC_ARTIFACT_SHA256="{first.sha256}"',
-            public_installer,
-        )
-        self.assertIn(f'RELEASE_ID="{first.release_id}"', public_installer)
+        # The committed installer pins a published asset, not arbitrary local edits.
+        self.assertEqual(manifest["release_id"], json.loads((self.repository / "release.json").read_text())["release_id"])
+        installer = write_public_installer(self.repository / 'install.sh', first, 'v1.0.0')
+        self.assertIn(f'PUBLIC_ARTIFACT_SHA256="{first.sha256}"', installer.read_text())
+        self.assertIn(f'ARTIFACT_NAME="{first.archive.name}"', installer.read_text())
 
     def test_layout_is_minimal_and_application_is_byte_identical(self) -> None:
         artifact = build_install_artifact(self.repository, self.root / "output")

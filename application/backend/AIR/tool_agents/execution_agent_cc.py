@@ -1443,7 +1443,7 @@ class ExecutionAgentCC(BaseAgent):
 
                         if image_id:
                             tracked_images.append(image_id)
-                            print(f"📊 Tracked image {image_id}: {description[:50]}...")
+                            print(f"📊 Tracked image {image_id}")
                 else:
                     # For other formats (SVG, PDF), just note them without base64 encoding
                     print(f"📊 Generated {file_path_obj.suffix.upper()} file: {filename}")
@@ -1530,6 +1530,8 @@ class ExecutionAgentCC(BaseAgent):
         Returns:
             str: Formatted message content for display
         """
+        if os.environ.get('DISCOVERYAGENT_DEBUG_PROMPTS') != '1':
+            return ""
         try:
             # Convert message to string to work with its representation
             msg_str = str(message_str)
@@ -1787,7 +1789,8 @@ Here's a description of the dataset you're working with:
             except Exception as e:
                 self.logger.log_error(f"Failed to initialize execution tracker logs: {str(e)}")
             
-        self._direct_print(f"\n🤖 Claude Code SDK executing autonomous analysis for: {query[:100]}...")
+        self._direct_print("\n🤖 Claude Code SDK executing autonomous analysis")
+        self.logger.log_action("execution_query", query)
 
         #try:
         # Note: Removed session reset for codebase building to maintain continuity

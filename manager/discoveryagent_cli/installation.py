@@ -38,6 +38,11 @@ class ReleaseMetadata:
     frontend_commit: str
     frontend_tree: str
     backend_commit: str
+    package_revision: int = 0
+
+    @property
+    def installation_id(self) -> str:
+        return f"{self.release_id}-pkg{self.package_revision}" if self.package_revision else self.release_id
 
     @classmethod
     def from_dict(cls, value: Any) -> "ReleaseMetadata":
@@ -59,6 +64,9 @@ class ReleaseMetadata:
             raise ReleaseError("frontend.tree must be a full lowercase Git SHA")
         if not _COMMIT_PATTERN.fullmatch(backend_commit):
             raise ReleaseError("backend.commit must be a full lowercase Git SHA")
+        revision = payload.get("package_revision", 0)
+        if type(revision) is not int or revision < 0:
+            raise ReleaseError("package_revision must be a non-negative integer")
         return cls(
             schema_version=schema_version,
             application_schema_version=application_schema_version,
@@ -70,6 +78,7 @@ class ReleaseMetadata:
             frontend_commit=frontend_commit,
             frontend_tree=frontend_tree,
             backend_commit=backend_commit,
+            package_revision=revision,
         )
 
 
@@ -120,7 +129,7 @@ def load_active_release(
     except OSError as exc:
         raise ReleaseError(f"Could not read active release metadata: {exc}") from exc
     metadata = ReleaseMetadata.from_dict(payload)
-    if metadata.release_id != release_id:
+    if metadata.installation_id != release_id:
         raise ReleaseError(
             f"Active release ID mismatch: state selects {release_id!r}, "
             f"release.json declares {metadata.release_id!r}"

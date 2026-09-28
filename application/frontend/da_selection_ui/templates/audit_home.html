@@ -6,7 +6,9 @@
     <title>Audit | Discovery Agent</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
-    <script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js"></script>
+    <script src="{{ url_for('static', filename='vendor/marked-9.1.6.min.js') }}"></script>
+    <script src="{{ url_for('static', filename='vendor/dompurify-3.4.16.min.js') }}"></script>
+    <script src="{{ url_for('static', filename='report_figures.js') }}"></script>
     <script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 </head>
 <body class="audit-only">
@@ -97,8 +99,8 @@
             // ── Markdown rendering ────────────────────────────────────────────
             function renderMarkdown(text) {
                 if (!text) return '';
-                if (window.marked) {
-                    try { return marked.parse(text); } catch (_) {}
+                if (window.DiscoveryReportFigures) {
+                    return window.DiscoveryReportFigures.safeMarkdownHtml(text);
                 }
                 return text
                     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')

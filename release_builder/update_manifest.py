@@ -34,7 +34,7 @@ def _read_artifact_manifest(path: Path) -> dict:
         "python_version",
         "uv_version",
     }
-    if set(payload) != required:
+    if set(payload) - {"package_revision"} != required:
         raise UpdateManifestBuildError("Artifact manifest has missing or unsupported fields")
     if payload["installer_schema_version"] != 1:
         raise UpdateManifestBuildError("Unsupported install-artifact manifest schema")
@@ -87,6 +87,11 @@ def build_update_manifest(
         "release_type": release_type,
         "schema_version": 1,
     }
+    if "package_revision" in artifact:
+        revision = artifact["package_revision"]
+        if type(revision) is not int or revision < 1:
+            raise UpdateManifestBuildError("Invalid package_revision")
+        payload["package_revision"] = revision
     contents = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
     destination = output.expanduser().resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)

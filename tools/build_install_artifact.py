@@ -13,6 +13,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from release_builder import InstallArtifactError, build_install_artifact  # noqa: E402
+from release_builder.install_artifact import write_public_installer
 
 
 def main(arguments: list[str] | None = None) -> int:
@@ -24,11 +25,15 @@ def main(arguments: list[str] | None = None) -> int:
         type=Path,
         default=REPOSITORY_ROOT / "dist",
     )
+    parser.add_argument("--source-dir", type=Path, default=REPOSITORY_ROOT)
+    parser.add_argument("--release-tag", help="Also emit an install.sh bound to this exact release asset")
     options = parser.parse_args(arguments)
     if not options.output_dir.expanduser().is_absolute():
         parser.error("--output-dir must be an absolute path")
     try:
-        artifact = build_install_artifact(REPOSITORY_ROOT, options.output_dir)
+        artifact = build_install_artifact(options.source_dir, options.output_dir)
+        if options.release_tag:
+            write_public_installer(options.source_dir / "install.sh", artifact, options.release_tag)
     except InstallArtifactError as exc:
         print(f"artifact build failed: {exc}", file=sys.stderr)
         return 1

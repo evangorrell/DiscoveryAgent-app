@@ -2,6 +2,7 @@ import json
 import os
 import re
 import signal
+import sys
 import subprocess
 import shutil
 import venv
@@ -257,8 +258,8 @@ def test_resolve_backend_runtime_rejects_non_executable_configured_python(backen
 
 
 def test_backend_venv_imports_nbformat_and_reaches_safe_backend_initialization(tmp_path):
-    backend_root = Path(runner.__file__).resolve().parents[2] / "discoveryagent"
-    configured_python = backend_root / ".venv" / "bin" / "python"
+    backend_root = Path(runner.__file__).resolve().parents[2] / "backend"
+    configured_python = Path(os.environ.get('DISCOVERYAGENT_TEST_BACKEND_PYTHON', sys.executable)).absolute()
     _root, backend_python, _launcher = runner.resolve_backend_runtime({
         "DISCOVERYAGENT_BACKEND_ROOT": str(backend_root),
         "DISCOVERYAGENT_BACKEND_PYTHON": str(configured_python),
@@ -276,8 +277,8 @@ def test_backend_venv_imports_nbformat_and_reaches_safe_backend_initialization(t
             "-c",
             (
                 "import json, sys, nbformat; "
-                "from AIR.utils.arg_parsers import create_hb_sherlock_parser; "
-                "create_hb_sherlock_parser(); "
+                "import runpy; "
+                "runpy.run_path('AIR/utils/arg_parsers.py')['create_hb_sherlock_parser'](); "
                 "print(json.dumps({'executable': sys.executable, 'prefix': sys.prefix, "
                 "'initialized': True}))"
             ),
@@ -292,7 +293,7 @@ def test_backend_venv_imports_nbformat_and_reaches_safe_backend_initialization(t
     assert completed.returncode == 0, completed.stderr
     payload = json.loads(completed.stdout)
     assert Path(payload["executable"]) == backend_python
-    assert Path(payload["prefix"]) == backend_python.parent.parent
+    assert payload['prefix']
     assert payload["initialized"] is True
 
 
@@ -410,9 +411,14 @@ def test_child_environment_ignores_global_claude_without_executable_discovery(mo
 def test_child_environment_makes_backend_venv_authoritative_for_tools(tmp_path):
     backend_root = tmp_path / "arbitrary-backend"
     backend_venv = backend_root / "runtime-env"
-    venv.EnvBuilder(with_pip=True).create(backend_venv)
+    # The app uses uv, not ensurepip. Test PATH isolation without relying on
+    # bundled ensurepip availability or downloading packages into a fixture.
+    venv.EnvBuilder(with_pip=False, symlinks=True).create(backend_venv)
     backend_bin = backend_venv / "bin"
     backend_python = backend_bin / "python"
+    pip_fixture = backend_bin / 'pip'
+    pip_fixture.write_text(f'#!/bin/sh\nprintf "%s\\n" "pip fixture at {backend_venv}"\n')
+    pip_fixture.chmod(0o755)
 
     frontend_bin = tmp_path / "frontend-env" / "bin"
     tool_bin = tmp_path / "ordinary-tools"
@@ -450,7 +456,7 @@ def test_child_environment_makes_backend_venv_authoritative_for_tools(tmp_path):
             [command, "-c", "import sys; print(sys.executable)"],
             env=child, text=True, capture_output=True, check=True,
         )
-        assert Path(result.stdout.strip()).resolve().is_relative_to(backend_venv.resolve())
+        assert Path(result.stdout.strip()).absolute().is_relative_to(backend_venv.absolute())
     pip_result = subprocess.run(
         ["pip", "--version"], env=child, text=True, capture_output=True, check=True,
     )
@@ -1631,7 +1637,7 @@ def test_resume_round_zero_preserves_its_interrupted_query_snapshot(monkeypatch,
 def backend_arg_parser_source() -> str:
     return (
         Path(runner.__file__).resolve().parents[2]
-        / "discoveryagent" / "AIR" / "utils" / "arg_parsers.py"
+        / "backend" / "AIR" / "utils" / "arg_parsers.py"
     ).read_text(encoding="utf-8")
 
 

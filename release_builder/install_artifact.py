@@ -8,6 +8,7 @@ import io
 import json
 import os
 import posixpath
+import re
 import stat
 import tarfile
 import tempfile
@@ -175,6 +176,21 @@ def verify_install_artifact(archive: Path, expected_sha256: str) -> None:
         )
 
 
+def write_public_installer(template: Path, artifact: InstallArtifact, release_tag: str) -> Path:
+    """Bind the bootstrap script to this exact revisioned, checksummed artifact."""
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", release_tag):
+        raise InstallArtifactError("Unsafe release tag")
+    text = template.read_text(encoding="utf-8")
+    for name, value in {"RELEASE_TAG": release_tag, "RELEASE_ID": artifact.release_id,
+                        "ARTIFACT_NAME": artifact.archive.name, "PUBLIC_ARTIFACT_SHA256": artifact.sha256}.items():
+        text, count = re.subn(r'^' + name + r'="[^"\n]*"$', f'{name}="{value}"', text, flags=re.MULTILINE)
+        if count != 1:
+            raise InstallArtifactError(f"Installer template requires exactly one {name} binding")
+    output = artifact.archive.parent / "install.sh"
+    _write_atomic(output, text.encode("utf-8"), mode=0o755)
+    return output
+
+
 def build_install_artifact(
     repository_root: Path,
     destination: Path,
@@ -182,7 +198,18 @@ def build_install_artifact(
     repository = repository_root.expanduser().resolve()
     output = destination.expanduser().resolve()
     release_id = _release_id(repository)
-    filename = f"discoveryagent-{release_id}-macos-arm64.tar.gz"
+    metadata = json.loads((repository / "release.json").read_text())
+    revision = metadata.get("package_revision", 0)
+    if type(revision) is not int or revision < 0:
+        raise InstallArtifactError("Invalid package_revision")
+    package_id = f"{release_id}-pkg{revision}" if revision else release_id
+    if metadata.get("release_type") == "production":
+        from .builder import verify_package_source
+        try:
+            verify_package_source(repository, metadata)
+        except Exception as exc:
+            raise InstallArtifactError(f"Production source validation failed: {exc}") from exc
+    filename = f"discoveryagent-{package_id}-macos-arm64.tar.gz"
     archive = output / filename
     archive_contents = _archive_bytes(repository)
     digest = hashlib.sha256(archive_contents).hexdigest()
@@ -198,6 +225,8 @@ def build_install_artifact(
         "release_id": release_id,
         "uv_version": UV_VERSION,
     }
+    if revision:
+        manifest_payload["package_revision"] = revision
     _write_atomic(archive, archive_contents)
     _write_atomic(checksum, f"{digest}  {filename}\n".encode("utf-8"))
     _write_atomic(

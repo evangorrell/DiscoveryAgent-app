@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import stat
 import subprocess
 import tempfile
@@ -74,6 +75,9 @@ class ReleaseBuilderTests(unittest.TestCase):
         if include_lock:
             _write(source_root / "uv.lock", f"version = 1\n# {name}\n")
         if kind == "app":
+            _write(repository / "install.sh", "#!/bin/sh\n# committed installer template\n")
+            _write(repository / "manager/discoveryagent_cli/__init__.py", "")
+            _write(repository / "tools/install_local_release.py", "print('install')\n")
             _write(source_root / "da_selection_ui/__init__.py", "")
             _write(source_root / "da_selection_ui/__main__.py", "def main(): pass\n")
             _write(source_root / "da_selection_ui/production_server.py", "APP = True\n")
@@ -97,6 +101,12 @@ class ReleaseBuilderTests(unittest.TestCase):
         _git(repository, "update-ref", "refs/remotes/origin/v2-ui", commit)
         if on_main:
             _git(repository, "update-ref", "refs/remotes/origin/main", commit)
+        remote = self.root / "remotes" / f"{name}.git"
+        remote.parent.mkdir(exist_ok=True)
+        subprocess.run(["git", "clone", "--bare", str(repository), str(remote)], check=True, capture_output=True)
+        _git(repository, "remote", "set-url", "origin", str(remote))
+        if on_main:
+            _git(remote, "update-ref", "refs/heads/main", commit)
         return repository, commit
 
     def _pair(self, **options) -> tuple[Path, str, Path, str]:
@@ -123,7 +133,55 @@ class ReleaseBuilderTests(unittest.TestCase):
             SourceRequest(backend, backend_sha),
             mode=mode,
             destination_root=destination,
+            package_revision=1 if mode == "production" else 0,
         )
+
+    def test_production_rejects_dirty_source_and_wrong_head(self):
+        frontend, sha, backend, backend_sha = self._pair(app={"on_main": True}, backend={"on_main": True})
+        _write(frontend / "untracked.txt", "private")
+        with self.assertRaisesRegex(ReleaseBuildError, "clean working tree"):
+            self._build(frontend, sha, backend, backend_sha, self.root / "out", mode="production")
+        _git(frontend, "add", "untracked.txt")
+        _git(frontend, "commit", "-m", "next")
+        with self.assertRaisesRegex(ReleaseBuildError, "HEAD"):
+            self._build(frontend, sha, backend, backend_sha, self.root / "out", mode="production")
+
+    def test_production_refreshes_stale_main_and_rejects_modified_package(self):
+        from release_builder.builder import verify_package_source
+        frontend, sha, backend, backend_sha = self._pair(app={"on_main": True}, backend={"on_main": True})
+        output = self.root / "production"
+        metadata = self._build(frontend, sha, backend, backend_sha, output, mode="production")
+        verify_package_source(output, json.loads(json.dumps(metadata)))
+        from release_builder.install_artifact import build_install_artifact
+        from manager.discoveryagent_cli.installer import validate_packaged_payload
+        import tarfile
+        artifact = build_install_artifact(output, self.root / 'artifact')
+        with tarfile.open(artifact.archive) as bundle:
+            bundle.extractall(self.root / 'extracted')
+        validate_packaged_payload(self.root / 'extracted/discoveryagent-install')
+        _write(output / "manager/discoveryagent_cli/__init__.py", "changed")
+        with self.assertRaisesRegex(ReleaseBuildError, "differ"):
+            verify_package_source(output, json.loads(json.dumps(metadata)))
+        remote = _git(frontend, "remote", "get-url", "origin")
+        _git(Path(remote), "update-ref", "-d", "refs/heads/main")
+        with self.assertRaisesRegex(ReleaseBuildError, "origin/main"):
+            self._build(frontend, sha, backend, backend_sha, self.root / "stale", mode="production")
+
+    def test_canonical_backend_patches_keep_upstream_provenance(self):
+        frontend, sha, backend, backend_sha = self._pair(app={"on_main": True}, backend={"on_main": True})
+        shutil.copytree(backend, frontend / 'application/backend', ignore=shutil.ignore_patterns('.git'))
+        _write(frontend / 'application/backend/AIR/__init__.py', '# reviewed security patch\n')
+        _write(frontend / 'release.json', json.dumps({'backend': {'commit': backend_sha}}))
+        _git(frontend, 'add', '--all')
+        _git(frontend, 'commit', '-m', 'reviewed backend patch')
+        sha = _git(frontend, 'rev-parse', 'HEAD')
+        _git(frontend, 'push', 'origin', 'HEAD:refs/heads/main')
+        output = self.root / 'canonical'
+        metadata = self._build(frontend, sha, backend, backend_sha, output, mode='production')
+        self.assertEqual((output / 'application/backend/AIR/__init__.py').read_text(), '# reviewed security patch\n')
+        self.assertEqual(metadata['backend']['commit'], backend_sha)
+        self.assertEqual(metadata['backend']['canonical_commit'], sha)
+        self.assertEqual(metadata['backend']['canonical_tree'], _git(frontend, 'rev-parse', 'HEAD:application/backend'))
 
     def test_identical_inputs_produce_identical_snapshots_and_metadata(self) -> None:
         frontend, frontend_sha, backend, backend_sha = self._pair()
@@ -215,6 +273,7 @@ class ReleaseBuilderTests(unittest.TestCase):
             .st_mode
         )
         self.assertEqual(mode, 0o755)
+        self.assertEqual(stat.S_IMODE((destination / 'application/backend/pyproject.toml').stat().st_mode), 0o644)
 
     def test_invalid_repository_paths_are_rejected(self) -> None:
         frontend, frontend_sha, backend, backend_sha = self._pair()

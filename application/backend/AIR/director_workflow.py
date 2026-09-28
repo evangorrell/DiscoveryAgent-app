@@ -1094,9 +1094,10 @@ class DirectorWorkflow:
             print(f"📊 Previous queries completed: {start_query - 1}")
         else:
             print(f"🚀 Starting Director Workflow")
-            print(f"📊 Dataset: {self.dataset_description[:100]}...")
+            if os.environ.get('DISCOVERYAGENT_DEBUG_PROMPTS') == '1':
+                print(f"📊 Dataset: {self.dataset_description[:100]}...")
 
-        if self.task_description is not None:
+        if self.task_description is not None and os.environ.get('DISCOVERYAGENT_DEBUG_PROMPTS') == '1':
             print(f"📝 Task: {self.task_description[:100]}...")
         print(f"🔍 Max queries: {self.max_queries}")
 
@@ -1820,7 +1821,7 @@ Generated on: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
             }
             
             self.logger.log_action("image_saved", f"Image {image_id} saved as {filename}")
-            print(f"📊 Image tracked: {image_id} -> {filename} ({description[:50]}...)")
+            print(f"📊 Image tracked: {image_id} -> {filename}")
             return image_id
             
         except Exception as e:

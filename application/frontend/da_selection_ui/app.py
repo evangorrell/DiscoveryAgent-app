@@ -52,6 +52,7 @@ if load_dotenv:
 from . import local_round_runner
 from . import model_catalog
 from . import data_library
+from .local_request_security import enforce_local_request_boundary
 from .project_skills import (
     MAX_ARCHIVE_BYTES,
     SkillImportError,
@@ -175,6 +176,7 @@ def _open_browser_if_no_app_tab(url: str, port: int) -> bool:
     return True
 
 app = Flask(__name__)
+app.before_request(enforce_local_request_boundary)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', os.urandom(24).hex())
 app.config['SESSION_TYPE'] = 'filesystem'
 _flask_session_dir = get_flask_session_dir()
@@ -13747,27 +13749,38 @@ def _load_readme_content(readme_path: str):
 
 
 def render_markdown_to_html(md_text: str) -> str:
-    """Render markdown to HTML with a safe fallback."""
+    """Render untrusted Markdown only through a sanitizer; fail closed."""
     if not md_text:
         return ""
 
     try:
         import markdown
+        import bleach
 
-        return markdown.markdown(
+        rendered = markdown.markdown(
             md_text,
             extensions=["extra", "sane_lists", "smarty", "tables", "toc"],
             output_format="html5",
         )
-    except Exception as exc:
-        # Fall back to a minimal renderer if the markdown package is missing
-        print(f"⚠️  Falling back to minimal markdown rendering: {exc}")
+        return bleach.clean(
+            rendered,
+            tags=set(bleach.sanitizer.ALLOWED_TAGS) | {
+                'p', 'br', 'hr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+                'pre', 'code', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'img',
+            },
+            attributes={'a': ['href', 'title'], 'img': ['src', 'alt', 'title'],
+                        'th': ['align'], 'td': ['align']},
+            protocols={'http', 'https', 'mailto'}, strip=True,
+        )
+    except Exception:
+        # A missing or failing parser/sanitizer must never expose raw HTML.
+        from html import escape
         paragraphs = []
         for para in md_text.split("\n\n"):
             para = para.strip()
             if not para:
                 continue
-            paragraphs.append(f"<p>{para.replace(os.linesep, '<br>')}</p>")
+            paragraphs.append(f"<p>{escape(para).replace(os.linesep, '<br>')}</p>")
         return "\n".join(paragraphs)
 
 
@@ -14420,8 +14433,8 @@ def create_generator(
         cache_documents=cache_documents if cache_documents is not None else CLI_CACHE_DOCUMENTS,
         research_paper_path=research_paper_path,
     )
-    # Enable prompt debug printing only for the web app context
-    generator.debug_print_prompts = True
+    # Research-content debugging is an explicit developer opt-in.
+    generator.debug_print_prompts = os.environ.get('DISCOVERYAGENT_DEBUG_PROMPTS') == '1'
     generator.audit_only_mode = _is_audit_only_mode()
 
     GENERATORS[session_id] = generator

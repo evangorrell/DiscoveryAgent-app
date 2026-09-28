@@ -443,7 +443,7 @@ test('embedded reports keep the same wrapper while standalone teardown adds no g
 });
 
 test('shared renderer loads before the viewer under matching fresh asset keys', () => {
-    const key = '20260909-report-pdf-figures-1';
+    const key = '20260927-safe-markdown-1';
     assert.ok(workspaceTemplate.indexOf("filename='report_figures.js'")
         < workspaceTemplate.indexOf("filename='round_workspace.js'"));
     assert.match(workspaceTemplate, new RegExp("report_figures\\.js', v='" + key));

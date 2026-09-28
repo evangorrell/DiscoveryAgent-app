@@ -43,7 +43,7 @@
     const AUDIT_CHAT_STORAGE_MAX_MESSAGES = 120;
     const AUDIT_CHAT_STORAGE_MAX_CHARS = 350000;
     const projectId = (typeof config.projectId === 'string') ? config.projectId.trim() : '';
-    const hasProjectIdentity = /^prj_[A-Za-z0-9]+$/.test(projectId);
+    const hasProjectIdentity = projectId.length > 0;
     const auditChatStorageKey = hasProjectIdentity
         ? `da_audit_chat_state_v${CHAT_STORAGE_VERSION}_project_${projectId}`
         : '';
@@ -85,8 +85,8 @@
 
     function renderMarkdown(text) {
         if (!text) return '';
-        if (window.marked) {
-            try { return marked.parse(text); } catch (_) {}
+        if (window.DiscoveryReportFigures) {
+            return window.DiscoveryReportFigures.safeMarkdownHtml(text);
         }
         return text
             .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -1416,12 +1416,13 @@
             renderAssistantReplyIntoPendingTurn(chatId, replyContent, replyText, data.response_time_ms);
         } else {
             const errorText = `Error: ${(data && data.error) ? data.error : 'Audit agent response failed.'}`;
-            appendAssistantMessageToChat(chatId, errorText, null);
+            // A failed request is a retryable UI status, not an assistant answer.
             markChatUnreadIfNeeded(chatId);
             if (activeChatId === chatId) {
                 if (replyContent && replyContent.isConnected) {
                     replyContent.classList.remove('is-pending');
-                    replyContent.innerHTML = `<em>${errorText}</em>`;
+                    replyContent.textContent = errorText;
+                    replyContent.setAttribute('role', 'alert');
                 } else {
                     renderStoredChatHistory(chatHistory);
                 }

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -187,6 +188,30 @@ def _run(
         ) from exc
 
 
+def environment_needs_rebuild(environment_root: Path) -> bool:
+    """Detect interpreter/extension ABI drift without importing broken extensions."""
+    if not environment_root.exists():
+        return False
+    if (environment_root.is_symlink() or environment_root.parent.is_symlink()
+            or environment_root.parent.parent.is_symlink()
+            or environment_root.parent.name != "envs"
+            or environment_root.name not in {"frontend", "backend"}):
+        raise BootstrapError("Refusing to rebuild an environment outside a managed envs slot")
+    try:
+        config = (environment_root / "pyvenv.cfg").read_text()
+    except OSError:
+        return True
+    version = re.search(r"(?m)^version(?:_info)?\s*=\s*(\S+)", config)
+    if not version or version.group(1) != PYTHON_VERSION:
+        return True
+    abi = "".join(PYTHON_VERSION.split(".")[:2])
+    for extension in environment_root.rglob("*.so"):
+        tag = re.search(r"\.cpython-(\d+)", extension.name)
+        if tag and tag.group(1) != abi:
+            return True
+    return False
+
+
 def sync_environment(
     uv: Path,
     app_python: Path,
@@ -208,6 +233,24 @@ def sync_environment(
         runner=runner,
         environment=environment,
     )
+    backup = None
+    if environment_needs_rebuild(environment_root):
+        backup = environment_root.with_name(f".{environment_root.name}-abi-{uuid.uuid4().hex}")
+        os.replace(environment_root, backup)
+    try:
+        installed = _sync_environment(uv, app_python, project_root, environment_root, environment, runner)
+    except Exception:
+        if backup is not None:
+            if environment_root.exists():
+                shutil.rmtree(environment_root)
+            os.replace(backup, environment_root)
+        raise
+    if backup is not None:
+        shutil.rmtree(backup)
+    return installed
+
+
+def _sync_environment(uv, app_python, project_root, environment_root, environment, runner):
     _run(
         [
             uv,
@@ -238,6 +281,8 @@ import importlib.metadata as md
 import json
 from pathlib import Path
 import da_selection_ui
+import pydantic_core
+import claude_agent_sdk
 
 package = Path(da_selection_ui.__file__).resolve().parent
 direct_url = md.distribution("da-selection-ui").read_text("direct_url.json")
@@ -256,6 +301,13 @@ from pathlib import Path
 import AIR
 import claude_agent_sdk
 import gxl_paperclip
+import numpy
+import pydantic_core
+import pymupdf
+import pypdf
+import nbformat
+import nbclient
+import jupyter_client
 
 sdk = Path(claude_agent_sdk.__file__).resolve().parent
 claude = sdk / "_bundled" / ("claude.exe" if os.name == "nt" else "claude")

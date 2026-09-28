@@ -178,16 +178,22 @@ class Logger:
 
     def log_prompt(self, role, prompt_text, prompt_name=""):
         """Log a prompt sent to a model with a clear tag for searching."""
+        if os.environ.get('DISCOVERYAGENT_DEBUG_PROMPTS') != '1':
+            return
         header = f"[PROMPT] [{prompt_name}] ({role})" if prompt_name else f"[PROMPT] ({role})"
         self.logger.info(f"{header} - {self.analysis_name}\n{prompt_text}")
 
     def log_response(self, response_text, source="model"):
         """Log a response from the model or an analysis output."""
+        if os.environ.get('DISCOVERYAGENT_DEBUG_PROMPTS') != '1':
+            return
         header = f"[RESPONSE] [{source}]"
         self.logger.info(f"{header} - {self.analysis_name}\n{response_text}")
 
     def log_code(self, code, iteration=None, analysis=None):
         """Log code blocks in a searchable manner."""
+        if os.environ.get('DISCOVERYAGENT_DEBUG_PROMPTS') != '1':
+            return
         meta = []
         if iteration is not None:
             meta.append(f"iter={iteration}")
@@ -204,14 +210,15 @@ class Logger:
     def log_error(self, error_msg, code=None):
         """Log critical errors with ERROR level and optional code context."""
         msg = f"[ERROR] - {self.analysis_name}\n{error_msg}"
-        if code:
+        if code and os.environ.get('DISCOVERYAGENT_DEBUG_PROMPTS') == '1':
             msg += f"\nIn code:\n```python\n{code}\n```"
         self.logger.error(msg)
 
     def log_action(self, action, details=None):
         """General-purpose action logger for high-level events."""
         msg = f"[ACTION] {action} - {self.analysis_name}"
-        if details:
+        if details and (os.environ.get('DISCOVERYAGENT_DEBUG_PROMPTS') == '1' or action in {
+                'round_started', 'query_start', 'query_completed', 'analysis_end', 'iteration'}):
             msg += f"\n{details}"
         self.logger.info(msg)
 

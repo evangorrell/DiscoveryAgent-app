@@ -879,7 +879,10 @@ class InteractiveHypothesisGenerator:
                     self.analysis_name = "interactive_hyp_gen"
 
                 def log_action(self, action, details):
-                    self._logger.info(f"[ACTION] {action}: {details}")
+                    message = f"[ACTION] {action}"
+                    if os.environ.get('DISCOVERYAGENT_DEBUG_PROMPTS') == '1':
+                        message += f": {details}"
+                    self._logger.info(message)
 
                 def log_error(self, error):
                     self._logger.error(f"[ERROR] {error}")

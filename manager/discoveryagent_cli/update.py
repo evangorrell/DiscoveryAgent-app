@@ -349,7 +349,7 @@ def update_installed_application(
 ) -> int:
     selected = dependencies or UpdateDependencies()
     state = load_state(paths.state_file)
-    load_active_release(paths, state, require_layout=True)
+    active = load_active_release(paths, state, require_layout=True)
     print("Checking for updates...", file=stdout, flush=True)
     manifest_url, internal = update_manifest_url(environ)
     if not internal and not manifest_url.startswith("https://"):
@@ -358,7 +358,9 @@ def update_installed_application(
         selected.manifest_fetcher(manifest_url),
         internal=internal,
     )
-    if manifest.release_id == state.active_release_id:
+    if manifest.package_revision < active.metadata.package_revision:
+        raise UpdateError("Refusing an older package revision; the installed package is newer")
+    if manifest.release_id == active.metadata.release_id and manifest.package_revision == active.metadata.package_revision:
         print("DiscoveryAgent is up to date.", file=stdout)
         return 0
     key = platform_key(state.platform, state.architecture)
@@ -381,13 +383,14 @@ def update_installed_application(
             metadata = selected.payload_validator(payload)
         except ManagerError as exc:
             raise UpdateError(f"Update artifact payload is invalid: {exc}") from exc
-        if metadata.release_id != manifest.release_id or metadata.release_type != manifest.release_type:
+        if (metadata.release_id != manifest.release_id or metadata.release_type != manifest.release_type
+                or metadata.package_revision != manifest.package_revision):
             raise UpdateError("Update artifact identity does not match its manifest")
         selected.frontend_stopper(paths, state)
         print("Updating DiscoveryAgent...", file=stdout, flush=True)
         selected.installer_runner(payload, paths, state)
         updated = load_state(paths.state_file)
-        if updated.active_release_id != manifest.release_id:
+        if updated.active_release_id != metadata.installation_id:
             raise UpdateError("The new installer did not activate the expected release")
 
     print(f"\n✓ DiscoveryAgent updated to {manifest.release_id}\n", file=stdout)

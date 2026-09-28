@@ -358,23 +358,37 @@
         });
     }
 
-    function renderMarkdown(element, text) {
-        if (!root.marked) {
-            element.innerHTML = renderFallbackMarkdown(text);
-            return;
+    function safeMarkdownHtml(text, options = {}) {
+        try {
+            if (root.marked && root.DOMPurify && typeof root.DOMPurify.sanitize === 'function') {
+                const html = root.marked.parse(text || '', { gfm: true, breaks: true, ...options });
+                const clean = root.DOMPurify.sanitize(html);
+                if (typeof clean === 'string') return clean;
+            }
+        } catch (_) {
+            // Never insert parser output after a parser/sanitizer failure.
         }
-        const html = root.marked.parse(text || '', { gfm: true, breaks: true });
-        element.innerHTML = root.DOMPurify ? root.DOMPurify.sanitize(html) : html;
+        return renderFallbackMarkdown(text);
+    }
+
+    function renderMarkdown(element, text) {
+        element.innerHTML = safeMarkdownHtml(text);
         collapseEmbeddedFigures(element);
     }
 
     function renderReportMarkdown(element, text, figures, options = {}) {
-        if (!root.marked) {
+        if (!root.marked || !root.DOMPurify) {
             element.innerHTML = renderFallbackMarkdown(text);
             return;
         }
         const figureMap = new Map((figures || []).map((figure) => [figure.token, figure]));
-        const renderer = new root.marked.Renderer();
+        let renderer;
+        try {
+            renderer = new root.marked.Renderer();
+        } catch (_) {
+            element.innerHTML = renderFallbackMarkdown(text);
+            return;
+        }
         renderer.image = function (href, title, alt) {
             if (href && typeof href === 'object') {
                 alt = href.text || '';
@@ -402,8 +416,7 @@
             return '<figure class="rw-report-figure"><img src="' + figure.url
                 + '" alt="' + safeAlt + '" loading="lazy">' + caption + '</figure>';
         };
-        const html = root.marked.parse(text || '', { gfm: true, breaks: true, renderer });
-        element.innerHTML = root.DOMPurify ? root.DOMPurify.sanitize(html) : html;
+        element.innerHTML = safeMarkdownHtml(text, { renderer });
         hydrateReportPdfs(element, figureMap);
         collapseEmbeddedFigures(element);
         attachAuditFigureDragging(element, figures, options);
@@ -416,6 +429,7 @@
         hydrateReportPdfs,
         collapseEmbeddedFigures,
         renderFallbackMarkdown,
+        safeMarkdownHtml,
         renderMarkdown,
         renderReportMarkdown,
     };

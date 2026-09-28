@@ -8,7 +8,7 @@ dependencies = [
     # LLM providers
     "anthropic>=0.54.0",        # Anthropic Claude API + Bedrock support
     "openai>=1.50.0",           # OpenAI API; also used for OpenRouter (custom base_url)
-    "together>=1.5.0",          # Together AI API
+    "together>=2.37.0,<3",      # v1 pins vulnerable Pillow <12; v2 retains chat API
     # Paperclip is the default deep-research provider. GXL distributes its
     # Python SDK as an official wheel rather than through the PyPI index.
     "gxl-paperclip==0.7.24",
@@ -26,7 +26,7 @@ dependencies = [
     "nbformat>=5.10.0",
 
     # Data handling
-    "lxml>=5.3.0",
+    "lxml>=6.1.0,<7",
     "numpy>=1.26.0",
     "pandas>=2.2.0",
     "xarray>=2026.1.0",
@@ -34,7 +34,6 @@ dependencies = [
 
     # Data science / ML
     "imbalanced-learn>=0.14.0",
-    "lightgbm>=4.6.0",
     "matplotlib>=3.8.0",
     "networkx>=3.4.0",
     "numba>=0.61.0",
@@ -49,7 +48,7 @@ dependencies = [
     # Visualization
     "adjustText>=1.3.0",
     "matplotlib-venn>=1.1.0",
-    "pillow>=10.0.0",           # Image handling in notebooks/reports
+    "pillow>=12.3.0,<13",       # Patched image parsers for notebooks/reports
     "PyWavelets>=1.9.0",
     "UpSetPlot>=0.9.0",
 
@@ -71,21 +70,24 @@ dependencies = [
     # PDF
     "PyMuPDF>=1.27.0",
     "pypandoc_binary>=1.16.0",
-    "pypdf>=6.0.0",
+    "pypdf>=6.16.1,<7",
 
     # Utilities
-    "aiohttp>=3.11.0",          # Async HTTP (ACS data fetching)
+    "aiohttp>=3.14.3,<4",        # Patched HTTP client response parsing
     "backoff>=2.2.0",
     "croniter>=6.0.0",
     "natsort>=8.4.0",
     "python-dotenv>=1.0.0",     # Load API keys from .env
     "pyyaml>=6.0.0",            # YAML config parsing
-    "requests>=2.32.0",         # HTTP requests
+    "requests>=2.33.0,<3",      # Patched HTTP requests
     "termcolor>=2.0.0",         # Colored terminal output
     "validators>=0.34.0",
 ]
 
 [project.optional-dependencies]
+# Not used by product orchestration. macOS users opting into this toolbox
+# must separately provide OpenMP (for example Homebrew libomp).
+lightgbm = ["lightgbm>=4.6.0"]
 # Interactive CLI mode (MCP server for Claude Code)
 interactive = [
     "fastmcp>=2.14.7,<3",
@@ -184,7 +186,7 @@ dev = [
 
 # Install everything (except dev)
 all = [
-    "AIR[acs,astronomy,aws,bio,interactive,langchain,nlp,opentargets,tda,torch]",
+    "AIR[acs,astronomy,aws,bio,interactive,langchain,lightgbm,nlp,opentargets,tda,torch]",
 ]
 
 [build-system]
