@@ -27,13 +27,14 @@ execution activity are scientific records, not debug-log copies, and remain inta
 ## Identity and update compatibility
 
 The application ID remains `prod-{frontend_tree[:12]}-{upstream_backend_commit[:12]}`.
-It never incorporates the metadata-bearing umbrella commit. Reviewed patches to
-the canonical backend are retained; metadata records both its upstream provenance
-and the exact canonical backend tree/commit.
+It never incorporates the metadata-bearing umbrella commit. The standalone
+`owencqueen/discoveryagent` repository is the only canonical backend source.
+`application/backend` is a generated snapshot, never a backend development tree.
+Metadata records the selected upstream commit, Git tree and lockfile hash.
 
 Production packages additionally require a positive `package_revision`. Increase
 this **global release sequence** for every published package, including manager-only
-and canonical-backend-only changes. Do not reuse a revision for different contents.
+and backend-only changes. Do not reuse a revision for different contents.
 Install slots and archive names include `-pkgN`; the application ID does not.
 Identical app/revision is up to date; a greater revision offers an update; a lower
 revision is rejected. New application identities update normally. Missing revisions
@@ -53,8 +54,10 @@ updates. The stable endpoint follows public stable releases, not drafts/prerelea
 2. Run `tools/build_release.py --mode production --app-sha APP_SHA
    --backend-repo BACKEND_CHECKOUT --backend-sha UPSTREAM_BACKEND_SHA
    --package-revision N --output-dir EMPTY_EXTERNAL_DIRECTORY`.
-   Output must be new/empty and outside the source checkout. The canonical backend
-   provenance must match the selected upstream commit; no dirty working files ship.
+   Output must be new/empty and outside the source checkout. Backend files come
+   only from the selected standalone Git commit, never umbrella backend edits.
+   The generated backend must reproduce its upstream Git tree (content, inventory,
+   executable modes and symlink targets) and lock hash; no dirty working files ship.
 3. Run `tools/build_install_artifact.py --source-dir SNAPSHOT_DIRECTORY
    --output-dir ASSET_DIRECTORY --release-tag TAG`.
    This verifies the source inventory, app identity, lock/wheel hashes and installer
@@ -71,6 +74,19 @@ The package inventory excludes release metadata itself, so there is no circular
 hash. It covers application files, manager, and installer entry point and is checked
 again after extraction. Public downloads use HTTPS and verify SHA-256; colocated
 artifacts remain supported, with authenticated fallback for private releases.
+
+For a reviewed development snapshot refresh, use the same builder with
+`--mode development --backend-only --app-sha APP_SHA --backend-repo BACKEND_CHECKOUT
+--backend-sha APPROVED_BACKEND_SHA --output-dir UMBRELLA_CHECKOUT`.
+This replaces only the generated backend and `release.json`, preserving the frontend
+directory and local environment. It is not an artifact build; the backend-only
+option is rejected in production mode. Commit the generated snapshot and metadata
+together. Never cherry-pick independent changes into `application/backend`.
+
+`verify_backend_snapshot` verifies a snapshot against the recorded upstream tree
+and lock hash. Production package verification repeats this check independently
+of its package file inventory. Provenance approval still relies on the builder's
+immutable Git-source and origin/main checks, not on trusting arbitrary metadata.
 
 ## Validation
 

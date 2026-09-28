@@ -316,6 +316,50 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def snapshot_git_tree(root: Path) -> str:
+    """Compute a Git SHA-1 tree from content/modes, without an index or checkout.
+
+    Symlink targets (including dangling links) are blobs, never followed. Only
+    Git's executable bit affects regular-file modes; timestamps do not matter.
+    """
+    def object_id(kind: str, data: bytes) -> bytes:
+        return hashlib.sha1(f"{kind} {len(data)}\0".encode() + data).digest()
+
+    def tree(directory: Path) -> bytes:
+        entries = []
+        for path in directory.iterdir():
+            mode = path.lstat().st_mode
+            name = os.fsencode(path.name)
+            if stat.S_ISLNK(mode):
+                git_mode, oid = b"120000", object_id("blob", os.fsencode(os.readlink(path)))
+                sort_key = name
+            elif stat.S_ISDIR(mode):
+                git_mode, oid = b"40000", tree(path)
+                sort_key = name + b"/"
+            elif stat.S_ISREG(mode):
+                git_mode = b"100755" if mode & 0o111 else b"100644"
+                oid = object_id("blob", path.read_bytes())
+                sort_key = name
+            else:
+                raise ReleaseBuildError(f"Unsupported backend snapshot entry: {path}")
+            entries.append((sort_key, git_mode + b" " + name + b"\0" + oid))
+        return object_id("tree", b"".join(value for _, value in sorted(entries)))
+
+    if root.is_symlink() or not root.is_dir():
+        raise ReleaseBuildError("Backend snapshot must be a directory, not a symlink")
+    return tree(root).hex()
+
+
+def verify_backend_snapshot(root: Path, provenance: dict) -> None:
+    """Reject snapshots that cannot reproduce the declared upstream Git tree."""
+    if any(key in provenance for key in ("canonical_tree", "canonical_commit", "source_path")):
+        raise ReleaseBuildError("Backend provenance must identify standalone source, not umbrella overrides")
+    if snapshot_git_tree(root) != provenance.get("tree"):
+        raise ReleaseBuildError("Backend snapshot differs from the declared upstream Git tree")
+    if _sha256(root / "uv.lock") != provenance.get("uv_lock_sha256"):
+        raise ReleaseBuildError("Backend snapshot lock hash mismatch")
+
+
 def _source_metadata(
     source: ResolvedSource,
     lockfile: Path,
@@ -397,10 +441,11 @@ def _remove_generated_target(path: Path) -> None:
         path.unlink()
 
 
-def _replace_snapshot(staging: Path, destination_root: Path) -> None:
-    target_application = destination_root / "application"
+def _replace_snapshot(staging: Path, destination_root: Path, *, backend_only: bool = False) -> None:
+    relative = Path("application/backend" if backend_only else "application")
+    target_application = destination_root / relative
     target_release = destination_root / "release.json"
-    staged_application = staging / "application"
+    staged_application = staging / relative
     staged_release = staging / "release.json"
     backup = staging / "previous"
     backup.mkdir()
@@ -436,12 +481,15 @@ def build_release(
     mode: ReleaseMode,
     destination_root: Path,
     package_revision: int = 0,
+    backend_only: bool = False,
 ) -> dict:
     if mode not in ("development", "production"):
         raise ReleaseBuildError(f"Unsupported release mode: {mode}")
     if type(package_revision) is not int or package_revision < 0 or (mode == "production" and package_revision == 0):
         raise ReleaseBuildError("Production builds require a positive, monotonically increasing package_revision")
     destination_root = destination_root.expanduser().resolve()
+    if backend_only and (mode != "development" or not (destination_root / "application/frontend").is_dir()):
+        raise ReleaseBuildError("Backend-only refresh requires development mode and an existing frontend")
 
     app = resolve_source(app_request, mode, "app frontend")
     backend = resolve_source(backend_request, mode, "backend")
@@ -462,23 +510,12 @@ def build_release(
             application / "frontend",
             source_path=CANONICAL_FRONTEND_PATH,
         )
-        # Reviewed umbrella patches are canonical; retain the upstream commit
-        # separately instead of silently overwriting those patches at release time.
-        canonical_backend = _run_git(app.repository, "cat-file", "-t",
-                                     f"{app.commit}:application/backend", check=False).returncode == 0
-        if canonical_backend:
-            provenance = json.loads(_run_git(app.repository, "show", f"{app.commit}:release.json").stdout)["backend"]
-            if provenance["commit"] != backend.commit:
-                raise ReleaseBuildError("Canonical backend provenance does not match the requested upstream commit")
-            archive_commit(app, application / "backend", source_path="application/backend")
-        else:
-            archive_commit(backend, application / "backend")
+        # The standalone repository is the only backend source of truth.
+        # Never copy independent patches from app:application/backend.
+        archive_commit(backend, application / "backend")
         validate_snapshot(application / "frontend", application / "backend")
         metadata = create_release_metadata(mode, app, backend, application)
-        if canonical_backend:
-            metadata["backend"]["canonical_tree"] = _tree_id(app, "application/backend")
-            metadata["backend"]["canonical_commit"] = app.commit
-            metadata["backend"]["source_path"] = "application/backend"
+        verify_backend_snapshot(application / "backend", metadata["backend"])
         if package_revision:
             metadata["package_revision"] = package_revision
         if mode == "production":
@@ -492,7 +529,7 @@ def build_release(
             metadata["installer_template_sha256"] = _sha256(staging_path / "install.sh")
             metadata["package_sources"] = package_source_manifest(staging_path)
         _write_release_json(staging_path / "release.json", metadata)
-        _replace_snapshot(staging_path, destination_root)
+        _replace_snapshot(staging_path, destination_root, backend_only=backend_only)
         if mode == "production":
             for relative in ("manager", "tools", "install.sh"):
                 os.replace(staging_path / relative, destination_root / relative)
@@ -529,6 +566,7 @@ def verify_package_source(root: Path, metadata: dict) -> None:
     if _sha256(root / "install.sh") != metadata.get("installer_template_sha256"):
         raise ReleaseBuildError("Installer template differs from the approved source")
     frontend, backend = metadata["frontend"], metadata["backend"]
+    verify_backend_snapshot(root / "application/backend", backend)
     if metadata["release_id"] != _release_id("production", frontend["tree"], backend["commit"]):
         raise ReleaseBuildError("Production application identity mismatch")
     for component in ("frontend", "backend"):
