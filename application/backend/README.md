@@ -56,7 +56,12 @@ source .venv/bin/activate
 python -V
 ```
 
-The base install includes the full Jupyter stack, common data formats (xarray, lxml), the core ML/data science stack (scikit-learn, scipy, matplotlib, seaborn, lightgbm, xgboost, shap, numba, networkx), visualization extras (matplotlib-venn, UpSetPlot, PyWavelets), statistical modeling (statsmodels, pingouin, formulaic, autograd), web/scraping tools (selenium, beautifulsoup4, gql), and PDF tools (PyMuPDF, pypdf).
+The base install includes the full Jupyter stack, common data formats (xarray, lxml), the core ML/data science stack (scikit-learn, scipy, matplotlib, seaborn, xgboost, shap, numba, networkx), visualization extras (matplotlib-venn, UpSetPlot, PyWavelets), statistical modeling (statsmodels, pingouin, formulaic, autograd), web/scraping tools (selenium, beautifulsoup4, gql), and PDF tools (PyMuPDF, pypdf).
+
+LightGBM is an optional `lightgbm` extra, not required by DiscoveryAgent's
+workflows. Its macOS wheel requires a separately installed OpenMP runtime
+(for example `brew install libomp`) before `uv sync --extra lightgbm`.
+The normal managed installation does not enable this extra or require Homebrew.
 
 Optional extras cover heavier or domain-specific dependencies that you can add later by re-running `uv sync`:
 
