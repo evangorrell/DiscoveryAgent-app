@@ -14433,8 +14433,8 @@ def create_generator(
         cache_documents=cache_documents if cache_documents is not None else CLI_CACHE_DOCUMENTS,
         research_paper_path=research_paper_path,
     )
-    # Enable prompt debug printing only for the web app context
-    generator.debug_print_prompts = True
+    # Research-content debugging is an explicit developer opt-in.
+    generator.debug_print_prompts = os.environ.get('DISCOVERYAGENT_DEBUG_PROMPTS') == '1'
     generator.audit_only_mode = _is_audit_only_mode()
 
     GENERATORS[session_id] = generator
