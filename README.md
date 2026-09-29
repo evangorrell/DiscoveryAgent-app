@@ -6,7 +6,7 @@
 
 DiscoveryAgent runs locally on your Mac as a persistent research space.
 
-https://github.com/user-attachments/assets/fd0238a4-b580-45bb-ac03-7934a930b83e
+https://github.com/user-attachments/assets/0ce3b30c-fe8b-4726-8b28-6bfcd3c17de1
 
 ## Quick Start
 
