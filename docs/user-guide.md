@@ -95,7 +95,7 @@ A new project starts with **Round 0**, an exploratory investigation driven by
 your objective and data—not by a manually selected hypothesis. Follow progress
 in **Round Workspace** and review the completed report.
 
-After Round 0 finishes, open **Hypothesis Studio** and choose **Initialize workspace**. You can provide optional guidance before generating candidates. Discuss a hypothesis in **Chat**, request changes in **Edit**, edit hypotheses manually, regenerate the candidate entirely, or remove individual hypotheses from the **•••** menu. Select a hypothesis when you are ready to investigate it in the next round.
+After Round 0 finishes, open **Hypothesis Studio** and choose **Initialize workspace**. You can provide optional guidance before generating candidates. Discuss a hypothesis in **Chat**, request changes in **Edit**, edit hypotheses manually, regenerate a candidate entirely, or remove individual hypotheses from the **•••** menu. Select a hypothesis when you are ready to investigate it in the next round.
 
 Round Workspace keeps the round's activity, reports, figures, code, and generated files together. The **Round Report** should contain enough information to understand the investigation, but you can also review individual query reports and the sub-agents that were called. Ask the **Audit Agent** about evidence or analysis choices to understand the underlying outputs. Generated claims still require scientific review and, where appropriate, independent validation.
 

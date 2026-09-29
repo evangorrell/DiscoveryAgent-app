@@ -1,10 +1,10 @@
 # DiscoveryAgent
 
-**DiscoveryAgent is an agentic AI research system that helps scientists investigate hypotheses using their own data and the scientific literature. It coordinates specialized agents to analyze data, help develop hypotheses, and carry out iterative investigations—while keeping the scientist in control of what gets studied.**
+**DiscoveryAgent is a multi-agent AI system for semi-autonomous scientific research. Give it your data and a research objective, and it carries out iterative scientific investigations—exploring your data, connecting findings to the scientific literature, performing computational analyses, and developing new hypotheses.**
 
-DiscoveryAgent runs locally on your Mac and brings literature research, hypothesis development, and computational analysis into a persistent research workspace. It can investigate a question over multiple steps, generate code and figures, and produce reports that you can inspect before deciding what to investigate next.
+**After you devise a hypothesis, a coordinated team of specialized AI agents plans the investigation, searches and synthesizes the literature, writes and executes analyses, critiques intermediate findings, and builds on what it learns. Research unfolds in rounds, with each round carrying forward the evidence and context from the last so the investigation can deepen over time.**
 
-You provide the scientific context and choose the direction. Treat generated findings as research outputs to evaluate—not as independently validated conclusions.
+DiscoveryAgent runs locally on your Mac as a persistent research space.
 
 <!-- PUBLICATION: DEMO VIDEO
 Place the approximately 40-second launch video here, immediately below the introduction.
@@ -111,7 +111,9 @@ See [Authentication and models](docs/user-guide.md#authentication-and-models) fo
 | `discoveryagent update` | Install the latest release. |
 | `discoveryagent uninstall` | Remove the app while preserving project data. |
 
-Updates preserve projects and settings. Finish or stop active research before updating or uninstalling. See [Updating and troubleshooting](docs/user-guide.md#updating-and-troubleshooting).
+Updates preserve projects and settings. Finish or stop active research before updating or uninstalling.
+
+See [Updating and troubleshooting](docs/user-guide.md#updating-and-troubleshooting) for more details.
 
 ## Local Data & Privacy
 
@@ -121,9 +123,7 @@ The interface, project files, and analysis environment run locally on your Mac. 
 
 ## Documentation
 
-- [User guide](docs/user-guide.md): authentication, project data, models, and stopping or resuming work
-- [Using Skills](docs/user-guide.md#using-skills)
-- [Updating and troubleshooting](docs/user-guide.md#updating-and-troubleshooting)
+- [User Guide](docs/user-guide.md) — authentication, project data, models, skills, updating, and troubleshooting
 
 ## Paper
 
@@ -131,11 +131,15 @@ The accompanying paper and citation will be linked here when available.
 
 <!-- PUBLICATION: PAPER AND CITATION
 Replace the sentence above with the approved paper title, author list, and URL.
-Add the final BibTeX citation beneath it. Link the title here and keep the Agent
+Add the final BibTeX citation in the Citation section below. Link the title here and keep the Agent
 System callout pointing to this section.
 Required: title, authors, public URL, and approved BibTeX. Do not infer a venue,
 DOI, arXiv identifier, or publication date.
 -->
+
+## Citation
+
+TODO: Add the approved paper citation and BibTeX when available.
 
 <!-- PUBLICATION: Add the approved license notice and link before publication.
 License and publication approval are pending; no license is asserted here. -->
