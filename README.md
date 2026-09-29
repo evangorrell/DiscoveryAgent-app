@@ -6,13 +6,7 @@
 
 DiscoveryAgent runs locally on your Mac as a persistent research space.
 
-<!-- PUBLICATION: DEMO VIDEO
-Place the approximately 40-second launch video here, immediately below the introduction.
-Upload the final video to GitHub and paste its actual hosted attachment URL on its
-own line. Check playback in GitHub's rendered README. If it does not embed there,
-add a repository-hosted preview image linked to that same video URL, with alt text
-"Watch the DiscoveryAgent demo (40 seconds)". No final asset or URL is available yet.
--->
+https://github.com/user-attachments/assets/fd0238a4-b580-45bb-ac03-7934a930b83e
 
 ## Quick Start
 
