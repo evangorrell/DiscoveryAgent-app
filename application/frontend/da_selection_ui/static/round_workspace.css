@@ -76,6 +76,16 @@
 .rw-tab-scrollbar{position:absolute;z-index:5;right:0;bottom:0;left:0;box-sizing:border-box;height:4px;padding:1px 0 0;overflow:hidden;background:var(--v2-border-soft);cursor:pointer;touch-action:none}
 .rw-tab-scrollbar[hidden]{display:none!important;height:0;padding:0;border:0;background:transparent;pointer-events:none}
 .rw-tab-scrollbar-thumb{display:block;height:3px;min-width:24px;border-radius:999px;background:var(--v2-muted);cursor:grab;will-change:transform;transition:background-color .12s ease}
+
+/* Read-only configuration: fixed header and independently scrollable content. */
+.rw-project-configuration-modal { display: flex; flex-direction: column; overflow: hidden; }
+.rw-project-configuration-modal .v2-modal-head { position: relative; flex: 0 0 auto; padding: 28px 52px 20px 32px; justify-content: flex-start; }
+.rw-project-configuration-modal .v2-modal-title { margin: 0; text-align: left; font-size: 1.65rem; }
+.rw-project-configuration-modal .v2-modal-head .v2-field-help { margin: 10px 0 0; }
+.rw-project-configuration-modal .v2-modal-close { position: absolute; top: 16px; right: 16px; width: 32px; height: 32px; }
+.rw-project-configuration-modal .v2-modal-close:focus-visible { outline: 2px solid var(--v2-accent); outline-offset: 2px; }
+.rw-project-configuration-body { flex: 1 1 auto; min-height: 0; padding: 4px 32px 28px; }
+.rw-project-configuration-defaults-title { margin: 18px 0 10px; font: 600 .8rem var(--v2-sans); }
 .rw-tab-scrollbar:hover .rw-tab-scrollbar-thumb,.rw-tab-scrollbar:active .rw-tab-scrollbar-thumb,.rw-tab-scrollbar.is-dragging .rw-tab-scrollbar-thumb{background:var(--v2-ink-soft)}
 .rw-tab-scrollbar.is-dragging,.rw-tab-scrollbar.is-dragging .rw-tab-scrollbar-thumb{cursor:grabbing}
 .rw-tab-scrollbar:focus-visible{outline:2px solid var(--v2-accent);outline-offset:-2px}

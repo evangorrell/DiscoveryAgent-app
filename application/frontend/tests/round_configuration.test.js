@@ -8,13 +8,15 @@ const workspace = fs.readFileSync(path.join(root, 'templates/round_workspace.htm
 const base = fs.readFileSync(path.join(root, 'templates/base.html'), 'utf8');
 const launch = fs.readFileSync(path.join(root, 'templates/_round_launch_dialog.html'), 'utf8');
 const client = fs.readFileSync(path.join(root, 'static/round_configuration.js'), 'utf8');
+const css = fs.readFileSync(path.join(root, 'static/round_workspace.css'), 'utf8');
 
 test('Round Workspace exposes one explicit read-only project configuration viewer', () => {
     assert.match(workspace, /id="rw-project-configuration"[^>]*>[\s\S]*Configuration/);
     assert.match(workspace, /id="rw-project-configuration-overlay"/);
     assert.match(workspace, /Research objective/);
     assert.match(workspace, /Project defaults/);
-    assert.match(workspace, /DiscoveryAgent Data/);
+    assert.match(workspace, /<h3>Data<\/h3>/);
+    assert.match(workspace, /<h3>Context<\/h3>/);
     assert.match(workspace, /Project README/);
     assert.match(workspace, /<pre[^>]*id="rw-project-configuration-readme"/);
     assert.match(workspace, /current read-only configuration/);
@@ -25,6 +27,13 @@ test('Round Workspace exposes one explicit read-only project configuration viewe
     );
     assert.doesNotMatch(modal, /<input|<textarea|<select|contenteditable|type="submit"/);
     assert.match(modal, /id="rw-project-configuration-close"/);
+    assert.match(modal, /aria-label="Close project configuration"/);
+    assert.doesNotMatch(modal, /v2-section-label|v2-modal-footer|RE#ADME/);
+    assert.match(modal, />Project Configuration<\/h2>/);
+    assert.match(client, /event\.key === 'Escape'/);
+    assert.match(client, /trigger\.focus\(\)/);
+    assert.match(css, /\.rw-project-configuration-modal \{[^}]*display: flex;[^}]*flex-direction: column;[^}]*overflow: hidden;/);
+    assert.match(css, /\.rw-project-configuration-body \{[^}]*flex: 1 1 auto;[^}]*min-height: 0;/);
 });
 
 test('configuration viewer reads existing project detail and README without mutation calls', () => {
@@ -38,6 +47,7 @@ test('configuration viewer reads existing project detail and README without muta
 
 test('shared new-round dialog contains only the supported editable settings', () => {
     assert.match(base, /include '_round_launch_dialog\.html'/);
+    assert.doesNotMatch(launch, /NEW ROUND/);
     assert.equal((launch.match(/<input/g) || []).length, 3);
     assert.equal((launch.match(/<select/g) || []).length, 2);
     for (const id of [

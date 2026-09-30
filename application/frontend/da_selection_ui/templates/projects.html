@@ -240,11 +240,12 @@
                     <div class="v2-advanced-setting-section v2-project-location-field">
                         <h3 class="v2-field-label">PROJECT LOCATION</h3>
                         <p class="v2-field-help">Choose where DiscoveryAgent stores this project&rsquo;s rounds, code, reports, memory, and generated files.</p>
+                        <p class="v2-field-help" id="np-managed-location-help">Managed project locations must be inside your DiscoveryAgent Projects folder.</p>
                         <code class="v2-project-location-path" id="np-project-location-path"></code>
                         <p class="v2-field-help v2-project-location-status" id="np-project-location-status" role="status" aria-live="polite" aria-atomic="true"></p>
                         <div class="v2-project-location-actions" id="np-project-location-actions">
                             <button type="button" class="v2-btn v2-btn-secondary v2-compact-secondary" id="np-locate-project" hidden>Locate Project</button>
-                            <button type="button" class="v2-btn v2-btn-secondary v2-compact-secondary" id="np-choose-location">Choose Location</button>
+                            <button type="button" class="v2-btn v2-btn-secondary v2-compact-secondary" id="np-choose-location" aria-describedby="np-managed-location-help">Choose Location</button>
                             <button type="button" class="v2-btn v2-btn-secondary v2-compact-secondary" id="np-use-default-location">Use Default</button>
                         </div>
                     </div>

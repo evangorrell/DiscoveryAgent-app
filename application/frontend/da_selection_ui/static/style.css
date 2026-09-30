@@ -4255,6 +4255,9 @@ body.v2 .v2-onboarding-title {
 body.v2-modal-open { overflow: hidden; }
 .v2-modal-overlay.v2-round-launch-overlay { z-index: 1220; }
 .v2-modal.v2-round-launch-modal { width: min(620px, calc(100vw - 32px)); }
+.v2-round-launch-modal .v2-modal-head { padding-bottom: 6px; }
+.v2-round-launch-modal .v2-modal-title { margin: 0; }
+.v2-round-launch-modal .v2-modal-body { padding-top: 6px; }
 .v2-round-launch-body { display: flex; flex-direction: column; gap: 18px; }
 .v2-round-launch-body > p { margin: 0; }
 .v2-round-launch-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px 18px; }

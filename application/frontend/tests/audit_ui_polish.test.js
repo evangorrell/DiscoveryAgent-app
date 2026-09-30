@@ -105,7 +105,11 @@ test('the single history icon opens and closes with stateful accessibility text'
 
     assert.match(auditSource, /historyToggleBtn && historyToggleBtn\.addEventListener\('click'/);
     assert.doesNotMatch(auditSource, /historyCloseBtn|getElementById\(['"]audit-history-close['"]\)/);
-    assert.doesNotMatch(template, /id="audit-history-close"|&times;/);
+    assert.doesNotMatch(template, /id="audit-history-close"/);
+    // The configuration dialog has its own X; only Audit's drawer lacks one.
+    assert.ok(template.indexOf('id="aa-sidebar"') >= 0);
+    assert.doesNotMatch(template.slice(template.indexOf('id="aa-sidebar"'),
+        template.indexOf('id="rw-project-configuration-overlay"')), /&times;/);
     assert.equal((template.match(/id="audit-history-toggle"/g) || []).length, 1);
 });
 
@@ -217,7 +221,7 @@ test('collapsed Activity / Audit Agent pill is centered by its painted header ro
     assert.match(restorePill, /pointer-events:auto/);
     assert.doesNotMatch(restorePill, /height:100%|transform:|(?:^|[;{])(?:top|bottom):|position:absolute/);
     assert.equal((41 - 27) / 2, 7);
-    assert.match(template, /round_workspace\.css', v='20260908-project-configuration-1'/);
+    assert.match(template, /round_workspace\.css', v='20260929-release-acceptance-1'/);
     assert.match(workspaceSource, /els\.restore\.hidden=!state\.panelCollapsed/);
     assert.match(workspaceSource, /els\.restore\.addEventListener\('click',\(\)=>\{setPanelCollapsed\(false\);\}\)/);
     assert.match(workspaceSource, /notifyAuditLifecycle\(next\?'closed':'reopened'\)/);
