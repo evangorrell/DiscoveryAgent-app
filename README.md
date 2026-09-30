@@ -1,10 +1,10 @@
 # DiscoveryAgent
 
-**DiscoveryAgent is a multi-agent AI system for semi-autonomous scientific research. Give it your data and a research objective, and it carries out iterative scientific investigations—exploring your data, connecting findings to the scientific literature, performing computational analyses, and developing new hypotheses.**
+DiscoveryAgent is a multi-agent AI system for semi-autonomous scientific research. Give it your data and a research objective, and it carries out iterative scientific investigations—exploring your data, connecting findings to the scientific literature, performing computational analyses, and developing new hypotheses.
 
-**After you devise a hypothesis, a coordinated team of specialized AI agents plans the investigation, searches and synthesizes the literature, writes and executes analyses, critiques intermediate findings, and builds on what it learns. Research unfolds in rounds, with each round carrying forward the evidence and context from the last so the investigation can deepen over time.**
+Once you select a hypothesis, a coordinated team of specialized AI agents plans the investigation, searches and synthesizes the literature, writes and executes analyses, critiques intermediate findings, and builds on what it learns. Research unfolds in rounds, with each round carrying forward the evidence and context from the last so the investigation can deepen over time.
 
-DiscoveryAgent runs locally on your Mac as a persistent research space.
+DiscoveryAgent runs locally on your Mac as a persistent research workspace.
 
 https://github.com/user-attachments/assets/0ce3b30c-fe8b-4726-8b28-6bfcd3c17de1
 
@@ -19,20 +19,11 @@ The installer manages the application runtime and dependencies for you. Papercli
 
 ### Install
 
-The public installer will be available with the release.
-
-<!-- PUBLICATION: INSTALL COMMAND
-Replace the status sentence above with the fenced command below only after the
-public stable release has its generated install.sh, matching application archive,
-and update manifest attached. Verify an unauthenticated download and a clean install.
-The repository-root install.sh is a template still bound to an earlier release;
-do not substitute a raw main-branch URL. The latest-release asset URL below follows
-the repository/channel used by the updater; it is NOT a verified live installer yet.
-
 ```bash
 curl -fsSL https://github.com/evangorrell/DiscoveryAgent-app/releases/latest/download/install.sh | sh
 ```
--->
+
+This downloads the installer from the latest stable DiscoveryAgent release.
 
 ### Run
 
@@ -121,19 +112,24 @@ The interface, project files, and analysis environment run locally on your Mac. 
 
 ## Paper
 
-The accompanying paper and citation will be linked here when available.
+**[Paper Title](paper-url)**<br>
+Authors...
+
+For the technical architecture, evaluation, and scientific methodology, see the accompanying paper.
 
 <!-- PUBLICATION: PAPER AND CITATION
-Replace the sentence above with the approved paper title, author list, and URL.
-Add the final BibTeX citation in the Citation section below. Link the title here and keep the Agent
-System callout pointing to this section.
+Replace Paper Title, paper-url, and Authors... above with the approved details.
+Add the final BibTeX citation below and keep the Agent System callout pointing
+to this Paper section.
 Required: title, authors, public URL, and approved BibTeX. Do not infer a venue,
 DOI, arXiv identifier, or publication date.
 -->
 
-## Citation
+### Citation
 
-TODO: Add the approved paper citation and BibTeX when available.
+```bibtex
+% TODO: Add the approved BibTeX citation.
+```
 
 <!-- PUBLICATION: Add the approved license notice and link before publication.
 License and publication approval are pending; no license is asserted here. -->
