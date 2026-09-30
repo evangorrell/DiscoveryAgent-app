@@ -181,6 +181,7 @@ def uninstall_installed_application(
     selected.research_guard(state, action="uninstalling")
     install_root, cli = selected.target_validator(paths, state)
     selected.frontend_stopper(paths, state)
+    selected.research_guard(state, action="uninstalling")
     prepared_path = selected.path_preparer(state.cli)
     if prepared_path.warning:
         print(f"DiscoveryAgent warning: {prepared_path.warning}", file=stderr)

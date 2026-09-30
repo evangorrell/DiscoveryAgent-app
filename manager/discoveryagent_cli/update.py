@@ -387,6 +387,8 @@ def update_installed_application(
                 or metadata.package_revision != manifest.package_revision):
             raise UpdateError("Update artifact identity does not match its manifest")
         selected.frontend_stopper(paths, state)
+        # Research may have started while the archive was downloading.
+        selected.research_guard(state, action="updating")
         print("Updating DiscoveryAgent...", file=stdout, flush=True)
         selected.installer_runner(payload, paths, state)
         updated = load_state(paths.state_file)

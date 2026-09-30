@@ -1191,6 +1191,66 @@ def test_duplicate_stop_is_safe(monkeypatch, project):
     assert first["status"] == second["status"] == "interrupted"
 
 
+def test_real_start_stop_and_app_exit_allow_manager_package_operations(monkeypatch, project, backend, tmp_path):
+    """Cross-layer contract: consume the producer's schema, not a v1 test fake."""
+    import time
+    from dataclasses import replace
+    import io
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[3]))
+    from manager.discoveryagent_cli.testing import create_fake_installation
+    from manager.discoveryagent_cli.state import write_state_atomic
+    from manager.discoveryagent_cli.maintenance import require_idle_research
+    from manager.discoveryagent_cli.errors import ActiveResearchError
+    from manager.discoveryagent_cli.uninstall import uninstall_installed_application, UninstallDependencies
+    from manager.discoveryagent_cli.path_integration import PreparedPathRemoval
+    root, _python, launcher = backend
+    launcher.write_text(
+        'import pathlib,sys,time\n'
+        'config=pathlib.Path(sys.argv[sys.argv.index("--config-file")+1])\n'
+        'query=config.parent/"query_001"\nquery.mkdir(exist_ok=True)\n'
+        '(query/"checkpoint.json").write_text("{}")\n'
+        'while True: time.sleep(0.05)\n'
+    )
+    env = launch_env(backend)
+    env['DISCOVERYAGENT_BACKEND_PYTHON'] = sys.executable
+    data = tmp_path / 'manager-data'
+    data.mkdir()
+    (data / 'projects.json').write_text(json.dumps({'projects': [project]}))
+    paths, manager_state = create_fake_installation(tmp_path / 'installation')
+    manager_state = replace(manager_state, data_root=str(data))
+    write_state_atomic(paths.state_file, manager_state)
+    started = runner.start_round(project, env=env)
+    process = runner._PROCESSES[str(Path(project['project_root']).resolve())]
+    checkpoint = Path(project['checkpoint_dir']) / 'query_001/checkpoint.json'
+    try:
+        deadline = time.monotonic() + 5
+        while not checkpoint.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert checkpoint.exists()
+        for action in ('updating', 'uninstalling'):
+            with pytest.raises(ActiveResearchError, match='active research'):
+                require_idle_research(manager_state, action=action)
+        result = runner.stop_round(project, expected_round=0, expected_run_id=started['run_id'])
+        assert result['status'] == 'interrupted' and result['resumable']
+        process.wait(timeout=5)
+        runner._PROCESSES.clear()  # Simulate frontend exit; disk state is authoritative.
+        runner._PROCESS_RUN_IDS.clear()
+        for action in ('updating', 'uninstalling'):
+            require_idle_research(manager_state, action=action)
+        before = checkpoint.read_bytes()
+        removed = []
+        deps = UninstallDependencies(frontend_stopper=lambda *_: False,
+            target_validator=lambda *_: (paths.root, Path(manager_state.cli.path)),
+            path_preparer=lambda *_: PreparedPathRemoval(), handoff=lambda *_: removed.append(True))
+        assert uninstall_installed_application(paths, stdout=io.StringIO(), stderr=io.StringIO(), dependencies=deps) == 0
+        assert removed and checkpoint.read_bytes() == before
+        assert runner.round_status(project)['resumable']
+    finally:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGTERM)
+            process.wait(timeout=5)
+
+
 def test_read_only_status_inspector_matches_workspace_status(project):
     query = Path(project["checkpoint_dir"]) / "query_001"
     query.mkdir()
