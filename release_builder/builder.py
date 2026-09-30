@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Iterable, Literal
 from manager.discoveryagent_cli.package_identity import package_source_manifest
+from manager.discoveryagent_cli.release_version import validate_release_version
 
 
 SCHEMA_VERSION = 1
@@ -482,6 +483,7 @@ def build_release(
     destination_root: Path,
     package_revision: int = 0,
     backend_only: bool = False,
+    release_version: str | None = None,
 ) -> dict:
     if mode not in ("development", "production"):
         raise ReleaseBuildError(f"Unsupported release mode: {mode}")
@@ -490,6 +492,11 @@ def build_release(
     destination_root = destination_root.expanduser().resolve()
     if backend_only and (mode != "development" or not (destination_root / "application/frontend").is_dir()):
         raise ReleaseBuildError("Backend-only refresh requires development mode and an existing frontend")
+    if mode == 'production' or release_version is not None:
+        try:
+            release_version = validate_release_version(release_version)
+        except ValueError as exc:
+            raise ReleaseBuildError(str(exc)) from exc
 
     app = resolve_source(app_request, mode, "app frontend")
     backend = resolve_source(backend_request, mode, "backend")
@@ -515,6 +522,8 @@ def build_release(
         archive_commit(backend, application / "backend")
         validate_snapshot(application / "frontend", application / "backend")
         metadata = create_release_metadata(mode, app, backend, application)
+        if release_version is not None:
+            metadata['release_version'] = release_version
         verify_backend_snapshot(application / "backend", metadata["backend"])
         if package_revision:
             metadata["package_revision"] = package_revision

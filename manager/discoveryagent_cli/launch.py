@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .terminal import local_url_link
+
 import os
 import signal
 import subprocess
@@ -294,7 +296,7 @@ def launch_installed_application(
                                 write_frontend_record_atomic(
                                     paths.frontend_runtime_file, existing
                                 )
-                        print(f"DiscoveryAgent is already running at {existing.url}", file=output)
+                        print(f"DiscoveryAgent is already running at {local_url_link(existing.url, output, inherited)}", file=output)
                         return 0
                     remove_frontend_record(paths.frontend_runtime_file)
 
@@ -386,7 +388,7 @@ def launch_installed_application(
                     write_frontend_record_atomic(
                         paths.frontend_runtime_file, owned_record
                     )
-                print(f"DiscoveryAgent is ready at {startup.url}", file=output, flush=True)
+                print(f"DiscoveryAgent is ready at {local_url_link(startup.url, output, inherited)}", file=output, flush=True)
 
             return_code = process.wait()
             return int(return_code or 0)
