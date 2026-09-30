@@ -7,7 +7,7 @@ Once you select a hypothesis, a coordinated team of specialized AI agents plans 
 DiscoveryAgent runs locally on your Mac as a persistent research workspace.
 
 <details>
-<summary><strong>▶ DiscoveryAgent Demo</strong></summary>
+<summary><strong> Watch the 40-second DiscoveryAgent demo</strong></summary>
 
 https://github.com/user-attachments/assets/0ce3b30c-fe8b-4726-8b28-6bfcd3c17de1
 
