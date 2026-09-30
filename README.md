@@ -73,9 +73,6 @@ DiscoveryAgent coordinates several agent roles around an investigation. A Direct
 
 These roles connect literature, analysis, and interpretation across research rounds. In the app, you set the objective, make data available, select hypotheses, and decide when to continue. Agents generate reports, code, and figures to let you examine how a result was reached.
 
-<!-- PUBLICATION: Optional high-level architecture figure goes here when approved.
-No new figure is generated for this README. -->
-
 > For more details on the technical architecture, evaluation, and scientific methodology, see the accompanying [paper](#paper).
 
 ## Skills
@@ -119,8 +116,6 @@ The interface, project files, and analysis environment run locally on your Mac. 
 
 **[Paper Title](paper-url)**<br>
 Authors...
-
-For the technical architecture, evaluation, and scientific methodology, see the accompanying paper.
 
 <!-- PUBLICATION: PAPER AND CITATION
 Replace Paper Title, paper-url, and Authors... above with the approved details.
