@@ -120,7 +120,12 @@ updates. The stable endpoint follows public stable releases, not drafts/prerelea
    for production merely because its tests pass.
 2. Run `tools/build_release.py --mode production --app-sha APP_SHA
    --backend-repo BACKEND_CHECKOUT --backend-sha UPSTREAM_BACKEND_SHA
-   --package-revision N --output-dir EMPTY_EXTERNAL_DIRECTORY`.
+   --package-revision N --release-version SEMVER --output-dir EMPTY_EXTERNAL_DIRECTORY`.
+   Choose the human semantic version explicitly (for example, `1.0.0-rc.1`);
+   `release_version` is independent of application identity and package revision.
+   It is stored in release.json, not used for update ordering. Older metadata
+   without it remains readable and reports `DiscoveryAgent (version unavailable)`.
+   `discoveryagent version --verbose` includes package/source provenance.
    Output must be new/empty and outside the source checkout. Backend files come
    only from the selected standalone Git commit, never umbrella backend edits.
    The generated backend must reproduce its upstream Git tree (content, inventory,

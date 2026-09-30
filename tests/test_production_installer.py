@@ -216,7 +216,7 @@ class ProductionInstallerTests(unittest.TestCase):
         unrelated = self.root / "unrelated cwd"
         unrelated.mkdir()
         completed = subprocess.run(
-            [self.cli, "version"],
+            [self.cli, "version", "--verbose"],
             cwd=unrelated,
             env={key: value for key, value in os.environ.items() if key != "PYTHONPATH"},
             check=True,

@@ -11,6 +11,7 @@ from typing import Any, Mapping
 from .errors import LaunchValidationError, ReleaseError, StateError
 from .paths import InstallationPaths, release_environment_python
 from .state import ManagerState
+from .release_version import validate_release_version
 
 
 _COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
@@ -39,6 +40,7 @@ class ReleaseMetadata:
     frontend_tree: str
     backend_commit: str
     package_revision: int = 0
+    release_version: str | None = None
 
     @property
     def installation_id(self) -> str:
@@ -67,6 +69,12 @@ class ReleaseMetadata:
         revision = payload.get("package_revision", 0)
         if type(revision) is not int or revision < 0:
             raise ReleaseError("package_revision must be a non-negative integer")
+        version = None
+        if 'release_version' in payload:
+            try:
+                version = validate_release_version(payload['release_version'])
+            except ValueError as exc:
+                raise ReleaseError(str(exc)) from exc
         return cls(
             schema_version=schema_version,
             application_schema_version=application_schema_version,
@@ -79,6 +87,7 @@ class ReleaseMetadata:
             frontend_tree=frontend_tree,
             backend_commit=backend_commit,
             package_revision=revision,
+            release_version=version,
         )
 
 

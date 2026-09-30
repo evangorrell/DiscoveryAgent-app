@@ -62,7 +62,9 @@ def test_round_workspace_embeds_project_scoped_audit_controls(monkeypatch, tmp_p
     assert 'id="audit-history-open-toggle-slot"' in audit_region
     assert 'id="audit-history-closed-toggle-slot"' in audit_controls
     assert 'id="aa-sidebar"' in html and "hidden" in html.split('id="aa-sidebar"', 1)[1].split(">", 1)[0]
-    assert 'id="audit-history-close"' not in html and "&times;" not in html
+    assert 'id="audit-history-close"' not in html
+    # The unrelated Project Configuration dialog has an accessible X.
+    assert "&times;" not in audit_region[:audit_region.index('id="rw-project-configuration-overlay"')]
     assert 'id="audit-new-chat-btn"' in html and "<span>New chat</span>" in html
     new_chat_at = html.index('id="audit-new-chat-btn"')
     download_at = html.index('id="chat-export-current-btn"')

@@ -151,8 +151,8 @@ def test_first_round_overlay_centers_title_left_aligns_body_and_right_aligns_act
     assert workspace_copy in workspace
     assert workspace_copy not in studio
     assert studio_copy not in workspace
-    title = css[css.index(".v2-modal-title {"):css.index("}", css.index(".v2-modal-title {"))]
-    body = css[css.index(".v2-modal-body {"):css.index("}", css.index(".v2-modal-body {"))]
+    title = css[css.index("\n.v2-modal-title {"):css.index("}", css.index("\n.v2-modal-title {"))]
+    body = css[css.index("\n.v2-modal-body {"):css.index("}", css.index("\n.v2-modal-body {"))]
     actions_start = css.index(".v2-modal.v2-blocking-box .v2-modal-footer {")
     actions = css[actions_start:css.index("}", actions_start)]
     assert "text-align: center" in title

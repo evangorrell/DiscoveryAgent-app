@@ -1758,28 +1758,7 @@
     text-align: center;
 }
 
-.hs-thread,
-.hs-workspace-main.has-hypothesis-split .hs-hypothesis-surface {
-    scrollbar-width: thin;
-    scrollbar-color: var(--text-muted) transparent;
-}
-.hs-thread::-webkit-scrollbar,
-.hs-workspace-main.has-hypothesis-split .hs-hypothesis-surface::-webkit-scrollbar {
-    width: 8px;
-}
-.hs-thread::-webkit-scrollbar-track,
-.hs-workspace-main.has-hypothesis-split .hs-hypothesis-surface::-webkit-scrollbar-track {
-    background: transparent;
-}
-.hs-thread::-webkit-scrollbar-thumb,
-.hs-workspace-main.has-hypothesis-split .hs-hypothesis-surface::-webkit-scrollbar-thumb {
-    background-color: var(--text-muted);
-    border-radius: 4px;
-}
-.hs-thread::-webkit-scrollbar-thumb:hover,
-.hs-workspace-main.has-hypothesis-split .hs-hypothesis-surface::-webkit-scrollbar-thumb:hover {
-    background-color: var(--text-secondary);
-}
+/* Native scrollbar sizing/visibility is shared in native_scrollbars.css. */
 
 /* ---- Composer inside the flex column (not sticky; the thread scrolls) ---- */
 .hs-workspace-main .hs-composer {

@@ -214,7 +214,7 @@ class ManagerFoundationTests(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         result = main(
-            ["version"],
+            ["version", "--verbose"],
             install_root=paths.root,
             stdout=stdout,
             stderr=stderr,
@@ -225,7 +225,9 @@ class ManagerFoundationTests(unittest.TestCase):
         self.assertEqual(
             stdout.getvalue().splitlines(),
             [
-                f"DiscoveryAgent {DEFAULT_RELEASE_ID}",
+                "DiscoveryAgent (version unavailable)",
+                f"Release:  {DEFAULT_RELEASE_ID}",
+                "Package:  0",
                 f"Frontend: {DEFAULT_FRONTEND_COMMIT[:12]}",
                 f"Backend:  {DEFAULT_BACKEND_COMMIT[:12]}",
                 "Python:   3.11.11",

@@ -202,7 +202,7 @@ class UpdateFlowTests(unittest.TestCase):
     def test_different_release_orders_guard_download_stop_install_and_keeps_old(self) -> None:
         new_release = "dev-aaaaaaaaaaaa-bbbbbbbbbbbb"
         self.assertEqual(self.run_update(self.dependencies(new_release)), 0)
-        self.assertEqual(self.events, ["research", "download", "frontend", "install"])
+        self.assertEqual(self.events, ["research", "download", "frontend", "research", "install"])
         state = load_state(self.paths.state_file)
         self.assertEqual(state.active_release_id, new_release)
         self.assertIn(self.state.active_release_id, state.installed_releases)
@@ -244,7 +244,7 @@ class UpdateFlowTests(unittest.TestCase):
             [call.args[0].full_url for call in network.call_args_list],
             [PUBLIC_UPDATE_MANIFEST_URL, artifact["artifact_url"]],
         )
-        self.assertEqual(self.events, ["research", "frontend", "install"])
+        self.assertEqual(self.events, ["research", "frontend", "research", "install"])
         state = load_state(self.paths.state_file)
         self.assertEqual(state.active_release_id, release_id)
         self.assertEqual(state.data_root, self.state.data_root)

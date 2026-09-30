@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Mapping, Sequence, TextIO
 
@@ -24,6 +24,7 @@ class CommandContext:
     stdout: TextIO
     stderr: TextIO
     environ: Mapping[str, str]
+    verbose: bool = False
 
 
 CommandHandler = Callable[[CommandContext], int]
@@ -33,7 +34,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="discoveryagent")
     subparsers = parser.add_subparsers(dest="command")
     subparsers.add_parser("launch", help="validate the installed application")
-    subparsers.add_parser("version", help="show installed release information")
+    version = subparsers.add_parser("version", help="show the installed DiscoveryAgent version")
+    version.add_argument('--verbose', action='store_true', help='include package and source provenance')
     subparsers.add_parser("update", help="install the latest stable release")
     subparsers.add_parser("uninstall", help="remove the application and preserve user data")
     return parser
@@ -55,7 +57,11 @@ def version_command(context: CommandContext) -> int:
     state = _load_manager_state(context)
     release = load_active_release(context.paths, state)
     metadata = release.metadata
-    print(f"DiscoveryAgent {metadata.release_id}", file=context.stdout)
+    print(f"DiscoveryAgent {metadata.release_version or '(version unavailable)'}", file=context.stdout)
+    if not context.verbose:
+        return 0
+    print(f"Release:  {metadata.release_id}", file=context.stdout)
+    print(f"Package:  {metadata.package_revision}", file=context.stdout)
     print(f"Frontend: {metadata.frontend_commit[:12]}", file=context.stdout)
     print(f"Backend:  {metadata.backend_commit[:12]}", file=context.stdout)
     print(f"Python:   {metadata.required_cpython_version}", file=context.stdout)
@@ -104,7 +110,7 @@ def dispatch(
     arguments = build_parser().parse_args(argv)
     command = arguments.command or "launch"
     selected_handlers = DEFAULT_HANDLERS if handlers is None else handlers
-    return selected_handlers[command](context)
+    return selected_handlers[command](replace(context, verbose=getattr(arguments, 'verbose', False)))
 
 
 def main(

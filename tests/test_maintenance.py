@@ -8,7 +8,7 @@ import time
 import unittest
 from pathlib import Path
 
-from manager.discoveryagent_cli.errors import ActiveResearchError
+from manager.discoveryagent_cli.errors import ActiveResearchError, MaintenanceError
 from manager.discoveryagent_cli.maintenance import (
     ProcessIdentity,
     ResearchActivity,
@@ -216,8 +216,54 @@ class ActiveResearchTests(unittest.TestCase):
         )
         self.assertIs(identity, ProcessIdentity.MATCH)
 
+    def test_schema_two_and_terminal_resumability_matrix(self):
+        data = self.root / 'data'
+        project = data / 'projects' / 'test'
+        config = self._project(project, 'test', registry=data / 'projects.json')
+        path = project / 'checkpoint/run_state.json'
+        for schema in (1, 2):
+            for status in ('interrupted', 'stopped', 'completed', 'failed', 'cancelled', 'not_started'):
+                with self.subTest(schema=schema, status=status):
+                    payload = dict(schema_version=schema, project_id='test', round=0,
+                                   run_id='a' * 32, status=status, pid=99999999,
+                                   backend_root=str(self.root / 'backend'), config_file=str(config), resumable=True)
+                    path.write_text(json.dumps(payload))
+                    (path.parent / '.round_0.lock').touch()
+                    before = path.read_bytes()
+                    result = inspect_research_activity(data, platform_name='darwin', process_probe=lambda *_: ProcessIdentity.DEAD)
+                    self.assertIs(result.activity, ResearchActivity.IDLE)
+                    self.assertEqual(path.read_bytes(), before)
+                    # A matching live process always wins over a terminal label.
+                    self.assertIs(inspect_research_activity(data, platform_name='darwin',
+                                  process_probe=lambda *_: ProcessIdentity.MATCH).activity, ResearchActivity.ACTIVE)
+
+    def test_starting_queued_stopping_unknown_and_schema_drift_fail_closed(self):
+        data = self.root / 'data'
+        project = data / 'projects' / 'test'
+        self._project(project, 'test', registry=data / 'projects.json')
+        path = project / 'checkpoint/run_state.json'
+        for schema, status in [(2, s) for s in ('queued', 'starting', 'running', 'stopping', 'future-status')] + [(3, 'interrupted')]:
+            with self.subTest(schema=schema, status=status):
+                path.write_text(json.dumps(dict(schema_version=schema, status=status, pid=None)))
+                self.assertIs(inspect_research_activity(data, platform_name='darwin').activity, ResearchActivity.AMBIGUOUS)
+
 
 class FrontendMaintenanceTests(unittest.TestCase):
+    def test_unverifiable_running_app_requests_close_not_stop_round(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_name:
+            paths, state = create_fake_installation(Path(temporary_name) / "install")
+            record = FrontendRuntimeRecord(
+                FRONTEND_RECORD_SCHEMA_VERSION, 4242, state.active_release_id,
+                "http://127.0.0.1:43123/", "http://127.0.0.1:43123/api/health", time.time(),
+            )
+            write_frontend_record_atomic(paths.frontend_runtime_file, record)
+            with self.assertRaises(MaintenanceError) as raised:
+                stop_idle_frontend(paths, state, pid_alive=lambda _pid: True,
+                                   health_probe=lambda _url: False)
+            self.assertIn("Close the app and retry", str(raised.exception))
+            self.assertNotIn("Stop the round", str(raised.exception))
+            self.assertTrue(paths.frontend_runtime_file.exists())
+
     def test_verified_idle_frontend_is_stopped_and_matching_record_removed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_name:
             paths, state = create_fake_installation(Path(temporary_name) / "install")

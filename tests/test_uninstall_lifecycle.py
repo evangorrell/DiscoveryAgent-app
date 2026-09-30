@@ -114,7 +114,7 @@ class UninstallFlowTests(unittest.TestCase):
             ),
             0,
         )
-        self.assertEqual(events, ["research", "frontend", "path", "handoff"])
+        self.assertEqual(events, ["research", "frontend", "research", "path", "handoff"])
         self.assertIn("Uninstalling DiscoveryAgent", self.stdout.getvalue())
 
     def test_target_validation_accepts_owned_cli_and_rejects_suspicious_root(self) -> None:

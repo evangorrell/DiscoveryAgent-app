@@ -137,6 +137,7 @@ class ReleaseBuilderTests(unittest.TestCase):
             mode=mode,
             destination_root=destination,
             package_revision=1 if mode == "production" else 0,
+            release_version='1.0.0-rc.1' if mode == 'production' else None,
         )
 
     def test_production_rejects_dirty_source_and_wrong_head(self):
@@ -154,6 +155,8 @@ class ReleaseBuilderTests(unittest.TestCase):
         frontend, sha, backend, backend_sha = self._pair(app={"on_main": True}, backend={"on_main": True})
         output = self.root / "production"
         metadata = self._build(frontend, sha, backend, backend_sha, output, mode="production")
+        self.assertEqual(metadata['release_version'], '1.0.0-rc.1')
+        self.assertEqual(json.loads((output / 'release.json').read_text())['release_version'], '1.0.0-rc.1')
         verify_package_source(output, json.loads(json.dumps(metadata)))
         from release_builder.install_artifact import build_install_artifact
         from manager.discoveryagent_cli.installer import validate_packaged_payload

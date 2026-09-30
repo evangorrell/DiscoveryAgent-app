@@ -61,9 +61,9 @@
     }
 
     function renderProject(project, readmePayload) {
-        document.getElementById('rw-project-configuration-title').textContent =
-            (project.display_name || 'Project') + ' configuration';
         objective.textContent = project.task_description || 'No research objective saved.';
+        document.getElementById('rw-project-configuration-context').textContent =
+            project.dataset_context || 'No project context saved.';
         settings.replaceChildren();
         setting('Reasoning model', project.reasoning_model || 'Unavailable');
         setting('Execution model', project.execution_model || 'Unavailable');
@@ -124,5 +124,15 @@
     });
     document.addEventListener('keydown', function (event) {
         if (event.key === 'Escape' && !overlay.hidden) closeConfiguration();
+        // Include the scrollable details for keyboard scrolling.
+        if (event.key === 'Tab' && !overlay.hidden) {
+            var targets = overlay.querySelectorAll('button, [tabindex="0"]');
+            var first = targets[0], last = targets[targets.length - 1];
+            if (event.shiftKey && document.activeElement === first) {
+                event.preventDefault(); last.focus();
+            } else if (!event.shiftKey && document.activeElement === last) {
+                event.preventDefault(); first.focus();
+            }
+        }
     });
 })();

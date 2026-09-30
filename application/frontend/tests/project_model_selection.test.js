@@ -244,7 +244,7 @@ test('Project Location stays pending until outer Save and uses the native choose
     assert.match(template, />PROJECT LOCATION<\/h3>/);
     assert.match(template, /Choose where DiscoveryAgent stores this project&rsquo;s rounds, code, reports, memory, and generated files\./);
     assert.match(template, /id="np-project-location-path"/);
-    assert.match(template, /class="v2-btn v2-btn-secondary v2-compact-secondary" id="np-choose-location">Choose Location<\/button>/);
+    assert.match(template, /class="v2-btn v2-btn-secondary v2-compact-secondary" id="np-choose-location" aria-describedby="np-managed-location-help">Choose Location<\/button>/);
     assert.match(template, /class="v2-btn v2-btn-secondary v2-compact-secondary" id="np-use-default-location">Use Default<\/button>/);
     assert.match(projectsClient, /fetch\('\/api\/project-location\/choose'/);
     assert.match(projectsClient, /if \(!data\.cancelled\) \{[\s\S]*pendingProjectParent = data\.parent[\s\S]*pendingCanonicalDefaultLocation = false/);
@@ -325,7 +325,7 @@ test('Advanced Settings and model select keep comfortable chevron insets without
     assert.match(advancedControlCss, /:disabled/);
     assert.equal((template.match(/class="v2-input v2-advanced-control/g) || []).length, 3);
     assert.match(style, /\.v2-advanced-model-field > \.v2-field-help\s*\{[^}]*margin-bottom:\s*10px/s);
-    assert.match(baseTemplate, /style\.css'\) \}\}\?v=20260909-report-pdf-figures-1/);
+    assert.match(baseTemplate, /style\.css'\) \}\}\?v=20260929-release-acceptance-1/);
     assert.match(template, /projects\.js'\) \}\}\?v=20260908-data-files-project-draft-1/);
 });
 

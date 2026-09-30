@@ -27,6 +27,23 @@ def _create(client, name="Located Project", project_id=None):
     return client.post("/api/projects", data=data)
 
 
+def test_managed_location_helper_and_external_location_rejection(tmp_path):
+    client = _client()
+    html = client.get('/projects').get_data(as_text=True)
+    assert 'Managed project locations must be inside your DiscoveryAgent Projects folder.' in html
+    assert 'aria-describedby="np-managed-location-help"' in html
+    external = tmp_path / 'Desktop'
+    external.mkdir()
+    rejected = client.post('/api/projects', data={
+        'project_name': 'External', 'task_description': 'Research',
+        'dataset_context': 'Data', 'project_parent_dir': str(external),
+    })
+    assert rejected.status_code == 400
+    assert 'DiscoveryAgent Projects folder' in rejected.get_json()['error']
+    assert not list(external.iterdir())
+    assert _create(client).status_code == 200
+
+
 def _imported_record(tmp_path: Path, *, project_id: str, name: str) -> tuple[dict, Path]:
     root = tmp_path / "external-user-folder"
     data = root / "code" / "data"

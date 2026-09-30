@@ -24,7 +24,14 @@ from .runtime_state import (
 from .state import ManagerState
 
 
-ACTIVE_ROUND_STATUSES = frozenset({"starting", "running"})
+# Frontend local_round_runner writes schema 2 (run_id); schema 1 is legacy.
+# The UI's Stop action persists "interrupted", not "stopped". Resumability
+# describes saved checkpoints, never whether a process is currently executing.
+RUN_STATE_SCHEMAS = frozenset({1, 2})
+ACTIVE_ROUND_STATUSES = frozenset({"queued", "starting", "running", "stopping"})
+TERMINAL_ROUND_STATUSES = frozenset({
+    "not_started", "interrupted", "stopped", "completed", "failed", "cancelled",
+})
 
 
 class ProcessIdentity(Enum):
@@ -157,7 +164,8 @@ def _round_evidence(
         payload = json.loads(state_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return ResearchInspection(ResearchActivity.AMBIGUOUS, (state_path,), "unreadable run state")
-    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+    if (not isinstance(payload, dict) or type(payload.get("schema_version")) is not int
+            or payload["schema_version"] not in RUN_STATE_SCHEMAS):
         return ResearchInspection(ResearchActivity.AMBIGUOUS, (state_path,), "unsupported run state")
     status = payload.get("status")
     pid = payload.get("pid")
@@ -165,6 +173,8 @@ def _round_evidence(
     backend_root = payload.get("backend_root")
     if not isinstance(status, str):
         return ResearchInspection(ResearchActivity.AMBIGUOUS, (state_path,), "invalid round status")
+    if status not in ACTIVE_ROUND_STATUSES | TERMINAL_ROUND_STATUSES:
+        return ResearchInspection(ResearchActivity.AMBIGUOUS, (state_path,), "unknown round status")
 
     identity: ProcessIdentity | None = None
     if isinstance(pid, int) and not isinstance(pid, bool) and pid > 0:
@@ -186,9 +196,9 @@ def _round_evidence(
         if identity in {ProcessIdentity.DEAD, ProcessIdentity.MISMATCH}:
             return ResearchInspection(ResearchActivity.IDLE, (state_path,))
         return ResearchInspection(
-            ResearchActivity.AMBIGUOUS if locks else ResearchActivity.IDLE,
+            ResearchActivity.AMBIGUOUS,
             (state_path,),
-            "active launch has no verifiable PID" if locks else None,
+            "active launch has no verifiable PID",
         )
     if locks and identity is None:
         return ResearchInspection(ResearchActivity.AMBIGUOUS, (state_path,), "unreconciled round lock")
@@ -233,6 +243,11 @@ def require_idle_research(
     inspection = inspector(Path(state.data_root), platform_name=state.platform)
     if inspection.activity is ResearchActivity.IDLE:
         return
+    if inspection.activity is ResearchActivity.AMBIGUOUS:
+        raise ActiveResearchError(
+            f"DiscoveryAgent cannot safely verify research state before {action}.\n"
+            "Open DiscoveryAgent to check the round status, then close the app and retry."
+        )
     raise ActiveResearchError(
         "DiscoveryAgent has an active research round.\n"
         f"Stop the round or wait for it to finish before {action}."
@@ -264,7 +279,7 @@ def terminate_frontend_pid(
         if not pid_alive(pid) and not health_probe(readiness_url):
             return
         sleep(0.05)
-    raise MaintenanceError("The DiscoveryAgent frontend did not stop safely")
+    raise MaintenanceError("DiscoveryAgent could not be closed safely. Close the app and retry.")
 
 
 def stop_idle_frontend(
@@ -279,7 +294,7 @@ def stop_idle_frontend(
     try:
         record = load_frontend_record(paths.frontend_runtime_file)
     except LaunchRuntimeError as exc:
-        raise MaintenanceError("Frontend runtime state cannot be verified safely") from exc
+        raise MaintenanceError("DiscoveryAgent app state cannot be verified safely. Close the app and retry.") from exc
     if record is None:
         return False
     if not pid_alive(record.pid):
@@ -295,7 +310,7 @@ def stop_idle_frontend(
         pid_alive=pid_alive,
         health_probe=health_probe,
     ):
-        raise MaintenanceError("The running frontend cannot be verified safely")
+        raise MaintenanceError("The running DiscoveryAgent app cannot be verified safely. Close the app and retry.")
     terminator(
         record.pid,
         record.readiness_url,

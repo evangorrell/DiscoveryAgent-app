@@ -1,0 +1,11 @@
+/* Keep native dragging, keyboard/wheel handling and the user's OS visibility
+   preference. Do not replace native overlays with a JS hide/cooldown timer.
+   The artifact tab strip has its own accessible 4px horizontal control. */
+html, body.v2, body.v2 :not(.rw-file-tabs) {
+    scrollbar-width: thin;
+    scrollbar-color: auto;
+}
+/* Larger native targets are important for touch and high-contrast users. */
+@media (pointer: coarse), (forced-colors: active) {
+    html, body.v2, body.v2 :not(.rw-file-tabs) { scrollbar-width: auto; }
+}

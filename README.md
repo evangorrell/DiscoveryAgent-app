@@ -94,7 +94,7 @@ See [Authentication and models](docs/user-guide.md#authentication-and-models) fo
 | Command | Purpose |
 | --- | --- |
 | `discoveryagent` | Launch the app. |
-| `discoveryagent version` | Show installed release information. |
+| `discoveryagent version` | Show the installed DiscoveryAgent version. |
 | `discoveryagent update` | Install the latest release. |
 | `discoveryagent uninstall` | Remove the app while preserving project data. |
 
