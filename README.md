@@ -28,7 +28,7 @@ The installer manages the application runtime and dependencies for you. Papercli
 curl -fsSL https://github.com/evangorrell/DiscoveryAgent-app/releases/latest/download/install.sh | sh
 ```
 
-This downloads the installer from the latest stable DiscoveryAgent release.
+This installs DiscoveryAgent and everything it needs to run.
 
 ### Run
 
