@@ -16,7 +16,7 @@ test('Round Workspace exposes one explicit read-only project configuration viewe
     assert.match(workspace, /Research objective/);
     assert.match(workspace, /Project defaults/);
     assert.match(workspace, /<h3>Data<\/h3>/);
-    assert.match(workspace, /<h3>Context<\/h3>/);
+    assert.doesNotMatch(workspace, /<h3>Context<\/h3>|rw-project-configuration-context/);
     assert.match(workspace, /Project README/);
     assert.match(workspace, /<pre[^>]*id="rw-project-configuration-readme"/);
     assert.match(workspace, /current read-only configuration/);
@@ -30,10 +30,126 @@ test('Round Workspace exposes one explicit read-only project configuration viewe
     assert.match(modal, /aria-label="Close project configuration"/);
     assert.doesNotMatch(modal, /v2-section-label|v2-modal-footer|RE#ADME/);
     assert.match(modal, />Project Configuration<\/h2>/);
+    assert.deepEqual([...modal.matchAll(/<h3>([^<]+)<\/h3>/g)].map(match => match[1]),
+        ['Research objective', 'Project defaults', 'Data', 'Project README']);
     assert.match(client, /event\.key === 'Escape'/);
     assert.match(client, /trigger\.focus\(\)/);
     assert.match(css, /\.rw-project-configuration-modal \{[^}]*display: flex;[^}]*flex-direction: column;[^}]*overflow: hidden;/);
     assert.match(css, /\.rw-project-configuration-body \{[^}]*flex: 1 1 auto;[^}]*min-height: 0;/);
+});
+
+test('configuration header is centered and README retains an accessible contained scroll panel', () => {
+    assert.match(css, /\.rw-project-configuration-modal \.v2-modal-title \{[^}]*text-align: center;/);
+    assert.match(css, /\.rw-project-configuration-modal \.v2-modal-close \{[^}]*position: absolute;[^}]*right: 16px;/);
+    assert.match(workspace, /id="rw-project-configuration-readme"\s+tabindex="0" role="region" aria-label="Project README, read only"/);
+    assert.match(css, /\.rw-project-configuration-readme \{[^}]*max-height: min\(280px, 34vh\);/);
+    assert.match(css, /\.rw-project-configuration-readme:focus-visible/);
+    assert.match(client, /querySelectorAll\('button, \[tabindex="0"\]'\)/);
+    assert.match(workspace, /<span>Read only<\/span>/);
+});
+
+test('focus cycle includes the README only when content is visible, including loading and error states', () => {
+    let contentHidden = false;
+    let keydown;
+    let dismissed = false;
+    let prevented = false;
+    const document = {
+        activeElement: null,
+        addEventListener(type, handler) { assert.equal(type, 'keydown'); keydown = handler; },
+    };
+    const control = hidden => ({
+        closest() { return hidden() ? {} : null; },
+        focus() { document.activeElement = this; },
+    });
+    const close = control(() => false), body = control(() => false), readme = control(() => contentHidden);
+    const overlay = { hidden: false, querySelectorAll: () => [close, body, readme] };
+    const source = client.slice(client.indexOf("    document.addEventListener('keydown'"), client.lastIndexOf('\n})();'));
+    new Function('document', 'overlay', 'closeConfiguration', source)(document, overlay, () => { dismissed = true; });
+    const tab = shiftKey => keydown({ key: 'Tab', shiftKey, preventDefault() { prevented = true; } });
+    document.activeElement = readme;
+    tab(false);
+    assert.equal(document.activeElement, close);
+    assert.equal(prevented, true);
+    tab(true);
+    assert.equal(document.activeElement, readme);
+    contentHidden = true; // Both loading and error states hide the content block.
+    document.activeElement = body;
+    tab(false);
+    assert.equal(document.activeElement, close);
+    tab(true);
+    assert.equal(document.activeElement, body);
+    keydown({ key: 'Escape' });
+    assert.equal(dismissed, true);
+});
+
+function renderHarness() {
+    function element(tag) {
+        return { tag, textContent: '', children: [],
+            append(...children) { this.children.push(...children); },
+            appendChild(child) { this.children.push(child); },
+            replaceChildren() { this.children = []; },
+        };
+    }
+    const objective = element('p'), settings = element('dl');
+    const dataList = element('ul'), readme = element('pre');
+    const document = {
+        createElement: element,
+        getElementById() { throw new Error('The removed Context element must not be read.'); },
+    };
+    const rendering = client.slice(client.indexOf('    function setting('), client.indexOf('    async function loadConfiguration('));
+    const render = new Function('document', 'objective', 'settings', 'dataList', 'readme',
+        rendering + '\nreturn renderProject;')(document, objective, settings, dataList, readme);
+    return { render, objective, settings, dataList, readme };
+}
+
+test('rendering preserves all default values, objective, data scope and full README without mutating context', () => {
+    const h = renderHarness();
+    const narrative = '# Scientific context\n\n' + 'Long narrative remains available in README. '.repeat(100);
+    const project = {
+        task_description: 'Identify mechanisms of neuronal regeneration.',
+        dataset_context: narrative,
+        reasoning_model: 'claude-opus-4-6', execution_model: 'claude-sonnet-4-6',
+        query_count: 12, deep_research: true, web_search: false,
+        data_sources: { sources: [{ display_name: 'optic-nerve-regeneration-data', selected_paths: ['.'] }] },
+    };
+    const before = JSON.stringify(project);
+    h.render(project, { success: true, content: narrative });
+    assert.equal(h.objective.textContent, project.task_description);
+    assert.deepEqual(h.settings.children.map(child => child.textContent), [
+        'Reasoning model', 'claude-opus-4-6', 'Execution model', 'claude-sonnet-4-6',
+        'Queries for Round 1+', '12', 'Deep Research', 'Enabled', 'Web Search', 'Disabled',
+    ]);
+    assert.deepEqual(h.dataList.children[0].children.map(child => child.textContent),
+        ['optic-nerve-regeneration-data', 'Entire source']);
+    assert.equal(h.readme.textContent, narrative);
+    assert.equal(JSON.stringify(project), before);
+});
+
+test('missing README and empty project information retain existing fallbacks', () => {
+    const h = renderHarness();
+    h.render({ query_count: 1, deep_research: false, web_search: false },
+        { success: false, error: 'File not found' });
+    assert.equal(h.objective.textContent, 'No research objective saved.');
+    assert.equal(h.dataList.children[0].textContent, 'No shared data sources selected.');
+    assert.equal(h.readme.textContent, 'README unavailable: File not found');
+    assert.deepEqual(h.settings.children.map(child => child.textContent), [
+        'Reasoning model', 'Unavailable', 'Execution model', 'Unavailable',
+        'Queries for Round 1+', '1', 'Deep Research', 'Disabled', 'Web Search', 'Disabled',
+    ]);
+});
+
+test('repeat rendering replaces prior settings and displays partial source paths as plain text', () => {
+    const h = renderHarness();
+    const project = { query_count: 50, data_sources: { sources: [
+        { display_name: '<source>', selected_paths: ['counts.csv', 'metadata/cohorts.csv'] },
+    ] } };
+    h.render(project, { success: true, content: '<script>not executable</script>' });
+    h.render(project, { success: true, content: '<script>still plain text</script>' });
+    assert.equal(h.settings.children.length, 10);
+    assert.equal(h.dataList.children.length, 1);
+    assert.deepEqual(h.dataList.children[0].children.map(child => child.textContent),
+        ['<source>', 'counts.csv, metadata/cohorts.csv']);
+    assert.equal(h.readme.textContent, '<script>still plain text</script>');
 });
 
 test('configuration viewer reads existing project detail and README without mutation calls', () => {

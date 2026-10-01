@@ -3,7 +3,7 @@
 {% block title %}Round Workspace &middot; DiscoveryAgent{% endblock %}
 
 {% block head %}
-<link rel="stylesheet" href="{{ url_for('static', filename='round_workspace.css', v='20260929-release-acceptance-1') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='round_workspace.css', v='20261001-configuration-polish-1') }}">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
 <link rel="stylesheet" href="{{ url_for('static', filename='project_audit_agent.css', v='20260818-audit-figure-drag') }}">
 <script>
@@ -156,7 +156,7 @@
     <div class="v2-modal rw-project-configuration-modal" role="dialog" aria-modal="true"
          aria-labelledby="rw-project-configuration-title" aria-describedby="rw-project-configuration-description">
         <div class="v2-modal-head">
-            <div>
+            <div class="rw-project-configuration-header-copy">
                 <h2 class="v2-modal-title" id="rw-project-configuration-title">Project Configuration</h2>
                 <p class="v2-field-help" id="rw-project-configuration-description">
                     This is the project&rsquo;s current read-only configuration. Supported execution settings can be adjusted when launching a new round.
@@ -174,9 +174,7 @@
                     <p class="rw-project-configuration-objective" id="rw-project-configuration-objective"></p>
                 </section>
                 <section class="rw-project-configuration-section-block">
-                    <h3>Context</h3>
-                    <p class="rw-project-configuration-objective" id="rw-project-configuration-context"></p>
-                    <h4 class="rw-project-configuration-defaults-title">Project defaults</h4>
+                    <h3>Project defaults</h3>
                     <dl class="rw-project-configuration-settings" id="rw-project-configuration-settings"></dl>
                 </section>
                 <section class="rw-project-configuration-section-block">
@@ -188,7 +186,8 @@
                         <h3>Project README</h3>
                         <span>Read only</span>
                     </div>
-                    <pre class="rw-project-configuration-readme" id="rw-project-configuration-readme"></pre>
+                    <pre class="rw-project-configuration-readme" id="rw-project-configuration-readme"
+                         tabindex="0" role="region" aria-label="Project README, read only"></pre>
                 </section>
             </div>
         </div>
@@ -212,6 +211,6 @@
 <script src="{{ url_for('static', filename='report_figures.js', v='20260927-safe-markdown-1') }}"></script>
 <script src="{{ url_for('static', filename='round_workspace_tab_scrollbar.js', v='20260823-tab-scrollbar-overflow-1') }}"></script>
 <script src="{{ url_for('static', filename='round_workspace.js', v='20260823-tab-scrollbar-overflow-1') }}"></script>
-<script src="{{ url_for('static', filename='round_configuration.js', v='20260929-release-acceptance-1') }}"></script>
+<script src="{{ url_for('static', filename='round_configuration.js', v='20261001-configuration-polish-1') }}"></script>
 <script src="{{ url_for('static', filename='project_audit_agent.js', v='20260927-audit-hardening-1') }}"></script>
 {% endblock %}
