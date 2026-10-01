@@ -221,7 +221,7 @@ test('collapsed Activity / Audit Agent pill is centered by its painted header ro
     assert.match(restorePill, /pointer-events:auto/);
     assert.doesNotMatch(restorePill, /height:100%|transform:|(?:^|[;{])(?:top|bottom):|position:absolute/);
     assert.equal((41 - 27) / 2, 7);
-    assert.match(template, /round_workspace\.css', v='20260929-release-acceptance-1'/);
+    assert.match(template, /round_workspace\.css', v='20261001-configuration-polish-1'/);
     assert.match(workspaceSource, /els\.restore\.hidden=!state\.panelCollapsed/);
     assert.match(workspaceSource, /els\.restore\.addEventListener\('click',\(\)=>\{setPanelCollapsed\(false\);\}\)/);
     assert.match(workspaceSource, /notifyAuditLifecycle\(next\?'closed':'reopened'\)/);
