@@ -3,10 +3,13 @@ from __future__ import annotations
 import io
 import os
 import stat
+import subprocess
+import sys
 import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest import mock
 
 from manager.discoveryagent_cli.bootstrap import install_cli_shim
 from manager.discoveryagent_cli.errors import ActiveResearchError, UninstallError
@@ -124,7 +127,8 @@ class UninstallFlowTests(unittest.TestCase):
             install_root=self.paths.root,
             python=Path(self.state.runtime.python_path),
         )
-        state = replace(self.state, cli=CliState(str(cli), False, None))
+        state = replace(self.state, cli=CliState(str(cli), False, None),
+                        data_root=str(self.root / "durable-data"))
         write_state_atomic(self.paths.state_file, state)
         self.assertEqual(validate_uninstall_targets(self.paths, state), (self.paths.root, cli))
 
@@ -133,6 +137,76 @@ class UninstallFlowTests(unittest.TestCase):
         write_state_atomic(suspicious_paths.state_file, suspicious_state)
         with self.assertRaisesRegex(UninstallError, "suspicious"):
             validate_uninstall_targets(suspicious_paths, suspicious_state)
+
+    def _owned_state_with_alias(self):
+        cli = self.root / "commands" / "discoveryagent"
+        install_cli_shim(cli, install_root=self.paths.root,
+                         python=Path(self.state.runtime.python_path))
+        alias = self.root / "directory-alias"
+        alias.symlink_to(self.paths.root, target_is_directory=True)
+        state = replace(self.state, cli=CliState(str(cli), False, None),
+                        data_root=str(self.root / "durable-data"))
+        return state, alias
+
+    def test_data_alias_equal_to_or_inside_install_is_refused(self):
+        state, alias = self._owned_state_with_alias()
+        for data in (alias, alias / "projects"):
+            with self.subTest(data=data):
+                with self.assertRaisesRegex(UninstallError, "suspicious"):
+                    validate_uninstall_targets(self.paths, replace(state, data_root=str(data)))
+
+    def test_install_inside_aliased_data_root_is_refused(self):
+        state, _ = self._owned_state_with_alias()
+        alias = self.root / "data-parent-alias"
+        alias.symlink_to(self.root, target_is_directory=True)
+        with self.assertRaisesRegex(UninstallError, "suspicious"):
+            validate_uninstall_targets(self.paths, replace(state, data_root=str(alias)))
+
+    def test_home_alias_inside_install_is_refused(self):
+        state, alias = self._owned_state_with_alias()
+        for home in (alias, alias / "home"):
+            with self.subTest(home=home), mock.patch.object(Path, "home", return_value=home):
+                with self.assertRaisesRegex(UninstallError, "suspicious"):
+                    validate_uninstall_targets(self.paths, state)
+
+    def test_unresolvable_data_alias_fails_closed(self):
+        state, _ = self._owned_state_with_alias()
+        cycle = self.root / "cycle"
+        cycle.symlink_to(cycle)
+        with self.assertRaisesRegex(UninstallError, "resolve uninstall"):
+            validate_uninstall_targets(self.paths, replace(state, data_root=str(cycle)))
+
+    def test_separate_aliased_data_root_remains_allowed(self):
+        state, _ = self._owned_state_with_alias()
+        data = Path(state.data_root)
+        data.mkdir()
+        alias = self.root / "external-data-alias"
+        alias.symlink_to(data, target_is_directory=True)
+        self.assertEqual(validate_uninstall_targets(self.paths, replace(state, data_root=str(alias))),
+                         (self.paths.root, Path(state.cli.path)))
+
+    def test_cli_uninstall_preserves_data_reached_through_install_alias(self):
+        state, alias = self._owned_state_with_alias()
+        data = alias / "projects"
+        data.mkdir()
+        sentinel = data / "checkpoint.json"
+        sentinel.write_text('{"resumable":true}', encoding="utf-8")
+        state = replace(state, data_root=str(data))
+        write_state_atomic(self.paths.state_file, state)
+        home = self.root / "isolated-home"
+        home.mkdir()
+        manager = Path(__file__).resolve().parents[1] / "manager"
+        result = subprocess.run([sys.executable, "-B", "-m", "discoveryagent_cli", "uninstall"],
+            cwd=self.root, text=True, capture_output=True, timeout=15,
+            env={"HOME": str(home), "PATH": os.defpath, "TMPDIR": str(self.root),
+                 "PYTHONPATH": str(manager), "PYTHONDONTWRITEBYTECODE": "1",
+                 "PYTHONNOUSERSITE": "1", "DISCOVERYAGENT_INTERNAL_INSTALL_ROOT": str(self.paths.root)})
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("Refusing to remove suspicious install root", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertTrue(self.paths.root.exists())
+        self.assertTrue(Path(state.cli.path).exists())
+        self.assertEqual(sentinel.read_text(), '{"resumable":true}')
 
 
 class SelfRemovalHelperTests(unittest.TestCase):

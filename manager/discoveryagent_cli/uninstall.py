@@ -62,14 +62,21 @@ def validate_uninstall_targets(paths: InstallationPaths, state: ManagerState) ->
     data_root = Path(state.data_root).expanduser().absolute()
     home = Path.home().expanduser().absolute()
     cli = Path(state.cli.path).expanduser().absolute()
+    # macOS aliases (/var versus /private/var) and directory symlinks must
+    # not hide overlap with durable data or HOME. Keep the original targets
+    # below so lstat still rejects a symlink install root or CLI itself.
+    try:
+        resolved_root = root.resolve()
+        resolved_data = data_root.resolve()
+        resolved_home = home.resolve()
+    except (OSError, RuntimeError) as exc:
+        raise UninstallError(f"Could not resolve uninstall safety paths: {exc}") from exc
     if (
         not root.is_absolute()
-        or root == Path(root.anchor)
-        or root == home
-        or home.is_relative_to(root)
-        or root == data_root
-        or data_root.is_relative_to(root)
-        or root.is_relative_to(data_root)
+        or resolved_root == Path(resolved_root.anchor)
+        or resolved_home.is_relative_to(resolved_root)
+        or resolved_data.is_relative_to(resolved_root)
+        or resolved_root.is_relative_to(resolved_data)
     ):
         raise UninstallError(f"Refusing to remove suspicious install root: {root}")
     try:
