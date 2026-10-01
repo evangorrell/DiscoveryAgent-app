@@ -462,7 +462,7 @@ def test_project_audit_chat_ignores_ambiguous_legacy_browser_storage_without_del
     assert "localStorage.removeItem(storageKey)" not in js
 
 
-def test_project_audit_chat_preserves_history_but_restores_only_active_work():
+def test_project_audit_chat_restores_active_work_or_same_visit_selection():
     js = (Path(app_module.app.static_folder) / "project_audit_agent.js").read_text(
         encoding="utf-8"
     )
@@ -481,6 +481,8 @@ def test_project_audit_chat_preserves_history_but_restores_only_active_work():
     assert "storedState.activeChatId" in restore
     assert "activeAuditWorkChatId(storedActiveId)" in restore
     assert "showAuditChatLocally(workChatId, 'active')" in restore
+    assert "window.discoveryProjectVisit.readAuditView()" in restore
+    assert "showAuditChatLocally(visitView.chatId, 'history')" in restore
     assert "showBlankNewChat({ discardDraft: true, resetScroll: true })" in restore
     assert "activeChatId = restoredActive.id;" not in restore
     assert "const freshChat = createEmptyChat();" not in restore

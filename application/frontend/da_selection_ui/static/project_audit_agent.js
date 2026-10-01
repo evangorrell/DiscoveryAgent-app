@@ -35,6 +35,7 @@
     let auditClosed = false;
     let auditHidden = true;
     let auditLifecycleRevision = 0;
+    let auditViewRestored = false;
     const cancelledAuditJobIds = new Set();
     const pendingChatIds = new Set();
     const pollingJobIds = new Set();
@@ -646,6 +647,12 @@
     }
 
     window.addEventListener('pagehide', function() {
+        if (auditViewRestored && window.discoveryProjectVisit) {
+            window.discoveryProjectVisit.rememberAuditView({
+                chatId: activeChatId,
+                draft: chatInputEl ? chatInputEl.value : '',
+            });
+        }
         if (!pendingDurableAuditChatSnapshot) return;
         if (durablePersistTimer) window.clearTimeout(durablePersistTimer);
         durablePersistTimer = null;
@@ -979,9 +986,7 @@
             }
             return;
         }
-        if (auditClosed) {
-            showBlankNewChat({ discardDraft: true, resetScroll: true });
-        } else if (activeChatId) {
+        if (activeChatId) {
             auditScreenState = 'history';
         } else {
             auditScreenState = 'new';
@@ -991,12 +996,6 @@
     function handleAuditPanelClosed() {
         auditClosed = true;
         auditHidden = true;
-        const workChatId = activeAuditWorkChatId(activeChatId);
-        if (workChatId) {
-            auditScreenState = 'active';
-            return;
-        }
-        showBlankNewChat({ discardDraft: true, resetScroll: true });
     }
 
     function handleAuditPanelReopened() {
@@ -1005,11 +1004,10 @@
         auditHidden = !!(workspaceState && workspaceState.panelTab !== 'chat');
         const workChatId = activeAuditWorkChatId(activeChatId);
         if (workChatId) {
-            showAuditChatLocally(workChatId, 'active');
+            if (activeChatId !== workChatId) showAuditChatLocally(workChatId, 'active');
             resumePendingAuditJobs();
-            return;
         }
-        showBlankNewChat({ discardDraft: true, resetScroll: true });
+        updateComposerForActiveChat();
     }
 
     function handleAuditTemporarilyHidden() {
@@ -1565,11 +1563,20 @@
             ? storedState.activeChatId
             : null;
         const workChatId = activeAuditWorkChatId(storedActiveId);
+        const visitView = window.discoveryProjectVisit && window.discoveryProjectVisit.readAuditView();
         if (workChatId) {
             showAuditChatLocally(workChatId, 'active');
+        } else if (visitView && visitView.chatId && showAuditChatLocally(visitView.chatId, 'history')) {
+            // Same project visit: restore the tab's selected chat, not another
+            // tab's durable activeChatId. Explicit New Chat remains blank.
         } else {
             showBlankNewChat({ discardDraft: true, resetScroll: true });
         }
+        if (visitView && typeof visitView.draft === 'string' && chatInputEl &&
+                (visitView.chatId || null) === activeChatId) {
+            chatInputEl.value = visitView.draft;
+        }
+        auditViewRestored = true;
         revealMainInterface();
         hideBootOverlay();
         autoSizeInput();
@@ -1881,5 +1888,8 @@
 
     document.addEventListener('DOMContentLoaded', function() {
         initPromise = initSession();
+    });
+    window.addEventListener('pageshow', function(event) {
+        if (event.persisted) restoreLocalChatInterface();
     });
 })();

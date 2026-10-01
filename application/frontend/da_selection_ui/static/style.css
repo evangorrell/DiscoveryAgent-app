@@ -3459,6 +3459,7 @@ body.v2 .hs-welcome-heading {
     max-width: min(610px, calc(100vw - 48px));
 }
 .v2-skill-import-modal > .v2-modal-head { position: relative; }
+.v2-skill-import-modal #skill-import-copy { text-align: center; margin-inline: auto; }
 .v2-skill-import-modal > .v2-modal-head .v2-modal-close {
     position: absolute;
     top: 50%;

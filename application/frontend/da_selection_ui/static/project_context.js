@@ -25,6 +25,56 @@
 
     window.discoveryProjectContext.tabToken = tabToken;
 
+    // A visit spans project-level pages in this browser tab, not individual
+    // documents. Global pages may still carry the server's last project ID;
+    // require the explicit project slug before retaining any Audit view.
+    const projectId = projectSlug && typeof context.projectId === 'string' ? context.projectId.trim() : '';
+    const visitStorageKey = 'discoveryAgentProjectVisitV1';
+    let visit = null;
+
+    function enterProjectVisit() {
+        visit = null;
+        try {
+            if (!projectId) {
+                window.sessionStorage.removeItem(visitStorageKey);
+                return;
+            }
+            let stored = null;
+            try { stored = JSON.parse(window.sessionStorage.getItem(visitStorageKey)); } catch (_) {}
+            visit = stored && stored.projectId === projectId && typeof stored.token === 'string'
+                ? stored : { projectId, token: newTabToken(), auditView: null };
+            window.sessionStorage.setItem(visitStorageKey, JSON.stringify(visit));
+        } catch (_) { visit = null; }
+    }
+
+    function currentVisit() {
+        try {
+            const stored = JSON.parse(window.sessionStorage.getItem(visitStorageKey));
+            return visit && stored && stored.projectId === projectId && stored.token === visit.token
+                ? stored : null;
+        } catch (_) { return null; }
+    }
+
+    window.discoveryProjectVisit = {
+        readAuditView() {
+            const current = currentVisit();
+            return current ? current.auditView : null;
+        },
+        rememberAuditView(view) {
+            const current = currentVisit();
+            if (!current) return;
+            current.auditView = {
+                chatId: typeof view.chatId === 'string' ? view.chatId : null,
+                draft: typeof view.draft === 'string' ? view.draft : '',
+            };
+            try { window.sessionStorage.setItem(visitStorageKey, JSON.stringify(current)); } catch (_) {}
+        },
+    };
+    enterProjectVisit();
+    window.addEventListener('pageshow', function(event) {
+        if (event.persisted) enterProjectVisit();
+    });
+
     const nativeFetch = window.fetch.bind(window);
     window.fetch = function (input, init) {
         let target;

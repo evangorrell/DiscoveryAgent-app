@@ -57,7 +57,7 @@ function deferred() {
 }
 
 function makeLifecycleHarness({
-    chats = [], activeChatId: storedActiveId = null, pending = [], queues = {}, stopping = null,
+    chats = [], activeChatId: storedActiveId = null, pending = [], queues = {}, stopping = null, visitView = null,
 } = {}) {
     const listeners = new Map();
     const writes = [];
@@ -69,6 +69,7 @@ function makeLifecycleHarness({
     const chatMessagesEl = { scrollTop: 0, scrollHeight: 500 };
     const chatInputEl = { value: '', disabled: false, focus() {} };
     const windowObject = {
+        discoveryProjectVisit: { readAuditView() { return visitView; } },
         roundWorkspace: { state: { panelCollapsed: false, panelTab: 'chat' } },
         addEventListener(type, handler) { listeners.set(type, handler); },
     };
@@ -133,7 +134,8 @@ function makeLifecycleHarness({
         'renderChatList', 'revealActiveChatRow', 'autoSizeInput', 'updateComposerForActiveChat',
         'syncEmptyState', 'setHistoryDrawerOpen', 'revealMainInterface', 'hideBootOverlay',
         'resumePendingAuditJobs',
-        `${workStateSource}
+        `let auditViewRestored = false;
+         ${workStateSource}
          ${lifecycleSource}
          ${restoreSource}
          return {
@@ -184,7 +186,7 @@ const historyChat = {
     messages: [{ role: 'user', text: 'Prior question' }, { role: 'assistant', text: 'Prior answer' }],
 };
 
-test('idle initialization and true close/reopen use an unsaved blank New Chat without writes', async () => {
+test('new project visit starts blank but panel close/reopen preserves the chosen chat without writes', async () => {
     const harness = makeLifecycleHarness({ chats: [historyChat], activeChatId: historyChat.id });
     harness.restoreLocalChatInterface();
     await Promise.resolve();
@@ -199,15 +201,15 @@ test('idle initialization and true close/reopen use an unsaved blank New Chat wi
     harness.dispatch('closed');
     await Promise.resolve();
     assert.equal(harness.state().auditClosed, true);
-    assert.equal(harness.state().activeChatId, null);
-    assert.equal(harness.state().draft, '');
+    assert.equal(harness.state().activeChatId, historyChat.id);
+    assert.equal(harness.state().draft, 'unsaved draft');
     assert.deepEqual(harness.writes, []);
 
     harness.dispatch('reopened');
     await Promise.resolve();
     assert.equal(harness.state().auditClosed, false);
-    assert.equal(harness.state().auditScreenState, 'new');
-    assert.equal(harness.state().activeChatId, null);
+    assert.equal(harness.state().auditScreenState, 'history');
+    assert.equal(harness.state().activeChatId, historyChat.id);
     assert.deepEqual(harness.state().chatSessions.map((chat) => chat.id), ['history-chat']);
     assert.deepEqual(harness.writes, []);
 });
@@ -276,7 +278,7 @@ test('a stopping operation remains observable across a true panel close/reopen',
     assert.equal(harness.state().activeChatId, historyChat.id);
 });
 
-test('terminal work remains visible while open but a true close/reopen returns to New Chat', async () => {
+test('terminal work remains visible through panel close/reopen within the project', async () => {
     const harness = makeLifecycleHarness({
         chats: [historyChat], activeChatId: historyChat.id,
         pending: [{ jobId: 'job-1', chatId: historyChat.id }],
@@ -291,11 +293,11 @@ test('terminal work remains visible while open but a true close/reopen returns t
     harness.dispatch('closed');
     harness.dispatch('reopened');
     await Promise.resolve();
-    assert.equal(harness.state().auditScreenState, 'new');
-    assert.equal(harness.state().activeChatId, null);
+    assert.equal(harness.state().auditScreenState, 'history');
+    assert.equal(harness.state().activeChatId, historyChat.id);
 });
 
-test('a job that becomes terminal while truly closed cannot reopen completed history', async () => {
+test('a job that completes while collapsed remains visible on reopening', async () => {
     const harness = makeLifecycleHarness({
         chats: [historyChat], activeChatId: historyChat.id,
         pending: [{ jobId: 'job-1', chatId: historyChat.id }],
@@ -307,8 +309,35 @@ test('a job that becomes terminal while truly closed cannot reopen completed his
     await Promise.resolve();
     harness.dispatch('reopened');
     await Promise.resolve();
-    assert.equal(harness.state().auditScreenState, 'new');
+    assert.equal(harness.state().auditScreenState, 'history');
+    assert.equal(harness.state().activeChatId, historyChat.id);
+});
+
+test('same-project navigation restores the selected chat and draft without conversation writes', () => {
+    const harness = makeLifecycleHarness({ chats: [historyChat],
+        visitView: { chatId: historyChat.id, draft: 'Follow-up in progress' } });
+    harness.restoreLocalChatInterface();
+    assert.equal(harness.state().activeChatId, historyChat.id);
+    assert.equal(harness.state().draft, 'Follow-up in progress');
+    assert.deepEqual(harness.state().chatHistory, historyChat.messages);
+    assert.deepEqual(harness.writes, []);
+});
+
+test('explicit New Chat survives same-project navigation even with a durable active chat', () => {
+    const harness = makeLifecycleHarness({ chats: [historyChat], activeChatId: historyChat.id,
+        visitView: { chatId: null, draft: 'A new question' } });
+    harness.restoreLocalChatInterface();
     assert.equal(harness.state().activeChatId, null);
+    assert.equal(harness.state().draft, 'A new question');
+    assert.deepEqual(harness.writes, []);
+});
+
+test('deleted visit chat cannot be revived or leak its draft into New Chat', () => {
+    const harness = makeLifecycleHarness({ chats: [historyChat],
+        visitView: { chatId: 'deleted-chat', draft: 'Old draft' } });
+    harness.restoreLocalChatInterface();
+    assert.equal(harness.state().activeChatId, null);
+    assert.equal(harness.state().draft, '');
 });
 
 test('Round Workspace emits distinct true-close and temporary-hide lifecycle transitions', () => {
