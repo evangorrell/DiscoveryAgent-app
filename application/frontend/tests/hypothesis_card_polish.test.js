@@ -42,10 +42,10 @@ function harness() {
         const isRegeneratingHypothesis = () => false;
         const regenerationViewFor = h => ({ results: [{}, {}, {}], viewedSnapshot: h, viewedPosition: 2 });
         const buildOverflow = () => el('div', 'hs-card-overflow');
-        const regenerationVersionControls = () => {
+        const regenerationVersionControls = (h, view, compact) => {
             const nav = el('div', 'hs-regeneration-nav');
             nav.appendChild(el('button', 'hs-regeneration-arrow', '‹'));
-            nav.appendChild(el('span', 'hs-regeneration-count', 'Version 3 of 3'));
+            nav.appendChild(el('span', 'hs-regeneration-count', compact ? '3 / 3' : 'Version 3 of 3'));
             nav.appendChild(el('button', 'hs-regeneration-arrow', '›'));
             return nav;
         };
@@ -61,7 +61,7 @@ test('selected card footer has separate version/action groups and no round CTA',
     const card = h.renderCard({ index: 1, title: 'A naturally wrapping scientific hypothesis title' }, 1);
     const footer = find(card, 'hs-card-controls');
     assert.deepEqual(footer.children.map(n => n.classList.contains('hs-regeneration-nav') ? 'versions' : 'actions'), ['versions', 'actions']);
-    assert.deepEqual(footer.children[0].children.map(n => n.textContent), ['‹', 'Version 3 of 3', '›']);
+    assert.deepEqual(footer.children[0].children.map(n => n.textContent), ['‹', '3 / 3', '›']);
     assert.deepEqual(footer.children[1].children.map(n => n.textContent), ['View full hypothesis', 'Selected']);
     assert.equal(find(card, 'hs-card-start-round'), undefined);
     assert.equal(find(card, 'hs-card-overflow'), undefined); // selected lock preserved
@@ -75,6 +75,7 @@ test('unselected footer keeps selection action, semantic buttons and existing ov
     assert.ok(actions.every(n => n.tag === 'button' && n.type === 'button'));
     assert.ok(find(card, 'hs-card-overflow'));
     assert.equal(find(card, 'hs-card-title').textContent, 'Another long scientific title');
+    assert.equal(find(card, 'hs-regeneration-count').textContent, '3 / 3');
 });
 
 test('Studio retains current next-round calculation, including Round 5 and fallback', () => {
@@ -105,6 +106,7 @@ test('expanded cards separate their document from grouped footer controls', () =
             n.classList.contains('hs-card-details') ? 'document' : 'footer'), ['head', 'document', 'footer']);
         assert.match(find(card, 'hs-hypothesis-markdown').textContent, /Final line/);
         assert.equal(find(card, 'hs-card-expand').textContent, 'Hide full hypothesis');
+        assert.equal(find(card, 'hs-regeneration-count').textContent, 'Version 3 of 3');
         assert.equal(find(card, 'hs-card-expand').attributes['aria-expanded'], 'true');
         assert.equal(find(card, 'hs-card-start-round'), undefined);
         assert.ok(find(card, selected ? 'hs-card-selected-static' : 'hs-card-select'));
@@ -129,6 +131,15 @@ test('wrapping footer groups preserve action labels and usable widths', () => {
     assert.match(css, /\.hs-card-actions > \.hs-card-action\s*\{[^}]*white-space: nowrap;/);
     assert.match(css, /\.hs-regeneration-nav\s*\{[^}]*flex: 0 0 auto;/);
     assert.match(css, /@container hs-hypotheses \(max-width: 640px\)/);
+});
+
+test('compact rows align bottom footers and use compact-only sizing without altering expanded packing', () => {
+    assert.match(source, /if \(!grid\.querySelector\('\.hs-card\.is-expanded'\)\) return;/);
+    assert.match(source, /HSL\.packCards\(cards\.map\(card => card\.offsetHeight\)/);
+    assert.match(css, /\.hs-hypothesis-surface\.is-static-row \.hs-card-grid \{ align-items: stretch; \}/);
+    assert.match(css, /\.hs-card-controls\s*\{[^}]*margin-top: auto;/);
+    assert.match(css, /\.hs-card\.is-collapsed \.hs-card-controls\s*\{[^}]*justify-content: space-between;[^}]*padding-top: 8px;/);
+    assert.match(css, /\.hs-card\.is-collapsed \.hs-regeneration-arrow\s*\{[^}]*width: 24px;[^}]*height: 24px;/);
 });
 
 test('page CTA is before Back to Projects, uses a real button and the existing launch handler', () => {

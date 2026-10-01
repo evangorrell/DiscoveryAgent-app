@@ -1848,6 +1848,9 @@
 
     function syncCardLayout(grid) {
         if (!HSL) return; // CSS grid remains the non-JS fallback.
+        // Compact rows use native grid stretch to align bottom-anchored footers.
+        // Keep independent shortest-column placement for expanded documents.
+        if (!grid.querySelector('.hs-card.is-expanded')) return;
         const cards = Array.from(grid.children);
         let scheduled = false;
         const syncPositions = () => {
@@ -1984,7 +1987,7 @@
         if (!isManualEditing) {
             const controls = el('div', 'hs-card-controls');
             if (versionView.results.length > 1) {
-                controls.appendChild(regenerationVersionControls(h, versionView));
+                controls.appendChild(regenerationVersionControls(h, versionView, !expanded));
             }
             const actions = el('div', 'hs-card-actions');
             actions.appendChild(expandBtn);
@@ -2014,7 +2017,7 @@
         return card;
     }
 
-    function regenerationVersionControls(activeHypothesis, view) {
+    function regenerationVersionControls(activeHypothesis, view, compact = false) {
         const idx = Number(activeHypothesis.index);
         const nav = el('div', 'hs-regeneration-nav');
         const blocked = state.manualEditIndex === idx || isManualEditSaving(idx);
@@ -2033,8 +2036,12 @@
             navigateRegenerationVersion(idx, view.viewedPosition - 1);
         });
         nav.appendChild(previous);
-        nav.appendChild(el('span', 'hs-regeneration-count',
-            'Version ' + (view.viewedPosition + 1) + ' of ' + view.results.length));
+        const versionLabel = 'Version ' + (view.viewedPosition + 1) + ' of ' + view.results.length;
+        const count = el('span', 'hs-regeneration-count', compact
+            ? (view.viewedPosition + 1) + ' / ' + view.results.length
+            : versionLabel);
+        count.title = versionLabel;
+        nav.appendChild(count);
         const next = el('button', 'hs-regeneration-arrow', '›');
         next.type = 'button';
         next.setAttribute(
