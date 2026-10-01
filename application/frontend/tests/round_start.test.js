@@ -81,6 +81,7 @@ function loadClient(fetchImpl, round = 4) {
         : selector.includes('[data-start-round-surface]') ? surface : null;
     const documentListeners = new Map();
     const assigned = [];
+    const events = [];
     global.document = {
         body: { classList: classList() },
         getElementById: (id) => elements[id] || null,
@@ -90,12 +91,13 @@ function loadClient(fetchImpl, round = 4) {
     global.window = {
         discoveryProjectContext: { projectId: 'project-1' },
         location: { assign: (url) => assigned.push(url) },
+        dispatchEvent: (event) => events.push(event.type),
     };
     global.fetch = fetchImpl;
     delete require.cache[CLIENT];
     require(CLIENT);
     return {
-        assigned, button, note, surface, elements,
+        assigned, events, button, note, surface, elements,
         clickStart() {
             documentListeners.get('click')({ target: button, preventDefault() {} });
         },
@@ -139,6 +141,7 @@ test('one shared launch flow blocks duplicate option loads and duplicate starts'
     startRequest.resolve(response(true, { ok: true, redirect_url: '/rounds/?project=example&round=4&started=1' }));
     await flush();
     assert.deepEqual(ui.assigned, ['/rounds/?project=example&round=4&started=1']);
+    assert.deepEqual(ui.events, ['da-round-launched']);
 });
 
 test('Round Start submits exactly the editable per-round settings', async () => {

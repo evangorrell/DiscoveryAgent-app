@@ -8,6 +8,9 @@
     {% block head %}{% endblock %}
     <link rel="stylesheet" href="{{ url_for('static', filename='round_launch.css', v='20261001-controls-1') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='native_scrollbars.css', v='20260930-native-1') }}">
+    {% if project_slug and not bare_shell %}
+    <link rel="stylesheet" href="{{ url_for('static', filename='project_round_action.css', v='20261001-project-cta-1') }}">
+    {% endif %}
 </head>
 <body class="v2{% if page_class %} {{ page_class }}{% endif %}">
     <!--
@@ -47,6 +50,12 @@
                    {% if nav_active == 'skills' %}aria-current="page"{% endif %}>Skills</a>
             </nav>
             <div class="v2-appbar-actions">
+                {% if project_slug %}
+                <span id="project-round-action" class="v2-project-round-action" data-start-round-surface hidden>
+                    <button type="button" id="project-start-round" class="v2-btn v2-btn-primary" data-start-round hidden>Start Round</button>
+                    <span class="v2-start-round-note" data-start-round-note role="status" hidden></span>
+                </span>
+                {% endif %}
                 <a class="v2-appbar-back v2-compact-secondary" href="{{ url_for('projects') }}">&#8592; Back to Projects</a>
             </div>
             {% endif %}
@@ -93,6 +102,8 @@
     <script src="{{ url_for('static', filename='v2_dialog.js') }}?v=20260808-modal-regions-1"></script>
     <script src="{{ url_for('static', filename='data_picker.js') }}?v=20260822-selector-picker-1"></script>
     {% if project_slug and not bare_shell %}
+    <script src="{{ url_for('static', filename='round_start.js', v='20261001-project-cta-1') }}"></script>
+    <script src="{{ url_for('static', filename='project_round_action.js', v='20261001-project-cta-1') }}"></script>
     <script>
       window.hypothesisActivityConfig = {
         projectSlug: {{ project_slug | tojson }},

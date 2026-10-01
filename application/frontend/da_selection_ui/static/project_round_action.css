@@ -1,0 +1,43 @@
+/* Only loaded inside a project; the global Projects screen has no CTA. */
+#project-round-action[hidden], #project-start-round[hidden],
+#project-round-action [data-start-round-note][hidden] { display: none !important; }
+.v2-project-round-action { position: relative; display: inline-flex; flex: 0 0 auto; }
+#project-start-round { padding: 8px 12px; font-size: 0.82rem; white-space: nowrap; }
+.v2-project-round-action [data-start-round-note] {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    width: min(260px, calc(100vw - 32px));
+    padding: 10px 12px;
+    border: 1px solid var(--v2-border);
+    border-radius: 8px;
+    background: var(--v2-surface);
+    box-shadow: 0 4px 12px rgba(40, 30, 12, 0.08);
+}
+#project-start-round.is-attention-cue { animation: project-round-attention 3s ease-out 1; }
+@keyframes project-round-attention {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(47, 93, 67, 0); }
+    35% { box-shadow: 0 0 0 4px rgba(47, 93, 67, 0.22); }
+}
+@media (prefers-reduced-motion: reduce) {
+    #project-start-round.is-attention-cue { animation: none; }
+}
+/* Keep both actions together, to the right of the brand. Navigation reflows
+   below them before it can collide; all links remain keyboard accessible. */
+.v2-appbar { flex-shrink: 0; }
+@media (max-width: 1100px) {
+    .v2-appbar-inner {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        height: auto;
+        gap: 0 16px;
+        padding-top: 8px;
+    }
+    .v2-appbar-actions { grid-column: 2; grid-row: 1; justify-content: flex-end; }
+    .v2-nav { grid-column: 1 / -1; grid-row: 2; height: 40px; max-width: 100%; overflow-x: auto; white-space: nowrap; }
+}
+@media (max-width: 540px) {
+    .v2-appbar-inner { grid-template-columns: minmax(0, 1fr); row-gap: 8px; }
+    .v2-appbar-actions { grid-column: 1; grid-row: 2; }
+    .v2-nav { grid-row: 3; }
+}

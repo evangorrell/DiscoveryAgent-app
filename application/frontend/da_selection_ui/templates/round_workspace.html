@@ -206,7 +206,6 @@
 {% block scripts %}
 <script>window.__PINNED_ROUND__ = {{ pinned_round | default(none) | tojson }};</script>
 <script>window.__PRE_ROUND_OVERLAY__ = {{ pre_round_overlay | default(false) | tojson }};</script>
-<script src="{{ url_for('static', filename='round_start.js', v='20260908-round-launch-settings-1') }}"></script>
 <script src="{{ url_for('static', filename='vendor/marked-9.1.6.min.js') }}"></script>
 <script src="{{ url_for('static', filename='vendor/dompurify-3.4.16.min.js') }}"></script>
 <script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
