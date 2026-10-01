@@ -57,3 +57,25 @@ test('shared new-round dialog contains only the supported editable settings', ()
     assert.match(launch, /objective, README, data, skills, paths, and safety settings remain unchanged/);
     assert.doesNotMatch(launch, /name="(?:task_description|dataset_context|readme|data_sources|project_root)"/);
 });
+
+test('Round Launch polish keeps semantic checkboxes and their clickable labels', () => {
+    for (const id of ['round-launch-deep-research', 'round-launch-web-search']) {
+        assert.match(launch, new RegExp(`<label[^>]*for="${id}"[\\s\\S]*?<input type="checkbox" id="${id}">`));
+    }
+    assert.doesNotMatch(launch, /role="switch"|role="checkbox"|tabindex=/);
+    const controls = fs.readFileSync(path.join(root, 'static/round_launch.css'), 'utf8');
+    assert.match(base, /filename='round_launch\.css'/);
+    assert.match(controls, /:checked \{[^}]*background: var\(--v2-accent\)/);
+    assert.match(controls, /:checked::before \{ visibility: visible/);
+    assert.match(controls, /:focus-visible \{[^}]*outline: 2px solid var\(--v2-accent\)/);
+    assert.match(controls, /forced-colors: active/);
+    assert.match(controls, /appearance: auto/);
+});
+
+test('compact Round Launch sizing is scoped and retains flexible model columns', () => {
+    const controls = fs.readFileSync(path.join(root, 'static/round_launch.css'), 'utf8');
+    assert.match(controls, /\.v2-round-launch-modal #round-launch-queries \{ width: 160px; max-width: 100%/);
+    assert.match(controls, /\.v2-round-launch-modal \.v2-input \{[^}]*min-height: 42px/);
+    assert.match(controls, /\.v2-round-launch-modal \.v2-select \{ padding-right: 40px/);
+    assert.doesNotMatch(controls, /\.v2-modal\s|\.v2-modal-body\s|\.v2-modal-footer\s|\.v2-btn\s/);
+});
