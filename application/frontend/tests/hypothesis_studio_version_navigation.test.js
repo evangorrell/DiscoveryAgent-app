@@ -514,9 +514,10 @@ test('version navigation DOM labels expose the authoritative current version and
             disabled: false,
             appendChild(child) { this.children.push(child); return child; },
             setAttribute(name, value) { this.attributes[name] = String(value); },
-            addEventListener() {},
+            addEventListener(name, handler) { this[name] = handler; },
         };
     }
+    const navigations = [];
     const controls = new Function(
         'el', 'state', 'isManualEditSaving', 'navigateRegenerationVersion',
         versionControlsSource + '\nreturn regenerationVersionControls;'
@@ -524,7 +525,7 @@ test('version navigation DOM labels expose the authoritative current version and
         fakeElement,
         { manualEditIndex: null },
         () => false,
-        () => {}
+        (...args) => navigations.push(args)
     );
     const nav = controls(
         { index: 1 },
@@ -537,4 +538,17 @@ test('version navigation DOM labels expose the authoritative current version and
     assert.equal(next.attributes['aria-label'], 'No later version after Version 4 of 4');
     assert.equal(previous.disabled, false);
     assert.equal(next.disabled, true);
+    for (const position of [0, 1]) {
+        const compact = controls({ index: 2 }, { viewedPosition: position, results: [{}, {}] }, true);
+        const [prev, label, forward] = compact.children;
+        assert.equal(label.textContent, (position + 1) + ' / 2');
+        assert.doesNotMatch(label.textContent, /Version/);
+        assert.equal(label.title, 'Version ' + (position + 1) + ' of 2');
+        assert.equal(prev.disabled, position === 0);
+        assert.equal(forward.disabled, position === 1);
+        assert.equal(prev.type, 'button');
+        assert.equal(forward.type, 'button');
+        (position === 0 ? forward : prev).click({ stopPropagation() {} });
+    }
+    assert.deepEqual(navigations, [[2, 1], [2, 0]]);
 });

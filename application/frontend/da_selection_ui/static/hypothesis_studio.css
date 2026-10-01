@@ -1125,6 +1125,7 @@
 }
 .hs-card-grid.is-single { --hs-card-columns: 1; max-width: 720px; margin-inline: auto; }
 .hs-card-grid.has-two-cards { --hs-card-columns: 2; }
+.hs-hypothesis-surface.is-static-row .hs-card-grid { align-items: stretch; }
 
 .hs-card {
     display: flex;
@@ -1484,6 +1485,23 @@
     align-items: center;
     white-space: nowrap;
 }
+/* Compact-card polish only; the expanded document/footer keeps its sizing. */
+.hs-card.is-collapsed .hs-card-controls {
+    justify-content: space-between;
+    gap: 6px 4px;
+    padding-top: 8px;
+}
+.hs-card.is-collapsed .hs-regeneration-nav { gap: 2px; }
+.hs-card.is-collapsed .hs-regeneration-arrow {
+    flex-basis: 24px;
+    width: 24px;
+    height: 24px;
+    border-radius: 6px;
+    font-size: 1.05rem;
+}
+.hs-card.is-collapsed .hs-regeneration-count { font-size: 0.75rem; }
+.hs-card.is-collapsed .hs-card-actions { gap: 6px 4px; }
+.hs-card.is-collapsed .hs-card-action { font-size: 0.75rem; }
 .hs-hypothesis-surface.has-expanded-card .hs-card.is-expanded .hs-card-controls {
     position: sticky;
     bottom: 0;
