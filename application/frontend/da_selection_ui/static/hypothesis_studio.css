@@ -1084,6 +1084,7 @@
     user-select: none;
 }
 .hs-hypothesis-surface {
+    container: hs-hypotheses / inline-size;
     background: transparent;
     border: none;
     border-radius: 0;
@@ -1116,6 +1117,7 @@
     padding-bottom: 6px;
 }
 .hs-card-grid {
+    --hs-card-columns: 3;
     display: grid;
     grid-template-columns: repeat(6, minmax(0, 1fr));
     gap: 14px;
@@ -1477,11 +1479,12 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    min-width: 0;
+    flex: 0 0 auto;
     margin-right: auto;
     font-family: var(--v2-sans);
 }
 .hs-regeneration-arrow {
+    flex: 0 0 28px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -1511,11 +1514,31 @@
 }
 .hs-card-controls {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: flex-end;
-    gap: 16px;
+    gap: 8px 12px;
     margin-top: auto;
     padding-top: 12px;
+}
+.hs-card-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px 14px;
+    flex: 0 1 auto;
+    width: max-content;
+    max-width: 100%;
+    min-width: 0;
+    margin-left: auto;
+}
+.hs-card-actions > .hs-card-action {
+    flex: 0 0 auto;
+    min-height: 28px;
+    display: inline-flex;
+    align-items: center;
+    white-space: nowrap;
 }
 .hs-hypothesis-surface.has-expanded-card .hs-card.is-expanded .hs-card-controls {
     position: sticky;
@@ -1812,3 +1835,28 @@
 .hs-inline-figure { display: block; margin: 16px 0; }
 .hs-inline-figure img { display: block; max-width: 100%; height: auto; border-radius: 4px; }
 .hs-figure-unavailable { color: #777; font-size: 0.9em; }
+
+.hs-card-grid.has-two-cards { --hs-card-columns: 2; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.hs-card-grid.has-two-cards:not(.is-masonry) > .hs-card:nth-child(n) { grid-column: auto; }
+
+/* Minimum usable card width is 335px: both actions fit after the version
+   group wraps. Measure the actual card area, not the viewport/title length.
+   Reset legacy three-column packing (including inline offsets) when reflowing. */
+@container hs-hypotheses (max-width: 1032px) {
+    .hs-card-grid, .hs-card-grid.has-two-cards, .hs-card-grid.is-single, .hs-card-grid.is-masonry {
+        --hs-card-columns: 2;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .hs-card-grid > .hs-card:nth-child(n) {
+        grid-column: auto !important;
+        grid-row: auto !important;
+        margin-top: 0 !important;
+    }
+    .hs-card-grid.is-single { grid-template-columns: 1fr; }
+}
+@container hs-hypotheses (max-width: 683px) {
+    .hs-card-grid, .hs-card-grid.has-two-cards, .hs-card-grid.is-single, .hs-card-grid.is-masonry {
+        --hs-card-columns: 1;
+        grid-template-columns: 1fr;
+    }
+}

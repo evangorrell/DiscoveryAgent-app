@@ -224,6 +224,7 @@
             });
             var result = await readJson(response, roundLabel(launchContext.round) + ' could not be started.');
             if (!result.redirect_url) throw new Error('The Round Workspace address was missing from the response.');
+            window.dispatchEvent(new Event('da-round-launched'));
             window.location.assign(result.redirect_url);
         } catch (error) {
             pending = false;

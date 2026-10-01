@@ -78,6 +78,7 @@
         startRoundOverlay: $('hs-start-round-overlay'), startRoundTitle: $('hs-start-round-title'),
         startRoundDescription: $('hs-start-round-description'), startRoundError: $('hs-start-round-error'),
         startRoundNotNow: $('hs-start-round-not-now'), startRoundConfirm: $('hs-start-round-confirm'),
+        startRound: $('project-start-round'),
     };
 
     const HSE = window.HSEvents;
@@ -1823,6 +1824,7 @@
         surface.classList.add(anyExpanded ? 'has-expanded-card' : 'is-static-row');
         const grid = el('div', 'hs-card-grid');
         if (cards.length <= 1) grid.classList.add('is-single');
+        if (cards.length === 2) grid.classList.add('has-two-cards');
         const overflowColumn = HSL ? HSL.singleOverflowColumn(cards, visibleExpanded) : null;
         const packedOverflowPreferences = HSL
             ? HSL.packedOverflowPreferences(cards, visibleExpanded) : null;
@@ -1891,10 +1893,9 @@
         };
         const syncPositions = () => {
             if (!grid.isConnected) return;
-            // This is the same breakpoint where CSS switches the grid to one
-            // column. Above it, H1-H3 are always the three desktop columns;
-            // below it, retain normal document flow rather than inline columns.
-            if (window.matchMedia && window.matchMedia('(max-width: 680px)').matches) {
+            // Packing is a three-column enhancement. Container-sized two/one
+            // column layouts use normal flow, including after a live resize.
+            if (getComputedStyle(grid).getPropertyValue('--hs-card-columns').trim() !== '3') {
                 clearPackedStyles();
                 return;
             }
@@ -2050,30 +2051,18 @@
             if (versionView.results.length > 1) {
                 controls.appendChild(regenerationVersionControls(h, versionView));
             }
-            controls.appendChild(expandBtn);
+            const actions = el('div', 'hs-card-actions');
+            actions.appendChild(expandBtn);
             if (isSelected) {
                 const selectedStatus = el('span', 'hs-card-action hs-card-selected-static', 'Selected');
                 if (isPendingSelected) {
                     selectedStatus.title = 'Select another hypothesis to change your choice.';
                 }
-                controls.appendChild(selectedStatus);
-                if (isPendingSelected && state.readyToStart) {
-                    const startBtn = el(
-                        'button', 'hs-card-action hs-card-start-round',
-                        'Start Round ' + selectedRoundNumber(null)
-                    );
-                    startBtn.type = 'button';
-                    startBtn.addEventListener('click', (event) => {
-                        event.stopPropagation();
-                        openStartRoundModal(selectedRoundNumber(null));
-                    });
-                    controls.appendChild(startBtn);
-                } else if (isPendingSelected && state.startBlockedReason) {
-                    const blocked = el(
-                        'span', 'hs-card-action hs-card-selected-static', 'Setup required'
-                    );
+                actions.appendChild(selectedStatus);
+                if (isPendingSelected && !state.readyToStart && state.startBlockedReason) {
+                    const blocked = el('span', 'hs-card-action hs-card-selected-static', 'Setup required');
                     blocked.title = state.startBlockedReason;
-                    controls.appendChild(blocked);
+                    actions.appendChild(blocked);
                 }
             } else if (!state.readOnly && !isSelected) {
                 const selectBtn = el('button', 'hs-card-action hs-card-select', 'Select for next round');
@@ -2082,8 +2071,9 @@
                     e.stopPropagation();
                     openReview(displayHypothesis, h, versionView.viewedPosition);
                 });
-                controls.appendChild(selectBtn);
+                actions.appendChild(selectBtn);
             }
+            controls.appendChild(actions);
             card.appendChild(controls);
         }
         return card;
@@ -4261,7 +4251,9 @@
 
     function openStartRoundModal(roundNumber) {
         const label = 'Round ' + roundNumber;
-        startRoundLastFocused = els.cards.querySelector('.hs-card.is-selected .hs-card-expand') || document.activeElement;
+        startRoundLastFocused = document.activeElement === els.startRound
+            ? els.startRound
+            : els.cards.querySelector('.hs-card.is-selected .hs-card-expand') || document.activeElement;
         els.startRoundTitle.textContent = 'Ready to start ' + label + '?';
         els.startRoundDescription.textContent = 'Your hypothesis has been selected. Start ' + label + ' to investigate it.';
         els.startRoundConfirm.textContent = 'Start ' + label;
@@ -4306,6 +4298,7 @@
                 // launched. The selected card is now locked; the other cards
                 // stay editable and may replace this choice before launch.
                 state.readOnly = false;
+                window.dispatchEvent(new Event('da-pending-selection-changed'));
                 render();
                 resetReviewConfirm();
                 if (state.readyToStart) {
@@ -4427,6 +4420,13 @@
         els.reviewConfirm.addEventListener('click', confirmReview);
         els.review.addEventListener('mousedown', (e) => { if (e.target === els.review) closeReview(); });
         els.startRoundNotNow.addEventListener('click', closeStartRoundModal);
+        if (els.startRound) els.startRound.addEventListener('click', (event) => {
+            event.stopPropagation(); // Keep Studio's existing confirmation step.
+            // The shared header follows the current project even while Studio
+            // is restoring or displaying a historical hypothesis cycle.
+            const round = Number(els.startRound.getAttribute('data-start-round-number'));
+            if (Number.isInteger(round) && round >= 1) openStartRoundModal(round);
+        });
         els.startRoundOverlay.addEventListener('mousedown', (e) => {
             if (e.target === els.startRoundOverlay) closeStartRoundModal();
         });
