@@ -1119,81 +1119,12 @@
 .hs-card-grid {
     --hs-card-columns: 3;
     display: grid;
-    grid-template-columns: repeat(6, minmax(0, 1fr));
+    grid-template-columns: repeat(var(--hs-card-columns), minmax(0, 1fr));
     gap: 14px;
     align-items: start;
 }
-/* Collapsed workspace (nothing expanded): every card equalizes to the tallest
-   card so a longer — but still valid, word-budgeted — title lifts the whole grid
-   to one shared height instead of being clipped. Scoped to the static state so
-   expanding a card never stretches its collapsed siblings (and the masonry
-   layout, which only appears while a card is expanded, is untouched). */
-.hs-hypothesis-surface.is-static-row .hs-card-grid {
-    align-items: stretch;
-    grid-auto-rows: 1fr;
-}
-.hs-card-grid.is-single { grid-template-columns: repeat(6, minmax(0, 1fr)); }
-.hs-card-grid.is-single .hs-card { grid-column: 3 / span 2; }
-.hs-card { grid-column: span 2; }
-/* Center incomplete final rows while keeping a three-column rhythm. */
-.hs-card-grid:not(.is-masonry) > .hs-card:nth-child(3n + 1):last-child { grid-column: 3 / span 2; }
-.hs-card-grid:not(.is-masonry) > .hs-card:nth-child(3n + 1):nth-last-child(2) { grid-column: 2 / span 2; }
-.hs-card-grid:not(.is-masonry) > .hs-card:nth-child(3n + 2):last-child { grid-column: 4 / span 2; }
-.hs-card-grid.is-single:not(.is-masonry) > .hs-card:nth-child(1) { grid-column: 3 / span 2; }
-/* With exactly four cards, keep H4 fourth in DOM/data order and move only its
-   visual grid area. Sharing the first grid row lets its measured block margin
-   begin immediately beneath the chosen top card instead of below the tallest
-   expanded sibling. */
-.hs-card-grid.has-single-overflow.uses-available-overflow-space > .hs-card:nth-child(4) {
-    grid-row: 1;
-    margin-top: calc(var(--hs-overflow-card-offset, 0px) + 14px);
-}
-.hs-card-grid.has-single-overflow.uses-available-overflow-space > .hs-card:nth-child(1) {
-    grid-column: 1 / span 2;
-    grid-row: 1;
-}
-.hs-card-grid.has-single-overflow.uses-available-overflow-space > .hs-card:nth-child(2) {
-    grid-column: 3 / span 2;
-    grid-row: 1;
-}
-.hs-card-grid.has-single-overflow.uses-available-overflow-space > .hs-card:nth-child(3) {
-    grid-column: 5 / span 2;
-    grid-row: 1;
-}
-.hs-card-grid.has-single-overflow.uses-available-overflow-space.overflow-column-1 > .hs-card:nth-child(4) {
-    grid-column: 1 / span 2;
-}
-.hs-card-grid.has-single-overflow.uses-available-overflow-space.overflow-column-2 > .hs-card:nth-child(4) {
-    grid-column: 3 / span 2;
-}
-.hs-card-grid.has-single-overflow.uses-available-overflow-space.overflow-column-3 > .hs-card:nth-child(4) {
-    grid-column: 5 / span 2;
-}
-.hs-card-grid.uses-packed-overflow-space > .hs-card:nth-child(1) {
-    grid-column: 1 / span 2;
-    grid-row: 1;
-}
-.hs-card-grid.uses-packed-overflow-space > .hs-card:nth-child(2) {
-    grid-column: 3 / span 2;
-    grid-row: 1;
-}
-.hs-card-grid.uses-packed-overflow-space > .hs-card:nth-child(3) {
-    grid-column: 5 / span 2;
-    grid-row: 1;
-}
-.hs-card-grid.is-masonry {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-.hs-card-column {
-    display: flex;
-    flex-direction: column;
-    gap: 14px;
-    min-width: 0;
-}
-.hs-card-grid.is-masonry .hs-card {
-    grid-column: auto;
-    width: 100%;
-}
+.hs-card-grid.is-single { --hs-card-columns: 1; max-width: 720px; margin-inline: auto; }
+.hs-card-grid.has-two-cards { --hs-card-columns: 2; }
 
 .hs-card {
     display: flex;
@@ -1205,11 +1136,16 @@
     padding: 15px 14px 13px 16px;
     transition: border-color 0.18s ease, box-shadow 0.18s ease, opacity 0.18s ease, transform 0.18s ease, background 0.18s ease;
 }
-/* min-height, not a fixed height: a collapsed card grows to show its full title
-   (titles are capped at 18 words, so growth is bounded); the grid rule above
-   then equalizes all cards to the tallest. */
+/* No fixed compact height: titles and footer groups wrap independently. */
 .hs-card.is-collapsed { min-height: 160px; }
 .hs-card.is-expanded { height: auto; }
+.hs-card.is-expanded { padding: 0; }
+.hs-card.is-expanded .hs-card-head { padding: 20px 22px 0; }
+.hs-card.is-expanded .hs-card-details {
+    flex: 0 0 auto;
+    margin-top: 16px;
+    padding: 18px 22px 28px;
+}
 .hs-card.is-focused {
     position: relative;
     z-index: 1;
@@ -1221,6 +1157,9 @@
 }
 .hs-card.is-dimmed { opacity: 0.42; transform: scale(0.985); }
 .hs-card.is-dimmed:hover { opacity: 0.72; transform: translateY(-1px) scale(1); }
+/* Scaling a multi-thousand-pixel document around its center moves its top and
+   sticky footer by dozens of pixels. Expanded documents must stay unscaled. */
+.hs-card.is-expanded.is-dimmed { opacity: 1; transform: none; }
 .hs-card.is-selected {
     border-color: var(--v2-accent-ring);
     background: var(--v2-accent-soft);
@@ -1308,9 +1247,7 @@
     font-weight: 620;
     color: var(--v2-ink);
 }
-/* Titles are word-budgeted by the backend/JS contract (max 18 words), so a
-   valid title always fits and is shown in full: no line clamp, no ellipsis.
-   Cards grow to fit the tallest title and equalize via the grid below. */
+/* Full titles wrap naturally without dictating the grid's column count. */
 .hs-card-details {
     margin-top: 13px;
     padding-top: 12px;
@@ -1352,6 +1289,14 @@
     overflow-wrap: anywhere;
     word-break: break-word;
 }
+.hs-hypothesis-markdown :is(ol, ul) {
+    margin: 12px 0;
+    padding-inline-start: 1.8em;
+    list-style-position: outside;
+}
+.hs-hypothesis-markdown li { padding-inline-start: 0.2em; margin-block: 6px; }
+.hs-hypothesis-markdown li > :is(ol, ul) { margin-block: 6px; }
+.hs-hypothesis-markdown > :last-child { margin-bottom: 0; }
 
 .hs-manual-edit { margin-top: 2px; }
 .hs-manual-edit-input {
@@ -1463,10 +1408,8 @@
     position: sticky;
     bottom: 0;
     z-index: 4;
-    margin-right: -14px;
-    margin-bottom: 0;
-    margin-left: -16px;
-    padding: 12px 14px 13px 16px;
+    margin: 16px 0 0;
+    padding: 12px 0;
     border-top: 1px solid var(--v2-border-soft);
     border-radius: 0 0 11px 11px;
     background: var(--v2-surface);
@@ -1520,6 +1463,8 @@
     gap: 8px 12px;
     margin-top: auto;
     padding-top: 12px;
+    flex: 0 0 auto;
+    min-width: 0;
 }
 .hs-card-actions {
     display: flex;
@@ -1527,8 +1472,7 @@
     align-items: center;
     justify-content: flex-end;
     gap: 8px 14px;
-    flex: 0 1 auto;
-    width: max-content;
+    flex: 0 1 max-content;
     max-width: 100%;
     min-width: 0;
     margin-left: auto;
@@ -1544,13 +1488,15 @@
     position: sticky;
     bottom: 0;
     z-index: 4;
-    margin-right: -14px;
-    margin-bottom: -13px;
-    margin-left: -16px;
-    padding: 12px 14px 13px 16px;
+    margin: 0;
+    padding: 14px 22px;
     border-top: 1px solid var(--v2-border-soft);
     border-radius: 0 0 11px 11px;
     background: var(--v2-surface);
+}
+.hs-card :is(button, textarea):focus-visible {
+    outline: 2px solid var(--v2-accent);
+    outline-offset: 3px;
 }
 .hs-hypothesis-surface.has-expanded-card .hs-card.is-expanded.is-selected .hs-card-controls {
     background: var(--v2-accent-soft);
@@ -1806,57 +1752,18 @@
     .hs-cards, .hs-chat-scope { width: 100%; max-width: 100%; }
     .hs-thread { width: 100%; padding-right: 0; }
     .hs-hypothesis-surface { max-height: 54vh; padding: 16px; }
-    .hs-card-grid, .hs-card-grid.is-single, .hs-card-grid.is-masonry { grid-template-columns: 1fr; }
-    .hs-card, .hs-card-grid.is-single .hs-card,
-    .hs-card-grid:not(.is-masonry) > .hs-card:nth-child(3n + 1):last-child,
-    .hs-card-grid:not(.is-masonry) > .hs-card:nth-child(3n + 1):nth-last-child(2),
-    .hs-card-grid:not(.is-masonry) > .hs-card:nth-child(3n + 2):last-child { grid-column: 1; }
-    .hs-card-grid.has-single-overflow.uses-available-overflow-space.overflow-column-1 > .hs-card:nth-child(4),
-    .hs-card-grid.has-single-overflow.uses-available-overflow-space.overflow-column-2 > .hs-card:nth-child(4),
-    .hs-card-grid.has-single-overflow.uses-available-overflow-space.overflow-column-3 > .hs-card:nth-child(4) {
-        grid-column: 1;
-        grid-row: auto;
-        margin-top: 0;
-    }
-    .hs-card-grid.has-single-overflow.uses-available-overflow-space > .hs-card:nth-child(1),
-    .hs-card-grid.has-single-overflow.uses-available-overflow-space > .hs-card:nth-child(2),
-    .hs-card-grid.has-single-overflow.uses-available-overflow-space > .hs-card:nth-child(3) {
-        grid-column: 1;
-        grid-row: auto;
-    }
-    .hs-card-grid.uses-packed-overflow-space > .hs-card:nth-child(1),
-    .hs-card-grid.uses-packed-overflow-space > .hs-card:nth-child(2),
-    .hs-card-grid.uses-packed-overflow-space > .hs-card:nth-child(3) {
-        grid-column: 1;
-        grid-row: auto;
-    }
     .hs-welcome-actions { flex-wrap: wrap; }
 }
 .hs-inline-figure { display: block; margin: 16px 0; }
 .hs-inline-figure img { display: block; max-width: 100%; height: auto; border-radius: 4px; }
 .hs-figure-unavailable { color: #777; font-size: 0.9em; }
 
-.hs-card-grid.has-two-cards { --hs-card-columns: 2; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.hs-card-grid.has-two-cards:not(.is-masonry) > .hs-card:nth-child(n) { grid-column: auto; }
-
-/* Minimum usable card width is 335px: both actions fit after the version
-   group wraps. Measure the actual card area, not the viewport/title length.
-   Reset legacy three-column packing (including inline offsets) when reflowing. */
-@container hs-hypotheses (max-width: 1032px) {
-    .hs-card-grid, .hs-card-grid.has-two-cards, .hs-card-grid.is-single, .hs-card-grid.is-masonry {
-        --hs-card-columns: 2;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-    .hs-card-grid > .hs-card:nth-child(n) {
-        grid-column: auto !important;
-        grid-row: auto !important;
-        margin-top: 0 !important;
-    }
-    .hs-card-grid.is-single { grid-template-columns: 1fr; }
+/* Size the columns from usable content width, never from title length.
+   Around 310px per card remains readable when the action group wraps. */
+@container hs-hypotheses (max-width: 960px) {
+    .hs-card-grid { --hs-card-columns: 2; }
+    .hs-card-grid.is-single { --hs-card-columns: 1; }
 }
-@container hs-hypotheses (max-width: 683px) {
-    .hs-card-grid, .hs-card-grid.has-two-cards, .hs-card-grid.is-single, .hs-card-grid.is-masonry {
-        --hs-card-columns: 1;
-        grid-template-columns: 1fr;
-    }
+@container hs-hypotheses (max-width: 640px) {
+    .hs-card-grid, .hs-card-grid.has-two-cards { --hs-card-columns: 1; }
 }

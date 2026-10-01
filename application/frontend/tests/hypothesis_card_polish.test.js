@@ -36,6 +36,8 @@ function harness() {
     };
     const build = new Function('state', 'el', `
         const esc = String;
+        const renderMarkdown = String;
+        const hypothesisBodyMarkdown = h => h.full_text;
         const cardTitle = h => h.title;
         const isRegeneratingHypothesis = () => false;
         const regenerationViewFor = h => ({ results: [{}, {}, {}], viewedSnapshot: h, viewedPosition: 2 });
@@ -94,12 +96,39 @@ test('read-only historical cards retain no selection or overflow action', () => 
     assert.equal(find(card, 'hs-card-overflow'), undefined);
 });
 
+test('expanded cards separate their document from grouped footer controls', () => {
+    for (const selected of [1, null]) {
+        const h = harness();
+        h.state.expanded[1] = true;
+        const card = h.renderCard({index: 1, title: 'Long document', full_text: '1. An ordered finding\n\nFinal line.'}, selected);
+        assert.deepEqual(card.children.map(n => n.classList.contains('hs-card-head') ? 'head' :
+            n.classList.contains('hs-card-details') ? 'document' : 'footer'), ['head', 'document', 'footer']);
+        assert.match(find(card, 'hs-hypothesis-markdown').textContent, /Final line/);
+        assert.equal(find(card, 'hs-card-expand').textContent, 'Hide full hypothesis');
+        assert.equal(find(card, 'hs-card-expand').attributes['aria-expanded'], 'true');
+        assert.equal(find(card, 'hs-card-start-round'), undefined);
+        assert.ok(find(card, selected ? 'hs-card-selected-static' : 'hs-card-select'));
+        h.state.expanded[1] = false;
+        assert.equal(find(h.renderCard({index: 1, title: 'Long document'}, selected), 'hs-card-details'), undefined);
+    }
+});
+
+test('expanded documents are unscaled, lists are indented, and footer height is reserved', () => {
+    assert.match(css, /\.hs-card\.is-expanded\.is-dimmed\s*\{[^}]*transform: none/);
+    assert.match(css, /\.hs-hypothesis-markdown :is\(ol, ul\)\s*\{[^}]*padding-inline-start: 1\.8em/);
+    assert.match(css, /\.hs-card-controls\s*\{[^}]*flex: 0 0 auto/);
+    const sticky = css.slice(css.indexOf('.hs-hypothesis-surface.has-expanded-card .hs-card.is-expanded .hs-card-controls {'));
+    assert.match(sticky, /position: sticky;[\s\S]*?margin: 0;/);
+    assert.doesNotMatch(sticky.slice(0, sticky.indexOf('}')), /margin-(left|right|bottom): -/);
+    assert.match(source, /toggle\.focus\(\{ preventScroll: true \}\)/);
+});
+
 test('wrapping footer groups preserve action labels and usable widths', () => {
     assert.match(css, /\.hs-card-controls\s*\{[^}]*flex-wrap: wrap;/);
     assert.match(css, /\.hs-card-actions\s*\{[^}]*flex-wrap: wrap;/);
     assert.match(css, /\.hs-card-actions > \.hs-card-action\s*\{[^}]*white-space: nowrap;/);
     assert.match(css, /\.hs-regeneration-nav\s*\{[^}]*flex: 0 0 auto;/);
-    assert.match(css, /@container hs-hypotheses \(max-width: 683px\)/);
+    assert.match(css, /@container hs-hypotheses \(max-width: 640px\)/);
 });
 
 test('page CTA is before Back to Projects, uses a real button and the existing launch handler', () => {

@@ -349,11 +349,11 @@ def test_collapsed_card_css_does_not_clamp_or_ellipsize_titles():
     assert "line-clamp" not in card_title_css
     assert "text-overflow: ellipsis" not in card_title_css
     # Collapsed cards use a growable min-height (not a fixed height that clips)
-    # and equalize to the tallest card in the static grid. Value-agnostic so a
-    # linter re-tuning the px does not break the intent.
+    # and keep their own height in the independent-column grid.
     assert ".hs-card.is-collapsed { min-height:" in css
     assert ".hs-card.is-collapsed { height:" not in css
-    assert ".hs-hypothesis-surface.is-static-row .hs-card-grid {" in css
+    assert "grid-auto-rows: 1fr" not in css
+    assert "align-items: start" in css
 
 
 def test_frontend_title_contract_is_word_based_not_character_based():

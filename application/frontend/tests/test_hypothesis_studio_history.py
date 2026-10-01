@@ -1773,9 +1773,9 @@ def test_studio_render_keeps_pristine_overlay_but_enables_eligible_generation(mo
     assert 'class="v2-modal-overlay v2-blocking-overlay"' in html
     assert 'class="v2-modal v2-blocking-box"' in html
     assert "hypothesis_studio.css') }}" not in html
-    assert "hypothesis_studio.css?v=20261001-card-polish-1" in html
-    assert "hypothesis_layout.js?v=20260817-regeneration-independent-expansion" in html
-    assert "hypothesis_studio.js?v=20261001-card-polish-1" in html
+    assert "hypothesis_studio.css?v=20261001-layout-final-1" in html
+    assert "hypothesis_layout.js?v=20261001-layout-final-1" in html
+    assert "hypothesis_studio.js?v=20261001-layout-final-1" in html
     assert "hypothesis_events.js?v=20260808-selected-lineage-reindex" in html
     assert "hypothesis_activity.js?v=20260711-unseen-activity" in html
     assert 'Select <span class="v2-arrow" aria-hidden="true">&rarr;</span>' in html
@@ -1833,8 +1833,8 @@ def test_studio_controller_wires_welcome_cta_to_generate_endpoint():
     assert "inset 4px 0 0 var(--v2-accent)" not in css
     assert ".hs-card-action {" in css
     assert "font-weight: 400;" in css
-    assert ".hs-card-grid.is-single .hs-card { grid-column: 3 / span 2; }" in css
-    assert ".hs-card-grid.is-single:not(.is-masonry) > .hs-card:nth-child(1) { grid-column: 3 / span 2; }" in css
+    assert ".hs-card-grid.is-single { --hs-card-columns: 1; max-width: 720px; margin-inline: auto; }" in css
+    assert "primePackedOverflowGrid" not in js  # all card counts use the same measured layout
     assert ".hs-readonly-return {" in css
     assert "window.__hypothesisStudioDebug" in js
     assert "function cardTitle(h)" in js
@@ -2417,7 +2417,7 @@ def test_manual_save_does_not_disable_other_cards_version_navigation_or_its_canc
     ):css.index(
         ".hs-hypothesis-surface.has-expanded-card .hs-card.is-expanded.is-selected .hs-manual-edit-actions"
     )]
-    assert "margin-bottom: 0;" in sticky
+    assert "margin: 16px 0 0;" in sticky
     assert "margin-bottom: -" not in sticky
 
 
@@ -2510,7 +2510,7 @@ def test_hypotheses_use_an_always_visible_constrained_accessible_workspace_divid
     assert 'aria-disabled="true" tabindex="-1" hidden' not in html
     assert "workspaceDivider: $('hs-workspace-divider')" in js
     assert "const MIN_TRANSCRIPT_PREVIEW_HEIGHT = 88;" in js
-    assert "const topRowCards = grid ? Array.from(grid.children).slice(0, 3) : [];" in js
+    assert "const topRowCards = grid ? Array.from(grid.children).slice(0, columns) : [];" in js
     assert "rememberCollapsedHypothesisHeight();" in js
     assert "Math.max(176, Math.ceil(hypothesisSplit.collapsedHeight || 0))" in js
     assert "visibleOuterHeight(els.chatScope)" in js
@@ -2557,8 +2557,8 @@ def test_each_round_defaults_to_exact_card_height_then_persists_only_user_split(
 
     # The initial pane height is measured from the complete rendered grid, not
     # inferred from a fixed row count or the one-row minimum.
-    assert "grid.getBoundingClientRect()" in measure
-    assert "gridRect.bottom - surfaceRect.top" in measure
+    assert "grid.offsetHeight" in measure
+    assert "gridRect.bottom - surfaceRect.top" not in measure
     assert ") + 2;" in measure
     assert "hypothesisSplit.fitAllOnNextLayout = true;" in measure
 
@@ -2630,9 +2630,11 @@ def test_hypothesis_workspace_css_uses_grouped_three_column_surface():
     css = (Path(app_module.app.static_folder) / "hypothesis_studio.css").read_text(encoding="utf-8")
     js = (Path(app_module.app.static_folder) / "hypothesis_studio.js").read_text(encoding="utf-8")
     assert ".hs-hypothesis-surface" in css
-    assert "grid-template-columns: repeat(6" in css
-    assert ".hs-card:nth-child(3n + 1):last-child" in css
-    assert ".hs-card:nth-child(3n + 1):nth-last-child(2)" in css
+    assert "grid-template-columns: repeat(var(--hs-card-columns), minmax(0, 1fr))" in css
+    assert "--hs-card-columns: 3" in css
+    assert "@container hs-hypotheses (max-width: 960px)" in css
+    assert "@container hs-hypotheses (max-width: 640px)" in css
+    assert "syncCardLayout(grid)" in js
     assert "align-items: start" in css
     assert "max-height: min(54vh, 560px)" in css
     assert "grid-template-columns: 1fr;" in css
