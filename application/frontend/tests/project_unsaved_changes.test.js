@@ -127,7 +127,8 @@ test('snapshot capture happens only after Edit hydration and includes only persi
     }
     assert.doesNotMatch(current, /advancedSettings|aria-expanded|scroll|expandedDatasetIds|draftDataSources/);
     const edit = sourceBlock('async function openEdit(project)', 'function openDeleteConfirmation');
-    assert.ok(edit.indexOf('await loadLibrarySources()') < edit.indexOf('capturePersistedEditSnapshot()'));
+    const hydrate = edit.indexOf('await loadLibrarySources({ throwOnError: true })');
+    assert.ok(hydrate >= 0 && hydrate < edit.indexOf('capturePersistedEditSnapshot()'));
     assert.match(edit, /editingProjectId === project\.id/);
     assert.match(client, /JSON\.stringify\(currentEditableProjectState\(\)\) !== JSON\.stringify\(persistedEditSnapshot\)/);
 });

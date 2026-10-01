@@ -154,8 +154,8 @@ test('Create and Edit refresh registered sources before exposing Select Data', (
     assert.match(create, /showModal\(\);\s*loadLibrarySources\(\)/);
     assert.match(edit, /librarySources = \[\]/);
     assert.match(edit, /selectedDataSources = \[\];[\s\S]*renderSelectedDataHierarchy\(\)/);
-    assert.match(edit, /selectedDataSources = inputData\.selection \|\| \[\]/);
-    assert.match(edit, /await loadLibrarySources\(\)/);
+    assert.match(edit, /selectedDataSources = copySelection\(inputData\.selection\)/);
+    assert.match(edit, /await loadLibrarySources\(\{ throwOnError: true \}\)/);
     assert.match(source, /const empty = !hasSelectedProjectData\(selectedDataSources\)/);
 });
 
@@ -344,7 +344,7 @@ test('modal navigation persists create drafts and delegates picker work to Data'
     assert.doesNotMatch(source, /addDataLibrarySources|registrationFailureMessage/);
     assert.match(source, /localStorage\.setItem\(CREATE_DRAFT_STORAGE_KEY/);
     assert.match(source, /function applyCreateProjectDraft\(draft\)/);
-    assert.match(loader, /if \(!config\.preserveProjectSelection\)[\s\S]*selectedDataSources = selectedDataSources\.filter/);
+    assert.doesNotMatch(loader, /selectedDataSources\s*=|draftDataSources\s*=/);
     assert.match(source, /expandedDatasetIds[\s\S]*restoreSelectorView\(config\.viewState\)/);
     assert.doesNotMatch(librarySource, /selectedDataSources|draftDataSources|submitForm|persistProject/);
 });

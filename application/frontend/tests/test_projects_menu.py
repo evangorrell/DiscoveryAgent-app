@@ -84,9 +84,9 @@ def test_edit_uses_the_same_unified_data_selection_as_create():
 def test_edit_restores_library_selection_without_scanning_project_data_folder():
     source = _src()
     edit = source[source.index("async function openEdit"):source.index("function openDeleteConfirmation")]
-    assert "selectedDataSources = inputData.selection || []" in edit
+    assert "selectedDataSources = copySelection(inputData.selection)" in edit
     assert "renderSelectedDataHierarchy()" in edit
-    assert "await loadLibrarySources()" in edit
+    assert "await loadLibrarySources({ throwOnError: true })" in edit
     assert "knownDataSourceNames" not in source
     assert "rememberDataPathKind" not in source
     assert "selectedTreeModel" not in source
@@ -116,7 +116,7 @@ def test_reopening_project_modal_clears_stale_submit_state():
     source = _src()
     reset = source[source.index("function resetSubmitState()"):source.index("function openCreate()")]
     assert "projectSubmissionRunning = false" in reset
-    assert "els.submit.disabled = false" in reset
+    assert "els.submit.disabled = modalMode === 'edit' && persistedEditSnapshot === null" in reset
     assert "els.submit.classList.remove('is-busy')" in reset
     assert "applyMode()" in reset
 

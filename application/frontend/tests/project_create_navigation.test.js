@@ -22,7 +22,7 @@ test('successful Create closes its workflow and replaces history with the server
     assert.match(createSuccess, /resetSubmitState\(\)[\s\S]*closeModal\(\{ force: true \}\)[\s\S]*window\.location\.replace\(data\.projects_url\)/);
     assert.doesNotMatch(createSuccess, /window\.location\.href\s*=\s*data\.destination/);
     assert.doesNotMatch(createSuccess, /['"]\/projects(?:['"]|\/)/);
-    assert.match(template, /projects\.js'\) \}\}\?v=20260908-data-files-project-draft-1/);
+    assert.match(template, /projects\.js'\) \}\}\?v=20261001-preserve-data-1/);
 });
 
 test('clicking a project card title still opens that project through its canonical home URL', () => {

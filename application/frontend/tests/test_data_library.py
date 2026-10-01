@@ -493,7 +493,7 @@ def test_source_removal_is_blocked_while_referencing_project_runs(monkeypatch, t
     assert app_module._v2_get_project(project_id)["data_sources"][0]["dataset_id"] == registered["id"]
 
 
-def test_missing_root_reconciliation_forgets_reference_and_current_selection_only(monkeypatch, tmp_path):
+def test_missing_root_read_preserves_reference_and_selection_and_recovers(monkeypatch, tmp_path):
     configure_roots(monkeypatch, tmp_path)
     source = source_folder(tmp_path)
     registered, _ = data_library.add_source(str(source))
@@ -508,16 +508,26 @@ def test_missing_root_reconciliation_forgets_reference_and_current_selection_onl
     moved = tmp_path / "moved-input"
     source.rename(moved)
     moved_before = snapshot(moved)
+    registry_before = data_library.registry_path().read_bytes()
+    projects_before = app_module._v2_load_projects()
 
     response = client.get("/api/data-library")
 
     assert response.status_code == 200
-    assert response.get_json()["sources"] == []
-    assert data_library.list_sources() == []
-    assert app_module._v2_get_project(project_id)["data_sources"] == []
+    assert response.get_json()["sources"][0]["id"] == registered["id"]
+    assert response.get_json()["sources"][0]["available"] is False
+    assert "preserved" in response.get_json()["sources"][0]["availability_error"]
+    assert data_library.registry_path().read_bytes() == registry_before
+    assert app_module._v2_load_projects() == projects_before
+    assert app_module._v2_get_project(project_id)["data_sources"] == selection
     assert config_path.read_bytes() == config_before
     assert produced.read_text(encoding="utf-8") == "project output"
     assert snapshot(moved) == moved_before
+    moved.rename(source)
+    recovered = client.get("/api/data-library").get_json()["sources"][0]
+    assert recovered["id"] == registered["id"]
+    assert recovered["available"] is True
+    assert app_module._v2_get_project(project_id)["data_sources"] == selection
 
 
 def test_missing_nested_child_does_not_remove_valid_top_level_source(monkeypatch, tmp_path):
@@ -537,7 +547,102 @@ def test_missing_nested_child_does_not_remove_valid_top_level_source(monkeypatch
     assert snapshot(source) == source_after_child_removal
 
 
-def test_concurrent_missing_source_reconciliation_is_serialized(monkeypatch, tmp_path):
+def test_temporary_access_denial_does_not_detach_source(monkeypatch, tmp_path):
+    configure_roots(monkeypatch, tmp_path)
+    source = source_folder(tmp_path)
+    registered, _ = data_library.add_source(str(source))
+    selection = [{"dataset_id": registered["id"], "selected_paths": ["."], "excluded_paths": []}]
+    client = authenticated_client()
+    project_id = create_project(client, "Access Denied", selection).get_json()["project_id"]
+    before = data_library.registry_path().read_bytes()
+    original_access = os.access
+    with monkeypatch.context() as denied:
+        denied.setattr(os, "access", lambda path, *args, **kwargs: False if Path(path) == source else original_access(path, *args, **kwargs))
+        assert client.get("/api/data-library").get_json()["sources"][0]["available"] is False
+        assert app_module._v2_get_project(project_id)["data_sources"] == selection
+        assert data_library.registry_path().read_bytes() == before
+    assert client.get("/api/data-library").get_json()["sources"][0]["available"] is True
+
+
+def test_project_detail_retains_saved_selection_when_registry_read_fails(monkeypatch, tmp_path):
+    configure_roots(monkeypatch, tmp_path)
+    registered, _ = data_library.add_source(str(source_folder(tmp_path)))
+    selection = [{"dataset_id": registered["id"], "selected_paths": ["."], "excluded_paths": []}]
+    client = authenticated_client()
+    project_id = create_project(client, "Read Failure", selection).get_json()["project_id"]
+
+    def unavailable_registry():
+        raise data_library.DataLibraryError("data_library_unavailable", "Cannot read registry")
+
+    monkeypatch.setattr(data_library, "list_sources", unavailable_registry)
+    response = client.get(f"/api/projects/{project_id}?selection_only=1")
+    assert response.status_code == 200
+    payload = response.get_json()["project"]["data_sources"]
+    assert payload["selection"] == selection
+    assert payload["error"]["code"] == "data_library_unavailable"
+    assert app_module._v2_get_project(project_id)["data_sources"] == selection
+
+
+def test_unavailable_source_payload_survives_permission_denied_metadata_probe(monkeypatch, tmp_path):
+    configure_roots(monkeypatch, tmp_path)
+    source = source_folder(tmp_path)
+    registered, _ = data_library.add_source(str(source))
+    original_stat = Path.stat
+
+    def denied_stat(path, *args, **kwargs):
+        if path == source:
+            raise PermissionError("Temporarily denied")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", denied_stat)
+    response = authenticated_client().get("/api/data-library")
+    assert response.status_code == 200
+    payload = response.get_json()["sources"][0]
+    assert payload["id"] == registered["id"]
+    assert payload["available"] is False
+
+
+def test_metadata_edit_preserves_existing_unavailable_selection_but_new_attachment_is_rejected(monkeypatch, tmp_path):
+    configure_roots(monkeypatch, tmp_path)
+    source = source_folder(tmp_path)
+    registered, _ = data_library.add_source(str(source))
+    selection = [{"dataset_id": registered["id"], "selected_paths": ["."], "excluded_paths": []}]
+    client = authenticated_client()
+    attached_id = create_project(client, "Attached", selection).get_json()["project_id"]
+    unattached_id = create_project(client, "Unattached").get_json()["project_id"]
+    source.rename(tmp_path / "disconnected")
+    for project_id, baseline, expected in [(attached_id, selection, 200), (unattached_id, [], 409)]:
+        project = app_module._v2_get_project(project_id)
+        response = client.post(f"/api/projects/{project_id}/edit", data={
+            "project_name": project["display_name"], "task_description": "Updated objective",
+            "dataset_context": project["dataset_context"],
+            "data_sources": json.dumps(selection), "data_sources_before": json.dumps(baseline),
+        })
+        assert response.status_code == expected, response.get_json()
+        assert app_module._v2_get_project(project_id)["data_sources"] == baseline
+
+
+def test_stale_edit_selection_is_rejected_before_renaming_or_writing_project(monkeypatch, tmp_path):
+    configure_roots(monkeypatch, tmp_path)
+    registered, _ = data_library.add_source(str(source_folder(tmp_path)))
+    selection = [{"dataset_id": registered["id"], "selected_paths": ["."], "excluded_paths": []}]
+    client = authenticated_client()
+    project_id = create_project(client, "Current", selection).get_json()["project_id"]
+    project = app_module._v2_get_project(project_id)
+    project_root = Path(project["project_root"])
+    before = snapshot(project_root)
+    response = client.post(f"/api/projects/{project_id}/edit", data={
+        "project_name": "Stale Rename", "task_description": project["task_description"],
+        "dataset_context": project["dataset_context"],
+        "data_sources": "[]", "data_sources_before": "[]",
+    })
+    assert response.status_code == 409
+    assert response.get_json()["code"] == "project_data_selection_conflict"
+    assert app_module._v2_get_project(project_id) == project
+    assert snapshot(project_root) == before
+
+
+def test_concurrent_missing_source_reads_preserve_references(monkeypatch, tmp_path):
     configure_roots(monkeypatch, tmp_path)
     source = source_folder(tmp_path)
     registered, _ = data_library.add_source(str(source))
@@ -548,12 +653,12 @@ def test_concurrent_missing_source_reconciliation_is_serialized(monkeypatch, tmp
     with ThreadPoolExecutor(max_workers=8) as pool:
         results = list(pool.map(lambda _index: app_module._data_library_reconcile_missing_sources(), range(16)))
 
-    assert all(result == [] for result in results)
-    assert data_library.list_sources() == []
-    assert app_module._v2_get_project(project_id)["data_sources"] == []
+    assert all([item["id"] for item in result] == [registered["id"]] for result in results)
+    assert data_library.list_sources()[0]["id"] == registered["id"]
+    assert app_module._v2_get_project(project_id)["data_sources"] == selection
 
 
-def test_reconciliation_rolls_back_project_metadata_if_registry_write_fails(monkeypatch, tmp_path):
+def test_missing_source_reads_never_attempt_detach_or_project_writes(monkeypatch, tmp_path):
     configure_roots(monkeypatch, tmp_path)
     source = source_folder(tmp_path)
     registered, _ = data_library.add_source(str(source))
@@ -561,9 +666,9 @@ def test_reconciliation_rolls_back_project_metadata_if_registry_write_fails(monk
     project_id = create_project(authenticated_client(), "Rollback", selection).get_json()["project_id"]
     source.rename(tmp_path / "temporarily-disconnected")
     monkeypatch.setattr(data_library, "remove_sources", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("write failed")))
+    monkeypatch.setattr(app_module, "_v2_save_projects", lambda *_args, **_kwargs: pytest.fail("read must not write projects"))
 
-    with pytest.raises(OSError, match="write failed"):
-        app_module._data_library_reconcile_missing_sources()
+    assert app_module._data_library_reconcile_missing_sources()[0]["id"] == registered["id"]
 
     assert app_module._v2_get_project(project_id)["data_sources"] == selection
     assert data_library.list_sources()[0]["id"] == registered["id"]
@@ -664,7 +769,7 @@ def test_fresh_and_continued_rounds_receive_current_library_selection(monkeypatc
     assert fresh["data_library_selection"] == continued["data_library_selection"] == selection
 
 
-def test_resume_keeps_captured_selection_and_fails_structurally_after_source_is_forgotten(monkeypatch, tmp_path):
+def test_resume_keeps_captured_selection_and_fails_safely_while_source_is_unavailable(monkeypatch, tmp_path):
     configure_roots(monkeypatch, tmp_path)
     original = source_folder(tmp_path, "original-input")
     registered, _ = data_library.add_source(str(original))
@@ -684,7 +789,8 @@ def test_resume_keeps_captured_selection_and_fails_structurally_after_source_is_
     with pytest.raises(runner.RoundLaunchError) as error:
         runner._refresh_resume_project_skills(project, config_file)
 
-    assert error.value.code == "dataset_not_found"
+    assert error.value.code == "data_path_unavailable"
+    assert data_library.list_sources()[0]["id"] == registered["id"]
     assert config_file.read_bytes() == before
 
 
@@ -865,7 +971,8 @@ def test_data_route_renders_dedicated_page_and_api_exposes_lazy_tree(monkeypatch
     assert projects_page.data.count(b'class="v2-workspace-sidebar-list v2-global-nav"') == 1
     assert added.status_code == 201
     assert listed.get_json()["sources"][0]["display_name"] == "Shared Atlas"
-    assert "available" not in listed.get_json()["sources"][0]
+    assert listed.get_json()["sources"][0]["available"] is True
+    assert listed.get_json()["sources"][0]["availability_error"] is None
     assert "availability" not in listed.get_json()["sources"][0]
     assert tree.status_code == 200
     assert len(tree.get_json()["children"]) == 1

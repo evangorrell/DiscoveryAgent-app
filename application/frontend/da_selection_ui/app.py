@@ -10156,51 +10156,29 @@ def _v2_project_is_running(project: dict) -> bool:
 
 def _data_library_source_payload(source: dict) -> dict:
     payload = dict(source)
+    payload.update(data_library.source_availability(source))
     source_path = Path(str(source.get('source_path') or ''))
-    payload['kind'] = 'file' if source_path.is_file() else 'directory'
+    payload['kind'] = 'directory'
     payload['size_bytes'] = None
-    if payload['kind'] == 'file':
-        try:
+    try:
+        if source_path.is_file():
+            payload['kind'] = 'file'
             payload['size_bytes'] = source_path.stat().st_size
-        except OSError:
-            pass
+    except OSError:
+        # Metadata probes must not prevent unavailable entries from rendering.
+        pass
     payload['projects'] = _data_library_project_references(str(source.get('id') or ''))
     payload['project_count'] = len(payload['projects'])
     return payload
 
 
 def _data_library_reconcile_missing_sources() -> list[dict]:
-    """Forget unusable top-level roots and detach current project metadata.
+    """Legacy list boundary: temporary unavailability must never detach data.
 
-    This is called only at the explicit Data Library read boundary.  The
-    projects lock, round-state guard, and registry lock use the same ordering as
-    create/edit/remove mutations, so the check cannot race a concurrent source
-    or project update.  Persisted round configs and provenance are deliberately
-    outside these current-project registry writes.
+    Only the explicit removal/edit endpoints may change attachments. Current
+    availability is presentation metadata, calculated by the payload builder.
     """
-    with _V2_PROJECTS_LOCK, local_round_runner.round_state_guard(), data_library.registry_lock():
-        invalid_ids = set(data_library.invalid_source_ids())
-        if not invalid_ids:
-            return data_library.list_sources()
-
-        projects = _v2_load_projects()
-        projects_before = copy.deepcopy(projects)
-        for project in projects:
-            selected = project.get('data_sources')
-            if isinstance(selected, list):
-                project['data_sources'] = [
-                    item for item in selected
-                    if not isinstance(item, dict) or item.get('dataset_id') not in invalid_ids
-                ]
-        try:
-            if projects != projects_before:
-                _v2_save_projects(projects)
-            data_library.remove_sources(invalid_ids)
-        except Exception:
-            if projects != projects_before:
-                _v2_save_projects(projects_before)
-            raise
-        return data_library.list_sources()
+    return data_library.list_sources()
 
 
 @app.route('/data')
@@ -12169,6 +12147,7 @@ def _v2_data_folder_payload(project: dict) -> dict:
 def _v2_data_sources_payload(project: dict, *, include_source_path: bool = True) -> dict:
     """Describe app-wide input references separately from project-owned data."""
     selection = project.get('data_sources') if isinstance(project, dict) else []
+    normalized = []
     try:
         normalized = data_library.normalize_selection(selection)
         sources = {source['id']: source for source in data_library.list_sources()}
@@ -12176,19 +12155,22 @@ def _v2_data_sources_payload(project: dict, *, include_source_path: bool = True)
         for selected in normalized:
             source = sources.get(selected['dataset_id'])
             path_kinds = {}
+            availability = data_library.source_availability(source) if source else {
+                'available': False, 'availability_error': 'This source is missing from the Data Library. Its project selection has been preserved.',
+            }
             if source:
                 for relative in selected['selected_paths']:
                     try:
                         selected_path = data_library.resolve_relative(source, relative)
                         path_kinds[relative] = 'directory' if selected_path.is_dir() else 'file'
-                    except data_library.DataLibraryError:
+                    except data_library.DataLibraryError as exc:
                         # Keep the persisted relative hierarchy visible without
                         # converting a missing nested member into a root cleanup.
-                        pass
+                        availability = {'available': False, 'availability_error': exc.message}
             item = {
                 **selected,
                 'display_name': source.get('display_name') if source else 'Missing data source',
-                'available': bool(source),
+                **availability,
                 'path_kinds': path_kinds,
             }
             if include_source_path:
@@ -12196,7 +12178,7 @@ def _v2_data_sources_payload(project: dict, *, include_source_path: bool = True)
             items.append(item)
         return {'selection': normalized, 'sources': items, 'error': None}
     except data_library.DataLibraryError as exc:
-        return {'selection': [], 'sources': [], 'error': {'code': exc.code, 'message': exc.message}}
+        return {'selection': normalized, 'sources': [], 'error': {'code': exc.code, 'message': exc.message}}
 
 
 @app.route('/api/data-folder/inspect', methods=['POST'])
@@ -13469,6 +13451,13 @@ def api_projects_edit(project_id):
             return _v2_duplicate_project_name_response(project_name)
         try:
             raw_source = raw_registered_root
+            if 'data_sources_before' in request.form and data_library.normalize_selection(
+                request.form.get('data_sources_before') or [],
+            ) != data_library.normalize_selection(record.get('data_sources') or []):
+                return jsonify({
+                    'success': False, 'code': 'project_data_selection_conflict',
+                    'error': 'This project\'s data selection changed while the form was open. Close and reopen Edit Project before saving.',
+                }), 409
             if not raw_source:
                 raise ValueError('The registered project root is missing.')
             source_candidate = Path(raw_source).expanduser().absolute()
@@ -13577,10 +13566,11 @@ def api_projects_edit(project_id):
             project_settings = _v2_project_configuration_from_form(record)
             data_sources_changed = False
             if 'data_sources' in request.form:
-                selected_data_sources = data_library.validate_selection(
-                    request.form.get('data_sources') or [], require_available=True,
-                )
                 current_data_sources = data_library.normalize_selection(record.get('data_sources') or [])
+                selected_data_sources = data_library.validate_selection(
+                    request.form.get('data_sources') or [],
+                    require_available=data_library.normalize_selection(request.form.get('data_sources') or []) != current_data_sources,
+                )
                 data_sources_changed = selected_data_sources != current_data_sources
                 if selected_data_sources != current_data_sources and _v2_project_is_running(record):
                     return jsonify({

@@ -326,7 +326,7 @@ test('Advanced Settings and model select keep comfortable chevron insets without
     assert.equal((template.match(/class="v2-input v2-advanced-control/g) || []).length, 3);
     assert.match(style, /\.v2-advanced-model-field > \.v2-field-help\s*\{[^}]*margin-bottom:\s*10px/s);
     assert.match(baseTemplate, /style\.css'\) \}\}\?v=20260929-release-acceptance-1/);
-    assert.match(template, /projects\.js'\) \}\}\?v=20260908-data-files-project-draft-1/);
+    assert.match(template, /projects\.js'\) \}\}\?v=20261001-preserve-data-1/);
 });
 
 test('Round Start offers validated per-round model and research overrides', () => {

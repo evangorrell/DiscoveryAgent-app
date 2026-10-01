@@ -203,12 +203,20 @@
             }
             if (selection) row.appendChild(createSelectionCheckbox(entry, '.', source.display_name, source));
             const sourceSize = sourceIsFile ? sizeCell(source.size_bytes) : sizeCell(null);
+            const sourceName = node('span', 'v2-data-source-name', source.display_name);
             if (sourceIsFile) {
-                row.append(glyph('file'), node('span', 'v2-data-source-name', source.display_name), sourceSize.value);
+                row.append(glyph('file'), sourceName, sourceSize.value);
             } else {
-                row.append(glyph('folder'), node('span', 'v2-data-source-name', source.display_name), sourceSize.value);
+                row.append(glyph('folder'), sourceName, sourceSize.value);
             }
             labelItemSize(item, source.display_name, sourceSize.label);
+            if (source.available === false) {
+                const status = node('span', 'v2-muted', 'Temporarily unavailable');
+                status.style.display = 'block';
+                status.title = source.availability_error || 'Restore access to the original file or folder. The selection is preserved.';
+                sourceName.appendChild(status);
+                item.setAttribute('aria-label', source.display_name + ', temporarily unavailable');
+            }
 
             if (options.onRemove) {
                 const classes = 'v2-icon-button v2-data-source-remove' +

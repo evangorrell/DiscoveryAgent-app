@@ -324,6 +324,8 @@
     let pendingRecovery = null;
     let recoveryLastFocused = null;
     let persistedEditSnapshot = null;
+    let editLoadToken = 0;
+    let libraryLoadToken = 0;
     let unsavedCloseInvoker = null;
     let unsavedProcessing = false;
     let importProjectRoot = '';
@@ -496,16 +498,7 @@
         removeClass: 'v2-project-data-source-remove',
         removeLabel: (source) => 'Remove ' + source.display_name + ' from this project',
         onRemove: (entry) => removeSelectedPreviewSource(entry.source.id, entry.source.display_name),
-        handleChildError: ({ error, item }) => {
-            if (error.code !== 'data_path_unavailable' && error.code !== 'dataset_not_found') return false;
-            item.remove();
-            return true;
-        },
-        handleSourceError: ({ error, item }) => {
-            if (error.code !== 'dataset_not_found') return false;
-            item.remove();
-            return true;
-        },
+        // Render access errors in place; never hide a saved attachment.
     });
     function announceProjectDataChange(message) {
         if (!els.projectDataStatus) return;
@@ -535,8 +528,10 @@
         focusAfterProjectSourceRemoval(removedIndex);
     }
     function renderSelectedPreviewSource(selection) {
-        const source = librarySources.find((candidate) => candidate.id === selection.dataset_id);
-        return source ? projectDataTree.renderSource({ source, selection }) : null;
+        const source = librarySources.find((candidate) => candidate.id === selection.dataset_id) || {
+            id: selection.dataset_id, display_name: 'Unavailable data source', available: false,
+        };
+        return projectDataTree.renderSource({ source, selection });
     }
     function hasSelectedProjectData(selection) {
         return (selection || []).some((item) =>
@@ -606,23 +601,27 @@
     }
     async function loadLibrarySources(options) {
         const config = Object.assign({ preserveProjectSelection: false, viewState: null, throwOnError: false }, options || {});
+        const token = ++libraryLoadToken;
+        const editToken = editLoadToken;
         els.dataLibraryLoading.hidden = false; els.dataLibraryError.hidden = true;
         try {
             const resp = await fetch('/api/data-library', { credentials: 'include', headers: { 'Accept': 'application/json' } });
             const data = await readJson(resp);
+            if (token !== libraryLoadToken || editToken !== editLoadToken) return false;
             if (!(resp.ok && data && data.success)) throw new Error((data && data.error) || 'Could not load DiscoveryAgent Data.');
             librarySources = data.sources || [];
-            const validIds = new Set(librarySources.map((source) => source.id));
-            draftDataSources = draftDataSources.filter((item) => validIds.has(item.dataset_id));
-            if (!config.preserveProjectSelection) {
-                selectedDataSources = selectedDataSources.filter((item) => validIds.has(item.dataset_id));
-            }
+            // A list response is not authorization to remove saved or draft selections.
             renderSelectedDataHierarchy(); renderSelectorSources();
             restoreSelectorView(config.viewState);
+            return true;
         } catch (error) {
+            if (token !== libraryLoadToken || editToken !== editLoadToken) return false;
             els.dataLibraryError.textContent = error.message; els.dataLibraryError.hidden = false;
             if (config.throwOnError) throw error;
-        } finally { els.dataLibraryLoading.hidden = true; }
+            return false;
+        } finally {
+            if (token === libraryLoadToken && editToken === editLoadToken) els.dataLibraryLoading.hidden = true;
+        }
     }
     async function openDataLibrarySelector() {
         selectorLastFocused = document.activeElement;
@@ -994,7 +993,7 @@
 
     function resetSubmitState() {
         projectSubmissionRunning = false;
-        els.submit.disabled = false;
+        els.submit.disabled = modalMode === 'edit' && persistedEditSnapshot === null;
         els.submit.classList.remove('is-busy');
         applyMode();
     }
@@ -1259,6 +1258,7 @@
     }
 
     function openImportForm(root, metadata, previewToken, invoker) {
+        editLoadToken++;
         modalMode = 'import'; editingProjectId = null; persistedEditSnapshot = null;
         editingProjectImportedInPlace = true;
         importProjectRoot = String(root || '');
@@ -1324,6 +1324,7 @@
     }
 
     function openCreate() {
+        editLoadToken++;
         const savedDraft = readCreateProjectDraft();
         modalMode = 'create'; editingProjectId = null; persistedEditSnapshot = null; importInvoker = null; importPreviewToken = '';
         editingProjectImportedInPlace = false;
@@ -1352,6 +1353,7 @@
     }
 
     async function openEdit(project) {
+        const token = ++editLoadToken;
         modalMode = 'edit'; editingProjectId = project.id; persistedEditSnapshot = null; importInvoker = null; importPreviewToken = '';
         editingProjectImportedInPlace = project.imported_in_place === true;
         els.form.reset();
@@ -1381,6 +1383,14 @@
                 credentials: 'include', headers: { 'Accept': 'application/json' },
             });
             const data = await resp.json();
+            if (token !== editLoadToken || editingProjectId !== project.id || modalMode !== 'edit') return;
+            if (!(resp.ok && data && data.success && data.project)) {
+                throw new Error((data && data.error) || 'Could not load this project. Close and reopen Edit Project before saving.');
+            }
+            const inputData = data.project.data_sources;
+            if (!inputData || inputData.error || !Array.isArray(inputData.selection)) {
+                throw new Error('Could not load the saved data selection. Nothing was changed. Close and reopen Edit Project to retry.');
+            }
             if (resp.ok && data && data.success && data.project && editingProjectId === project.id) {
                 editingProjectImportedInPlace = data.project.imported_in_place === true;
                 els.name.value = data.project.display_name || '';
@@ -1403,14 +1413,18 @@
                 projectHasActiveRound = data.project.project_location.running === true;
                 projectLocationAvailable = data.project.project_location.available !== false;
                 renderProjectLocation();
-                const inputData = data.project.data_sources || {};
-                selectedDataSources = inputData.selection || [];
+                selectedDataSources = copySelection(inputData.selection);
                 renderSelectedDataHierarchy();
             }
-        } catch (err) { /* keep the row prefill on failure */ }
-        await loadLibrarySources();
-        if (modalMode === 'edit' && editingProjectId === project.id) {
-            capturePersistedEditSnapshot();
+            const loaded = await loadLibrarySources({ throwOnError: true });
+            if (loaded && token === editLoadToken && modalMode === 'edit' && editingProjectId === project.id) {
+                capturePersistedEditSnapshot();
+                resetSubmitState();
+            }
+        } catch (err) {
+            if (token !== editLoadToken || modalMode !== 'edit' || editingProjectId !== project.id) return;
+            setFormError((err && err.message) || 'Could not load this project. Close and reopen Edit Project to retry.');
+            resetSubmitState();
         }
     }
 
@@ -1618,6 +1632,7 @@
             return false;
         }
         cancelAdvancedSettingsScroll();
+        editLoadToken++;
         els.overlay.hidden = true;
         els.overlay.removeAttribute('inert');
         resetProjectModalScroll();
@@ -1833,6 +1848,10 @@
     }
 
     async function submitCurrentProject() {
+        if (modalMode === 'edit' && persistedEditSnapshot === null) {
+            setFormError('Wait for the project to load successfully, or close and reopen Edit Project to retry. Nothing has been saved.');
+            return false;
+        }
         const name = els.name.value.trim();
         const objective = els.objective.value.trim();
         const reasoningModel = els.reasoningModel.value;
@@ -1889,6 +1908,7 @@
         if (modalMode === 'create') body.append('project_id', els.form.dataset.pendingProjectId);
         body.append('dataset_context', context);
         body.append('data_sources', JSON.stringify(selectedDataSources));
+        if (modalMode === 'edit') body.append('data_sources_before', JSON.stringify(persistedEditSnapshot.data_sources));
 
         return await submitPreparedProject(body);
     }

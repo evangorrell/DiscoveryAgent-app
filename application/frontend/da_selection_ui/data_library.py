@@ -172,18 +172,25 @@ def _source_is_usable(record: dict[str, Any]) -> bool:
 
 
 def invalid_source_ids(path: Path | None = None) -> list[str]:
-    """Return invalid registered roots without inspecting their children.
-
-    Callers that reconcile project metadata hold ``registry_lock()`` across
-    this check and the corresponding registry mutation, so add/remove/edit
-    operations cannot race the decision.
-    """
+    """Report inaccessible roots; this is not authorization to remove them."""
     with _REGISTRY_LOCK:
         return [
             record["id"]
             for record in _load_unlocked(path)["datasets"]
             if not _source_is_usable(record)
         ]
+
+
+def source_availability(record: dict[str, Any]) -> dict[str, Any]:
+    """Report current access without changing a source's durable identity."""
+    available = _source_is_usable(record)
+    return {
+        "available": available,
+        "availability_error": None if available else (
+            "Temporarily unavailable. Restore access to the original file or folder; "
+            "its library entry and project selections have been preserved."
+        ),
+    }
 
 
 def list_sources(path: Path | None = None) -> list[dict[str, Any]]:

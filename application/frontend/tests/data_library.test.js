@@ -268,7 +268,8 @@ test('shared renderer owns canonical chevrons, icons, rows, and independent chil
     assert.match(sourceRenderer, /disclosure\.append\(glyph\('chevron'\)\)/);
     assert.match(sourceRenderer, /row\.appendChild\(disclosure\)/);
     assert.match(sourceRenderer, /if \(selection\) row\.appendChild\(createSelectionCheckbox/);
-    assert.match(sourceRenderer, /row\.append\(glyph\('folder'\), node\('span', 'v2-data-source-name', source\.display_name\), sourceSize\.value\)/);
+    assert.match(sourceRenderer, /const sourceName = node\('span', 'v2-data-source-name', source\.display_name\)/);
+    assert.match(sourceRenderer, /row\.append\(glyph\('folder'\), sourceName, sourceSize\.value\)/);
     assert.match(styleSource, /\.v2-data-source-name\s*\{[^}]*grid-column:\s*4[^}]*min-width:\s*0/s);
 });
 test('shared folder rows toggle once from row, caret, name, or keyboard while X is isolated', () => {
@@ -283,8 +284,8 @@ test('shared folder rows toggle once from row, caret, name, or keyboard while X 
     assert.match(sourceRenderer, /remove\.addEventListener\('click',[\s\S]*event\.stopPropagation\(\)[\s\S]*options\.onRemove\(entry, remove\)/s);
     assert.match(styleSource, /\.v2-data-source:not\(\.v2-data-source-file\) > \.v2-data-source-row,\s*\.v2-data-tree-folder-row\s*\{\s*cursor:\s*pointer;\s*\}/s);
     assert.match(styleSource, /\.v2-data-source:focus-visible > \.v2-data-source-row,[\s\S]*\.v2-data-tree-item:focus-visible > \.v2-data-tree-row/s);
-    assert.match(dataTemplate, /data_tree\.js'\) \}\}\?v=20260908-file-sources-1/);
-    assert.match(projectsTemplate, /data_tree\.js'\) \}\}\?v=20260908-file-sources-1/);
+    assert.match(dataTemplate, /data_tree\.js'\) \}\}\?v=20261001-preserve-data-1/);
+    assert.match(projectsTemplate, /data_tree\.js'\) \}\}\?v=20261001-preserve-data-1/);
 });
 test('dedicated Data page uses the compact shared Skill dropzone empty state', () => {
     assert.match(dataTemplate, /<h1[^>]*id="data-library-title">Data<\/h1>/);
@@ -555,7 +556,7 @@ test('compact nested rows truncate long names and remain contained', () => {
     assert.match(treeSource, /--v2-data-tree-indent/);
 });
 
-test('project selector persists hierarchical IDs and drops reconciled missing IDs', () => {
+test('project selector persists hierarchical IDs without pruning unavailable sources', () => {
     assert.match(projectsTemplate, /id="np-data-field"/);
     assert.match(projectsTemplate, /Select the data this project will have access to\./);
     assert.match(projectsTemplate, /id="np-select-data"/);
@@ -564,8 +565,8 @@ test('project selector persists hierarchical IDs and drops reconciled missing ID
     assert.match(projectsSource, /setAttribute\('aria-checked', state\.indeterminate \? 'mixed'/);
     assert.match(projectsSource, /selected_paths/);
     assert.match(projectsSource, /excluded_paths/);
-    assert.match(projectsSource, /const validIds = new Set\(librarySources\.map/);
-    assert.match(projectsSource, /selectedDataSources = selectedDataSources\.filter/);
+    const loader = projectsSource.slice(projectsSource.indexOf('async function loadLibrarySources(options)'), projectsSource.indexOf('async function openDataLibrarySelector()'));
+    assert.doesNotMatch(loader, /selectedDataSources\s*=|draftDataSources\s*=/);
     assert.doesNotMatch(projectsSource, /v2-data-source-status|source\.available|Relink|\/api\/data-library\/choose/);
     assert.doesNotMatch(projectsSource, /window\.location[^\n]*\/data|location\.href[^\n]*\/data/);
 });
