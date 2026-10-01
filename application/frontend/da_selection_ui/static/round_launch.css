@@ -1,4 +1,5 @@
 /* Visual-only overrides for the shared Round Launch dialog. */
+.v2-round-launch-modal #round-launch-description { text-align: center; }
 .v2-round-launch-modal .v2-input {
     min-height: 42px;
     padding: 8px 12px;

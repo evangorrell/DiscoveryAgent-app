@@ -1108,7 +1108,7 @@
 
 
     // Minimal, safe Markdown-ish renderer (raw HTML never trusted).
-    function renderMarkdown(md) {
+    function renderMarkdown(md, { hypothesisCard = false } = {}) {
         if (!md) return '';
         const parts = [];
         const lines = String(md).replace(/\r\n/g, '\n').split('\n');
@@ -1120,7 +1120,15 @@
                 if (inCode) { flushCode(); inCode = false; } else { flushText(); inCode = true; }
                 return;
             }
-            if (inCode) codeBuf.push(line); else textBuf.push(line);
+            if (inCode) codeBuf.push(line);
+            else {
+                // Display-only: put an inline Plan list below its label without
+                // rewriting saved hypotheses, manual-edit drafts, or chat text.
+                textBuf.push(hypothesisCard ? line.replace(
+                    /^([ \t]*(?:\*\*Plan:\*\*|\*\*Plan\*\*:|Plan:))[ \t]+(?=\d+[.)][ \t]+)/i,
+                    '$1\n\n'
+                ) : line);
+            }
         });
         if (inCode) flushCode();
         flushText();
@@ -1966,7 +1974,7 @@
             if (isManualEditing) {
                 body.appendChild(manualEditBlock(h));
             } else {
-                body.appendChild(el('div', 'v2-prose hs-hypothesis-markdown', renderMarkdown(hypothesisBodyMarkdown(displayHypothesis) || 'No hypothesis content was provided.')));
+                body.appendChild(el('div', 'v2-prose hs-hypothesis-markdown', renderMarkdown(hypothesisBodyMarkdown(displayHypothesis) || 'No hypothesis content was provided.', { hypothesisCard: true })));
             }
             card.appendChild(body);
         }

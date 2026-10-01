@@ -26,7 +26,7 @@ function sourceBetween(startMarker, endMarker) {
 }
 
 const markdownSource = sourceBetween(
-    '    function renderMarkdown(md)',
+    '    function renderMarkdown(md,',
     '    function setComposerError('
 );
 const renderMarkdown = new Function(
@@ -103,6 +103,41 @@ function orderedListNumbers(list) {
         Number(item.attributes.value || (start + index))
     );
 }
+
+for (const label of ['Plan:', '**Plan**:', '**Plan:**']) {
+    for (const marker of ['.', ')']) {
+        test(`hypothesis card puts ${label} above its ${marker} numbered plan`, () => {
+            const input = `${label} 1${marker} Fit the model.\n\n2${marker} Inspect residuals.`;
+            const html = renderMarkdown(input, { hypothesisCard: true });
+            const dom = parseFragment(html);
+            assert.deepEqual(dom.children.map(node => node.tagName), ['p', 'ol']);
+            const list = descendants(dom, 'ol')[0];
+            assert.equal(directChildren(list, 'li').length, 2);
+            assert.deepEqual(orderedListNumbers(list), [1, 2]);
+            assert.match(html, /<li[^>]*>(?:<p>)?Fit the model\./);
+            assert.equal(input, `${label} 1${marker} Fit the model.\n\n2${marker} Inspect residuals.`);
+        });
+    }
+}
+
+test('card plan formatting preserves existing list layout and nested steps', () => {
+    const input = '**Plan**:\n\n1. First step\n    - Nested check\n2. Second step';
+    assert.equal(renderMarkdown(input, { hypothesisCard: true }), renderMarkdown(input));
+});
+
+test('card plan formatting leaves prose, code and non-plan sections unchanged', () => {
+    for (const input of ['Plan: Compare the cohorts.', '**Hypothesis**: 1. Example.',
+        'We plan: 1. Example.', '```\nPlan: 1. Literal example\n```']) {
+        assert.equal(renderMarkdown(input, { hypothesisCard: true }), renderMarkdown(input));
+    }
+});
+
+test('inline numbered Plan is only reformatted in the expanded-card render path', () => {
+    const input = '**Plan**: 1. First step\n2. Second step';
+    assert.match(renderMarkdown(input), /<p><strong>Plan<\/strong>: 1\. First step<\/p>/);
+    assert.match(studioSource, /renderMarkdown\(hypothesisBodyMarkdown\(displayHypothesis\)[^\n]+hypothesisCard: true/);
+    assert.match(studioSource, /state\.manualEditDraft = hypothesisBodyMarkdown\(h\)/);
+});
 
 test('assistant Markdown renders semantic paragraphs, headings, and section labels', () => {
     const html = renderMarkdown(
