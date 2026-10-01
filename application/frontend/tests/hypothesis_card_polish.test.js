@@ -13,6 +13,16 @@ function between(start, end) {
     return source.slice(from, to);
 }
 
+test('selection review reserves a pinned action row outside its scrolling content', () => {
+    assert.match(css, /\.hs-review\s*\{[^}]*display: flex;[^}]*flex-direction: column;[^}]*max-height: calc\(100dvh - 48px\);[^}]*overflow: hidden;/);
+    assert.match(css, /\.hs-review > \.v2-modal-body\s*\{[^}]*flex: 1 1 auto;[^}]*min-height: 0;[^}]*overflow-y: auto;/);
+    assert.match(css, /\.hs-review > \.hs-review-actions\s*\{[^}]*flex: 0 0 auto;/);
+    const template = fs.readFileSync(path.join(ui, 'templates/hypothesis_studio.html'), 'utf8');
+    assert.match(template, /id="hs-review-back">Cancel<\/button>/);
+    assert.match(template, /<div class="v2-modal-footer hs-review-actions">/);
+    assert.match(source, /els\.reviewBack\.addEventListener\('click', closeReview\)/);
+});
+
 function element(tag, classes = '', text = '') {
     const names = new Set(classes.split(' ').filter(Boolean));
     return {
@@ -106,7 +116,7 @@ test('expanded cards separate their document from grouped footer controls', () =
             n.classList.contains('hs-card-details') ? 'document' : 'footer'), ['head', 'document', 'footer']);
         assert.match(find(card, 'hs-hypothesis-markdown').textContent, /Final line/);
         assert.equal(find(card, 'hs-card-expand').textContent, 'Hide full hypothesis');
-        assert.equal(find(card, 'hs-regeneration-count').textContent, 'Version 3 of 3');
+        assert.equal(find(card, 'hs-regeneration-count').textContent, '3 / 3');
         assert.equal(find(card, 'hs-card-expand').attributes['aria-expanded'], 'true');
         assert.equal(find(card, 'hs-card-start-round'), undefined);
         assert.ok(find(card, selected ? 'hs-card-selected-static' : 'hs-card-select'));
@@ -125,21 +135,42 @@ test('expanded documents are unscaled, lists are indented, and footer height is 
     assert.match(source, /toggle\.focus\(\{ preventScroll: true \}\)/);
 });
 
-test('wrapping footer groups preserve action labels and usable widths', () => {
-    assert.match(css, /\.hs-card-controls\s*\{[^}]*flex-wrap: wrap;/);
-    assert.match(css, /\.hs-card-actions\s*\{[^}]*flex-wrap: wrap;/);
+test('single-line footer groups preserve action labels and original spacing', () => {
+    assert.match(css, /\.hs-card-actions\s*\{[^}]*gap: 8px 14px;/);
+    assert.doesNotMatch(css, /\.hs-card\.is-collapsed \.hs-card-actions\s*\{[^}]*gap:/);
+    assert.match(css, /\.hs-card-controls\s*\{[^}]*flex-wrap: nowrap;/);
+    assert.match(css, /\.hs-card-actions\s*\{[^}]*flex-wrap: nowrap;[^}]*flex: 0 0 auto;/);
+    assert.match(css, /\.hs-card-controls\s*\{[^}]*overflow-x: auto;/);
     assert.match(css, /\.hs-card-actions > \.hs-card-action\s*\{[^}]*white-space: nowrap;/);
     assert.match(css, /\.hs-regeneration-nav\s*\{[^}]*flex: 0 0 auto;/);
-    assert.match(css, /@container hs-hypotheses \(max-width: 640px\)/);
+    assert.match(css, /@container hs-hypotheses \(max-width: 780px\)/);
 });
 
-test('compact rows align bottom footers and use compact-only sizing without altering expanded packing', () => {
-    assert.match(source, /if \(!grid\.querySelector\('\.hs-card\.is-expanded'\)\) return;/);
+test('compact rows align bottom footers and share footer sizing with expanded cards', () => {
+    assert.match(source, /if \(!expanded\) return;/);
     assert.match(source, /HSL\.packCards\(cards\.map\(card => card\.offsetHeight\)/);
     assert.match(css, /\.hs-hypothesis-surface\.is-static-row \.hs-card-grid \{ align-items: stretch; \}/);
     assert.match(css, /\.hs-card-controls\s*\{[^}]*margin-top: auto;/);
-    assert.match(css, /\.hs-card\.is-collapsed \.hs-card-controls\s*\{[^}]*justify-content: space-between;[^}]*padding-top: 8px;/);
-    assert.match(css, /\.hs-card\.is-collapsed \.hs-regeneration-arrow\s*\{[^}]*width: 24px;[^}]*height: 24px;/);
+    assert.match(css, /\.hs-card \.hs-card-controls\s*\{[^}]*justify-content: space-between;[^}]*padding-top: 8px;/);
+    assert.match(css, /\.hs-card \.hs-regeneration-arrow\s*\{[^}]*width: 24px;[^}]*height: 24px;/);
+    assert.match(css, /\.hs-card-expand \{ min-width: 10em; justify-content: flex-end; \}/);
+    assert.match(source, /regenerationVersionControls\(h, versionView, true\)/);
+});
+
+test('sidebar collapse and maximum columns share the same responsive breakpoint', () => {
+    assert.match(css, /@media \(max-width: 1200px\)\s*\{[\s\S]*?\.hs-layout \{ --hs-max-card-columns: 2; \}[\s\S]*?\.hs-sidebar \{ display: none; \}/);
+    assert.doesNotMatch(css, /@media \(max-width: 900px\)/);
+    assert.match(source, /style\.getPropertyValue\('--hs-max-card-columns'\)/);
+});
+
+test('version arrows have no visible boxes while preserving targets, hover and keyboard focus', () => {
+    assert.match(css, /\.hs-regeneration-nav\s*\{[^}]*align-items: center;/);
+    assert.match(css, /\.hs-regeneration-arrow svg \{ display: block; flex: 0 0 12px; \}/);
+    assert.match(css, /\.hs-regeneration-count\s*\{[^}]*line-height: 1;/);
+    assert.match(css, /\.hs-regeneration-arrow\s*\{[^}]*width: 28px;[^}]*height: 28px;[^}]*border: 1px solid transparent;/);
+    assert.match(css, /\.hs-regeneration-arrow:hover:not\(:disabled\)\s*\{\s*color: var\(--v2-accent\);\s*\}/);
+    assert.match(css, /\.hs-regeneration-arrow:disabled\s*\{[^}]*opacity: 0\.38;/);
+    assert.match(css, /\.hs-card :is\(button, textarea\):focus-visible\s*\{[^}]*outline: 2px solid var\(--v2-accent\)/);
 });
 
 test('page CTA is before Back to Projects, uses a real button and the existing launch handler', () => {

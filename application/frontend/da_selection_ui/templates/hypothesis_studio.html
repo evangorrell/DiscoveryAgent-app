@@ -3,7 +3,7 @@
 {% block title %}Hypothesis Studio &middot; DiscoveryAgent{% endblock %}
 
 {% block head %}
-<link rel="stylesheet" href="{{ url_for('static', filename='hypothesis_studio.css') }}?v=20261001-footer-polish-1">
+<link rel="stylesheet" href="{{ url_for('static', filename='hypothesis_studio.css') }}?v=20261001-review-footer-1">
 <!--
   Configuration for the Hypothesis Studio controller. The count is passed as
   data (default 3, allowed 1-10) so 3 is never hardcoded into the reusable
@@ -181,7 +181,7 @@
                 <p class="hs-composer-error" id="hs-review-error" hidden></p>
             </div>
             <div class="v2-modal-footer hs-review-actions">
-                <button type="button" class="v2-btn v2-btn-secondary" id="hs-review-back">Back</button>
+                <button type="button" class="v2-btn v2-btn-secondary" id="hs-review-back">Cancel</button>
                 <button type="button" class="v2-btn v2-btn-primary" id="hs-review-confirm">
                     Select <span class="v2-arrow" aria-hidden="true">&rarr;</span>
                 </button>
@@ -241,5 +241,5 @@
 <!-- Pure visual placement rule for the single fourth-card overflow. -->
 <script src="{{ url_for('static', filename='hypothesis_layout.js') }}?v=20261001-layout-final-1"></script>
 <!-- Shared, single-seam round-start action for the Start round overlay button. -->
-<script src="{{ url_for('static', filename='hypothesis_studio.js') }}?v=20261001-footer-plan-1"></script>
+<script src="{{ url_for('static', filename='hypothesis_studio.js') }}?v=20261001-footer-stable-1"></script>
 {% endblock %}

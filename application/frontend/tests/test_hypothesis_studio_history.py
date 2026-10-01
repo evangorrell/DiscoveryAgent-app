@@ -1773,9 +1773,9 @@ def test_studio_render_keeps_pristine_overlay_but_enables_eligible_generation(mo
     assert 'class="v2-modal-overlay v2-blocking-overlay"' in html
     assert 'class="v2-modal v2-blocking-box"' in html
     assert "hypothesis_studio.css') }}" not in html
-    assert "hypothesis_studio.css?v=20261001-footer-polish-1" in html
+    assert "hypothesis_studio.css?v=20261001-review-footer-1" in html
     assert "hypothesis_layout.js?v=20261001-layout-final-1" in html
-    assert "hypothesis_studio.js?v=20261001-footer-plan-1" in html
+    assert "hypothesis_studio.js?v=20261001-footer-stable-1" in html
     assert "hypothesis_events.js?v=20260808-selected-lineage-reindex" in html
     assert "hypothesis_activity.js?v=20260711-unseen-activity" in html
     assert 'Select <span class="v2-arrow" aria-hidden="true">&rarr;</span>' in html
@@ -1941,7 +1941,7 @@ def test_studio_controller_wires_welcome_cta_to_generate_endpoint():
     assert "if (!versionView.isViewingCurrent)" in js
     assert "openReview(displayHypothesis, h, versionView.viewedPosition)" in js
     assert "selection_state_id: target.activeStateId" in js
-    assert "controls.appendChild(regenerationVersionControls(h, versionView, !expanded));" in js
+    assert "controls.appendChild(regenerationVersionControls(h, versionView, true));" in js
     assert ".hs-regeneration-nav" in css
     assert "function hasRecordedSelection()" in js
     assert "return !!latestSelectionSource();" in js
@@ -2632,8 +2632,8 @@ def test_hypothesis_workspace_css_uses_grouped_three_column_surface():
     assert ".hs-hypothesis-surface" in css
     assert "grid-template-columns: repeat(var(--hs-card-columns), minmax(0, 1fr))" in css
     assert "--hs-card-columns: 3" in css
-    assert "@container hs-hypotheses (max-width: 960px)" in css
-    assert "@container hs-hypotheses (max-width: 640px)" in css
+    assert "@container hs-hypotheses (max-width: 1180px)" in css
+    assert "@container hs-hypotheses (max-width: 780px)" in css
     assert "syncCardLayout(grid)" in js
     assert "align-items: start" in css
     assert "max-height: min(54vh, 560px)" in css

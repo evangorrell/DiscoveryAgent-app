@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -206,7 +207,10 @@ def test_hypothesis_review_uses_ready_title_without_final_review_eyebrow():
     assert 'id="hs-review-title">Ready for investigation?</h2>' in review
     assert "Final review" not in review
     assert "v2-modal-eyebrow" not in review
-    assert ".hs-review > .v2-modal-head { padding-bottom: 24px; }" in css
+    header = re.search(r"\.hs-review\s*>\s*\.v2-modal-head\s*\{([^}]*)\}", css)
+    assert header is not None
+    assert re.search(r"\bpadding-bottom\s*:\s*24px\s*;", header.group(1))
+    assert re.search(r"\bflex\s*:\s*0\s+0\s+auto\s*;", header.group(1))
 
 
 def test_hypothesis_review_opens_at_the_top_for_long_content():

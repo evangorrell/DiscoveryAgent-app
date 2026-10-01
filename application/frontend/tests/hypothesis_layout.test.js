@@ -89,6 +89,93 @@ test('packing retains direct DOM children and measures untransformed heights aft
     assert.doesNotMatch(sync, /appendChild|insertBefore|\.sort\(|tabIndex|position\s*=\s*['"]absolute/);
 });
 
+function footerFitHarness({ width = 1140, expanded = false, count = 3 } = {}) {
+    const observed = [];
+    const queued = [];
+    let notify;
+    const cards = Array.from({ length: count }, () => {
+        const groups = [{ offsetWidth: 80 }, { offsetWidth: 250 }];
+        const footer = { children: groups, computed: { columnGap: '4px', paddingLeft: '0px', paddingRight: '0px' } };
+        return {
+            style: {}, offsetHeight: 180,
+            computed: { paddingLeft: '16px', paddingRight: '14px', borderLeftWidth: '1px', borderRightWidth: '1px' },
+            querySelector: () => footer, querySelectorAll: () => groups,
+        };
+    });
+    const grid = {
+        children: cards, clientWidth: width, isConnected: true,
+        computed: { columnGap: '14px', rowGap: '14px', getPropertyValue: () => '3' },
+        style: { setProperty(key, value) { this[key] = value; } },
+        querySelector: () => expanded ? cards[0] : null,
+    };
+    class Observer {
+        constructor(callback) { notify = callback; }
+        observe(node) { observed.push(node); }
+    }
+    const sync = studioSource.slice(studioSource.indexOf('    function syncCardLayout('), studioSource.indexOf('    function renderCard('));
+    new Function('HSL', 'window', 'ResizeObserver', 'requestAnimationFrame',
+        'let overflowLayoutObserver;\n' + sync + '\nreturn syncCardLayout;')(
+        HSL, { getComputedStyle: node => node.computed, ResizeObserver: Observer }, Observer,
+        callback => queued.push(callback)
+    )(grid);
+    return {
+        grid, cards, observed,
+        columns: () => Number(grid.style['--hs-card-columns']),
+        resize(width) { grid.clientWidth = width; notify(); queued.splice(0).forEach(callback => callback()); },
+    };
+}
+
+test('grid drops columns before single-line footers compress, then grows again on resize', () => {
+    const h = footerFitHarness();
+    // 368px per card including padding/borders/rounding, plus 14px gutters.
+    for (const [width, columns] of [[1132, 3], [1131, 2], [750, 2], [749, 1], [320, 1], [1600, 3]]) {
+        h.resize(width);
+        assert.equal(h.columns(), columns, `width ${width}`);
+    }
+    assert.ok(h.cards.every(card => Object.keys(card.style).length === 0), 'compact cards retain native rows');
+});
+
+test('footer intrinsic widths, including loaded fonts or longer version labels, drive column count', () => {
+    const h = footerFitHarness();
+    assert.equal(h.columns(), 3);
+    const versions = h.cards[1].querySelector().children[0];
+    assert.ok(h.observed.includes(versions));
+    versions.offsetWidth = 110;
+    h.resize(1140);
+    assert.equal(h.columns(), 2);
+    assert.equal(footerFitHarness({ width: 2000, count: 2 }).columns(), 2);
+    assert.equal(footerFitHarness({ width: 2000, count: 1 }).columns(), 1);
+});
+
+test('expanded-card packing uses the same footer-driven column count', () => {
+    const h = footerFitHarness({ expanded: true, width: 1000 });
+    assert.equal(h.columns(), 2);
+    assert.equal(h.cards[2].style.gridColumn, '1');
+    assert.equal(h.cards[2].style.marginTop, '194px');
+    h.resize(1200);
+    assert.equal(h.columns(), 3);
+    assert.equal(h.cards[2].style.gridColumn, '3');
+    assert.equal(h.cards[2].style.marginTop, '0px');
+});
+
+test('sidebar breakpoint caps columns even when hiding history releases extra width', () => {
+    const h = footerFitHarness({ width: 1100 });
+    assert.equal(h.columns(), 2);
+    h.grid.computed.getPropertyValue = () => '2';
+    h.resize(1200);
+    assert.equal(h.columns(), 2);
+    h.resize(750);
+    assert.equal(h.columns(), 2);
+    h.resize(749);
+    assert.equal(h.columns(), 1);
+});
+
+test('opening a document does not change the footer-driven column count', () => {
+    for (const width of [320, 749, 750, 1000, 1131, 1132, 1600]) {
+        assert.equal(footerFitHarness({ width }).columns(), footerFitHarness({ width, expanded: true }).columns());
+    }
+});
+
 test('automatic pane measurement is independent of scroll and only includes the actual first row minimum', () => {
     const start = studioSource.indexOf('    function rememberCollapsedHypothesisHeight(');
     const end = studioSource.indexOf('    function hypothesisPanelContextKey(', start);

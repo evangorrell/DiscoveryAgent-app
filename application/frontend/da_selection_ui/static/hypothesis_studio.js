@@ -1848,16 +1848,36 @@
 
     function syncCardLayout(grid) {
         if (!HSL) return; // CSS grid remains the non-JS fallback.
-        // Compact rows use native grid stretch to align bottom-anchored footers.
-        // Keep independent shortest-column placement for expanded documents.
-        if (!grid.querySelector('.hs-card.is-expanded')) return;
         const cards = Array.from(grid.children);
+        const expanded = !!grid.querySelector('.hs-card.is-expanded');
         let scheduled = false;
         const syncPositions = () => {
             scheduled = false;
             if (!grid.isConnected) return;
             const style = window.getComputedStyle(grid);
-            const columns = Math.min(cards.length, parseInt(style.getPropertyValue('--hs-card-columns'), 10) || 1);
+            const gap = parseFloat(style.columnGap) || 14;
+            // Measure unshrunk footer groups, not title length or transformed
+            // card bounds. Drop a whole column before any footer needs to wrap.
+            const minimumWidth = Math.max(1, ...cards.map(card => {
+                const footer = card.querySelector('.hs-card-controls');
+                if (!footer) return 0;
+                const groups = Array.from(footer.children);
+                const footerStyle = window.getComputedStyle(footer);
+                const cardStyle = window.getComputedStyle(card);
+                const width = groups.reduce((sum, group) => sum + group.offsetWidth, 0)
+                    + Math.max(0, groups.length - 1) * (parseFloat(footerStyle.columnGap) || 0);
+                const insets = ['paddingLeft', 'paddingRight', 'borderLeftWidth', 'borderRightWidth']
+                    .reduce((sum, key) => sum + (parseFloat(cardStyle[key]) || 0)
+                        + (parseFloat(footerStyle[key]) || 0), 0);
+                return Math.ceil(width + insets) + 2; // Allow fractional font/box rounding.
+            }));
+            const maxColumns = parseInt(style.getPropertyValue('--hs-max-card-columns'), 10) || 3;
+            const columns = Math.max(1, Math.min(maxColumns, cards.length,
+                Math.floor((grid.clientWidth + gap) / (minimumWidth + gap))));
+            grid.style.setProperty('--hs-card-columns', String(columns));
+            // Compact rows keep native grid stretch and bottom-aligned footers.
+            // Expanded documents retain independent shortest-column placement.
+            if (!expanded) return;
             // Establish the correct width before measuring heights, including
             // after live breakpoint changes. No reparenting or absolute cards:
             // shared-row margins make the grid reserve the tallest column's
@@ -1881,7 +1901,12 @@
                 }
             });
             overflowLayoutObserver.observe(grid);
-            cards.forEach((card) => overflowLayoutObserver.observe(card));
+            cards.forEach((card) => {
+                overflowLayoutObserver.observe(card);
+                // Font loading and version-label changes can change intrinsic
+                // footer widths without changing the current card dimensions.
+                card.querySelectorAll('.hs-card-controls > *').forEach(group => overflowLayoutObserver.observe(group));
+            });
         }
     }
 
@@ -1987,7 +2012,7 @@
         if (!isManualEditing) {
             const controls = el('div', 'hs-card-controls');
             if (versionView.results.length > 1) {
-                controls.appendChild(regenerationVersionControls(h, versionView, !expanded));
+                controls.appendChild(regenerationVersionControls(h, versionView, true));
             }
             const actions = el('div', 'hs-card-actions');
             actions.appendChild(expandBtn);
@@ -2022,7 +2047,7 @@
         const nav = el('div', 'hs-regeneration-nav');
         const blocked = state.manualEditIndex === idx || isManualEditSaving(idx);
 
-        const previous = el('button', 'hs-regeneration-arrow', '‹');
+        const previous = el('button', 'hs-regeneration-arrow', '<svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true" focusable="false"><path d="M8 2 4 6l4 4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>');
         previous.type = 'button';
         previous.setAttribute(
             'aria-label',
@@ -2042,7 +2067,7 @@
             : versionLabel);
         count.title = versionLabel;
         nav.appendChild(count);
-        const next = el('button', 'hs-regeneration-arrow', '›');
+        const next = el('button', 'hs-regeneration-arrow', '<svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true" focusable="false"><path d="m4 2 4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>');
         next.type = 'button';
         next.setAttribute(
             'aria-label',

@@ -538,6 +538,9 @@ test('version navigation DOM labels expose the authoritative current version and
     assert.equal(next.attributes['aria-label'], 'No later version after Version 4 of 4');
     assert.equal(previous.disabled, false);
     assert.equal(next.disabled, true);
+    for (const button of [previous, next]) {
+        assert.match(button.textContent, /<svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true" focusable="false">/);
+    }
     for (const position of [0, 1]) {
         const compact = controls({ index: 2 }, { viewedPosition: position, results: [{}, {}] }, true);
         const [prev, label, forward] = compact.children;
