@@ -246,9 +246,13 @@
     // The research direction/title is NOT repeated here (it lives in the timeline
     // above); each entry shows only the concise central finding.
     function buildRecentRounds(rounds) {
-        if (!rounds || !rounds.length) return null;
         const section = el('section', 'v2-section');
         section.appendChild(label('Latest Findings'));
+        if (!rounds || !rounds.length) {
+            section.appendChild(el('p', 'v2-prose',
+                'Findings will appear here after the first research round is completed.'));
+            return section;
+        }
         rounds.forEach((round) => {
             const row = el('article', 'v2-recent-row');
             const left = el('div', 'v2-recent-left');
@@ -256,9 +260,11 @@
             left.appendChild(el('p', 'v2-recent-status', 'Complete'));
             row.appendChild(left);
             const right = el('div', 'v2-recent-right');
-            if (round.outcome_preview) {
-                right.appendChild(el('div', 'v2-prose v2-recent-outcome', esc(round.outcome_preview)));
-            }
+            const finding = round.outcome_preview ||
+                'A findings preview is not available for this round. Open the round report to review its results.';
+            const outcome = el('div', 'v2-prose v2-recent-outcome');
+            outcome.appendChild(el('p', '', esc(finding)));
+            right.appendChild(outcome);
             const link = textLink('Open Round ' + round.round_index, round.destination);
             if (link) right.appendChild(link);
             row.appendChild(right);
@@ -283,6 +289,7 @@
         } else {
             // Pre-research uses the same Research Status component.
             frag.appendChild(buildResearchStatus(state.research_status || {}));
+            frag.appendChild(buildRecentRounds(state.recent_rounds));
         }
 
         els.content.innerHTML = '';

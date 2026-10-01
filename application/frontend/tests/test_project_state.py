@@ -6,6 +6,7 @@ is required for the states under test.
 """
 import json
 from pathlib import Path
+import pytest
 
 from da_selection_ui import app as app_module
 
@@ -163,6 +164,135 @@ def _get_state(client):
     data = resp.get_json()
     assert data["success"] is True
     return data
+
+
+@pytest.mark.parametrize('query_count', [1, 5])
+def test_completed_round_zero_list_findings_without_memory(monkeypatch, tmp_path, query_count):
+    _base_tree(tmp_path)
+    rd = _complete_round(tmp_path, 0, memory=False, report_text=(
+        '# Round 0 Report\n\n## Key Findings\n\n'
+        '- Coastal renters face greater housing burdens\n'
+        '- Inland households retained more disposable income\n'
+    ))
+    for index in range(query_count):
+        (rd / f'query_{index:03d}').mkdir()
+    data = _get_state(_client_with_session(monkeypatch, tmp_path))
+    assert data['mode'] == 'research_briefing'
+    assert data['research_understanding'] is None
+    assert data['recent_rounds'][0]['outcome_preview'] == 'Coastal renters face greater housing burdens...'
+    assert data['recent_rounds'][0]['round_index'] == 0
+    assert data['recent_rounds'][0]['status'] == 'complete'
+    assert data['evolution'][0]['direction'] == 'Exploratory round'
+    assert data['evolution'][0]['status'] == 'completed'
+
+
+@pytest.mark.parametrize('completed_indices', [(1,), (0, 1), (0, 1, 4)])
+def test_latest_completed_findings_use_persisted_summary(monkeypatch, tmp_path, completed_indices):
+    def no_generator(*args, **kwargs):
+        pytest.fail('Project Home must not restore/generate research to read saved findings')
+    for helper in ('create_generator', 'get_generator', 'get_or_restore_generator'):
+        monkeypatch.setattr(app_module, helper, no_generator)
+    _base_tree(tmp_path)
+    for index in completed_indices:
+        rd = _complete_round(tmp_path, index)
+        rd.joinpath('round_report_summary.md').write_text(
+            '# Round Report Summary\n\n*Automatically generated summary of round_report.md*\n\n'
+            '## Hypothesis\n\nThis is the prior hypothesis, not a result.\n\n'
+            f'## Hypothesis Verdict\n\n**PARTIALLY SUPPORTED:** Round {index} showed greater coastal rent burden.\n',
+            encoding='utf-8')
+    client = _client_with_session(monkeypatch, tmp_path)
+    before = {str(p): p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
+    data = _get_state(client)
+    assert [r['round_index'] for r in data['recent_rounds']] == sorted(completed_indices, reverse=True)
+    newest = data['recent_rounds'][0]
+    assert newest['outcome_preview'] == (
+        f'PARTIALLY SUPPORTED: Round {max(completed_indices)} showed greater coastal rent burden...')
+    assert f'round={max(completed_indices)}' in newest['destination']
+    assert before == {str(p): p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
+
+
+def test_newer_active_round_summary_does_not_replace_completed_findings(monkeypatch, tmp_path):
+    _base_tree(tmp_path)
+    _complete_round(tmp_path, 0)
+    active = _round_dir(tmp_path, 1)
+    _write_config(active)
+    (active / 'query_000').mkdir()
+    active.joinpath('round_report_summary.md').write_text(
+        '## Key Findings\n\nPremature results must not be displayed.', encoding='utf-8')
+    _write_runner_state(tmp_path, 1, 'running')
+    monkeypatch.setattr(app_module.local_round_runner, '_pid_matches_state', lambda state: True)
+    data = _get_state(_client_with_session(monkeypatch, tmp_path))
+    assert data['research_status']['state'] == 'research_in_progress'
+    assert [r['round_index'] for r in data['recent_rounds']] == [0]
+    assert data['recent_rounds'][0]['outcome_preview'].startswith('States with the highest rent burden')
+
+
+@pytest.mark.parametrize('summary', [b'', b'\xff\xfe', b'# Summary\n\n![figure](plot.png)',
+                                     b'## Key Findings\n\n## Background\n\nUnrelated background belongs here only.'])
+def test_unusable_summary_falls_back_to_full_report(monkeypatch, tmp_path, summary):
+    _base_tree(tmp_path)
+    rd = _complete_round(tmp_path, 0)
+    rd.joinpath('round_report_summary.md').write_bytes(summary)
+    data = _get_state(_client_with_session(monkeypatch, tmp_path))
+    assert data['recent_rounds'][0]['outcome_preview'].startswith('States with the highest rent burden')
+
+
+@pytest.mark.parametrize('report', [b'', b'\xff\xfe', b'# Round 0 Report\n\n![figure](plot.png)'])
+def test_malformed_completed_report_returns_explicit_fallback_data(monkeypatch, tmp_path, report):
+    _base_tree(tmp_path)
+    rd = _complete_round(tmp_path, 0)
+    rd.joinpath('round_report.md').write_bytes(report)
+    data = _get_state(_client_with_session(monkeypatch, tmp_path))
+    assert data['recent_rounds'][0]['outcome_preview'] is None
+    assert data['recent_rounds'][0]['status'] == 'complete'
+    assert data['recent_rounds'][0]['destination']
+
+
+def test_summary_alone_does_not_mark_round_completed(monkeypatch, tmp_path):
+    _base_tree(tmp_path)
+    _round_dir(tmp_path, 0).joinpath('round_report_summary.md').write_text(
+        '## Key Findings\n\nResults are still being assembled.', encoding='utf-8')
+    data = _get_state(_client_with_session(monkeypatch, tmp_path))
+    assert data['recent_rounds'] == []
+
+
+def test_missing_full_report_is_not_a_completed_finding(monkeypatch, tmp_path):
+    _base_tree(tmp_path)
+    _complete_round(tmp_path, 0, report=False)
+    data = _get_state(_client_with_session(monkeypatch, tmp_path))
+    assert data['recent_rounds'] == []
+
+
+def test_empty_findings_section_never_borrows_methods_prose(tmp_path):
+    rd = _complete_round(tmp_path, 0, report_text=(
+        '## Key Findings\n\n## Methods\n\n'
+        'Households were sampled across every state using matched income groups and survey weights from the national census.'))
+    assert app_module._v2_persisted_round_finding(rd) is None
+
+
+@pytest.mark.parametrize('text, summary, expected', [
+    ('## 1. **Key Findings**\n\n1. Coastal renters face greater housing burdens.', False,
+     'Coastal renters face greater housing burdens.'),
+    ('**Key Discoveries**\n\n- Coastal renters face greater housing burdens.', True,
+     'Coastal renters face greater housing burdens.'),
+    ('# Round Report Summary\n\n*Automatically generated summary of round_report.md*\n\n---\n\n'
+     'Coastal renters face greater housing burdens.', True, 'Coastal renters face greater housing burdens.'),
+    ('## Round Report Summary\n\nCoastal renters face greater housing burdens.', True,
+     'Coastal renters face greater housing burdens.'),
+    ('## Background\n\n### Published Findings\n\nPrior research describes housing burden differences.', False, None),
+    ('## Key Findings\n\n## Methods\n\nWe sampled households across all states.', False, None),
+    ('## Hypothesis\n\nCoastal renters face greater housing burdens.', True, None),
+])
+def test_structured_findings_are_bounded_and_result_specific(text, summary, expected):
+    assert app_module._v2_structured_finding(text, summary=summary) == expected
+
+
+def test_summary_symlink_is_not_read(tmp_path):
+    rd = _complete_round(tmp_path, 0)
+    outside = tmp_path / 'unrelated.md'
+    outside.write_text('## Key Findings\n\nDo not read unrelated project results.', encoding='utf-8')
+    rd.joinpath('round_report_summary.md').symlink_to(outside)
+    assert app_module._v2_persisted_round_finding(rd).startswith('States with the highest rent burden')
 
 
 def _write_runner_state(root: Path, round_number: int, status: str) -> None:
@@ -1239,7 +1369,7 @@ def test_latest_findings_rename_and_no_repeated_title_in_js():
     assert "label('How the Research Evolved')" in js  # timeline kept
     assert "'Round ' + esc(round.round_index)" in js  # round labels unchanged
     assert "renderPreviewMarkdown(round.outcome_preview)" not in js
-    assert "esc(round.outcome_preview)" in js  # finding body is plain text
+    assert "esc(finding)" in js  # actual findings and fallback remain plain text
     render = js[js.index("function render(state)"):]
     assert render.index("buildRecentRounds(state.recent_rounds)") < render.index(
         "buildEvolution(state.evolution)"

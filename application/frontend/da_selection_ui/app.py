@@ -6341,23 +6341,23 @@ def _v2_is_substantive_paragraph(block: str) -> bool:
 def _v2_substantive_paragraphs(raw_text: str, body_marker: str, section_hints=None) -> list[str]:
     """Return the ordered list of substantive prose paragraphs in a report body.
 
-    When section_hints is given, extraction starts at the first matching section
-    heading (used to prefer a round's Findings/Results/Conclusion prose)."""
+    When section_hints is given, extraction is bounded to the first matching
+    section (used to prefer a round's Findings/Results/Conclusion prose)."""
     body = _v2_strip_report_scaffolding(raw_text, body_marker)
     if not body:
         return []
     if section_hints:
-        best_start = None
-        best_end = None
+        best_match = None
         for hint in section_hints:
-            pattern = re.compile(r"(?m)^#{1,6}\s*" + re.escape(hint) + r"\s*$", re.IGNORECASE)
+            pattern = re.compile(r"(?m)^(#{1,6})\s*" + re.escape(hint) + r"\s*$", re.IGNORECASE)
             match = pattern.search(body)
-            if match and (best_start is None or match.start() < best_start):
-                best_start = match.start()
-                best_end = match.end()
-        if best_end is None:
+            if match and (best_match is None or match.start() < best_match.start()):
+                best_match = match
+        if best_match is None:
             return []  # section hint(s) requested but none matched -> no section
-        body = body[best_end:]
+        section = body[best_match.end():]
+        section_end = re.search(r'(?m)^#{1,' + str(len(best_match.group(1))) + r'}\s+', section)
+        body = section[:section_end.start()] if section_end else section
     picked: list[str] = []
     for para in re.split(r"\n\s*\n", body):
         cleaned = para.strip()
@@ -6504,6 +6504,88 @@ def _v2_round_finding(raw_text: str) -> str | None:
     if not preview:
         return None
     return _v2_first_sentences(preview, max_chars=320)
+
+
+def _v2_structured_finding(raw_text: str, *, summary: bool = False) -> str | None:
+    """Read short/list findings that the prose-only memory preview cannot accept.
+
+    Only result-bearing sections qualify in a full report. A saved summary may
+    also be plain narrative. Never fall back to a full report's background.
+    This is display extraction, not summary generation or scientific rewriting.
+    """
+    body = ((raw_text or '').split(_SCIENTIST_LEDGER_MARKER, 1)[0] if summary
+            else _v2_strip_report_scaffolding(raw_text, _ROUND_REPORT_BODY_MARKER))
+    # Summary writers also use bold section labels instead of ATX headings.
+    body = re.sub(r'(?m)^\*\*([^*\n]+?)\*\*\s*:?\s*$', r'## \1', body)
+    headings = list(re.finditer(r'(?m)^(#{1,6})\s+(.+?)\s*#*\s*$', body))
+    result_heading = re.compile(
+        r'\b(?:findings?|results?|conclusions?|discoveries|verdict|supporting evidence|final synthesis)\b'
+    )
+    excluded_heading = re.compile(
+        r'\b(?:background|literature|methods?|limitations?|references|remaining questions)\b'
+    )
+    sections = []
+    for position, heading in enumerate(headings):
+        title = _v2_normalized_markdown_heading(heading.group(2))
+        if not result_heading.search(title) or excluded_heading.search(title):
+            continue
+        level = len(heading.group(1))
+        parent_level = level
+        excluded = False
+        for prior in reversed(headings[:position]):
+            if len(prior.group(1)) < parent_level:
+                parent_level = len(prior.group(1))
+                excluded |= bool(excluded_heading.search(_v2_normalized_markdown_heading(prior.group(2))))
+        if excluded:
+            continue
+        end = next((item.start() for item in headings[position + 1:]
+                    if len(item.group(1)) <= level), len(body))
+        sections.append(body[heading.end():end])
+    if summary:
+        # Unsectioned summaries (including the generated title/scaffolding) are
+        # already a persisted condensation. Do not use introductory hypothesis
+        # or background prose when a structured summary supplied no result.
+        if not headings or all(
+            _v2_normalized_markdown_heading(item.group(2)) == 'round report summary'
+            for item in headings
+        ):
+            sections.append(body)
+    for section in sections:
+        section = re.sub(r'(?m)^\s*(?:[-*+]|\d+[.)])\s+', '\n\n', section)
+        for block in re.split(r'\n\s*\n', section):
+            text = ' '.join(block.split())
+            if (not text or text.startswith(('#', '|', '![', '```', '~~~'))
+                    or re.match(r'^\[\d+\]', text)
+                    or 'Automatically generated summary of' in text
+                    or _BOILERPLATE_PHRASE_RE.search(text)):
+                continue
+            # Short scientific statements are valid; a heading/label alone isn't.
+            if len(re.findall(r'\b\w+\b', text)) < 4:
+                continue
+            return _v2_first_sentences(text)
+    return None
+
+
+def _v2_persisted_round_finding(round_dir: Path) -> str | None:
+    """Prefer the existing saved summary, then the completed full report.
+
+    Use the workspace's safe artifact reader; never generate, cache or mutate a
+    report on Home navigation. Completion is checked by the caller.
+    """
+    for filename in ('round_report_summary.md', 'round_report.md'):
+        path = _round_workspace_valid_report_file(round_dir, filename)
+        if path is None:
+            continue
+        try:
+            raw = path.read_text(encoding='utf-8')
+        except (OSError, UnicodeError):
+            continue
+        is_summary = filename == 'round_report_summary.md'
+        finding = (_v2_structured_finding(raw, summary=True) if is_summary
+                   else _v2_round_finding(raw) or _v2_structured_finding(raw))
+        if finding:
+            return _v2_latest_finding_display_preview(finding)
+    return None
 
 
 def _v2_latest_finding_display_preview(text: str | None) -> str | None:
@@ -6964,19 +7046,18 @@ def _v2_project_state_for(
         research_status['blocking_reason'] = continuation_issue
         research_status['body'] = continuation_issue
 
-    # --- Display mode: completed authoritative memory report exists? -----------
+    # --- Display mode: persisted research understanding or completed findings --
     mem_index, mem_dir = _v2_latest_round_dir_with_file(rounds_root, 'memory_report.md')
 
-    if mem_dir is None:
-        # No completed research understanding -> focused pre-research screen.
-        # Research Status remains authoritative even when a report lacks a
-        # cumulative memory artifact.
+    if mem_dir is None and completed_dir is None:
+        # A completed round can have findings without a cumulative memory report.
         return _pre_research(research_status)
 
     # --- Research Briefing mode ------------------------------------------------
     # Current Research Understanding (preview + complete inline memory body).
     try:
-        mem_raw = (mem_dir / 'memory_report.md').read_text(encoding='utf-8', errors='replace')
+        mem_raw = ((mem_dir / 'memory_report.md').read_text(encoding='utf-8', errors='replace')
+                   if mem_dir is not None else '')
         preview = _v2_understanding_preview(mem_raw)
         full = _v2_understanding_full(mem_raw)
     except OSError:
@@ -6996,7 +7077,7 @@ def _v2_project_state_for(
         'full_markdown': full,
         'source_round': mem_index,
         'figures': figures,
-    }
+    } if mem_dir is not None else None
 
     # How the research evolved (chronological) + recent completed rounds.
     evolution: list[dict] = []
@@ -7018,17 +7099,9 @@ def _v2_project_state_for(
             'destination': destination,
         })
         if info['has_round_report']:
-            outcome = None
-            try:
-                rr_raw = (round_dir / 'round_report.md').read_text(encoding='utf-8', errors='replace')
-                # Latest Findings shows a CONCISE central finding (not the whole
-                # report paragraph); the direction/title lives in the timeline above.
-                outcome = _v2_latest_finding_display_preview(_v2_round_finding(rr_raw))
-            except OSError:
-                outcome = None
             completed_rounds.append({
                 'round_index': index,
-                'outcome_preview': outcome,
+                'outcome_preview': _v2_persisted_round_finding(round_dir),
                 'status': 'complete',
                 'destination': destination,
             })
