@@ -1825,18 +1825,7 @@
         const grid = el('div', 'hs-card-grid');
         if (cards.length <= 1) grid.classList.add('is-single');
         if (cards.length === 2) grid.classList.add('has-two-cards');
-        const overflowColumn = HSL ? HSL.singleOverflowColumn(cards, visibleExpanded) : null;
-        const packedOverflowPreferences = HSL
-            ? HSL.packedOverflowPreferences(cards, visibleExpanded) : null;
         cards.forEach((h) => grid.appendChild(renderCard(h, selectedIndex)));
-        if (overflowColumn != null) {
-            grid.classList.add('has-single-overflow', 'overflow-column-' + overflowColumn);
-            if (anyExpanded) grid.classList.add('uses-available-overflow-space');
-        }
-        if (packedOverflowPreferences) {
-            grid.classList.add('uses-packed-overflow-space');
-            primePackedOverflowGrid(grid, packedOverflowPreferences);
-        }
         surface.appendChild(grid);
         installVerticalOnlyScroll(surface);
         els.cards.appendChild(surface);
@@ -1844,111 +1833,45 @@
             const top = Number(opts.restoreScrollTop) || 0;
             requestAnimationFrame(() => { surface.scrollTop = Math.min(top, surface.scrollHeight); });
         }
+        syncCardLayout(grid);
         syncHypothesisWorkspaceDivider(true);
-        syncOverflowCardLayout(
-            grid, overflowColumn, anyExpanded, packedOverflowPreferences
-        );
         persistStudioSnapshot();
     }
 
-    function syncOverflowCardLayout(grid, overflowColumn, anyExpanded, packedPreferences) {
-        if (!anyExpanded) return;
-        if (Array.isArray(packedPreferences) && grid.children.length >= 5) {
-            syncPackedOverflowCards(grid, packedPreferences);
-            return;
-        }
-        if (overflowColumn == null || grid.children.length !== 4) return;
-        const topCard = grid.children[overflowColumn - 1];
-        const overflowCard = grid.children[3];
-        if (!topCard || !overflowCard) return;
-
-        const syncOffset = () => {
-            if (!grid.isConnected) return;
-            // Measure the visual bottom relative to the grid. Unfocused cards
-            // retain the existing centered scale transform, so height alone
-            // omits the transform's top inset and can make the cards overlap.
-            const gridTop = grid.getBoundingClientRect().top;
-            const bottom = Math.ceil(topCard.getBoundingClientRect().bottom - gridTop);
-            if (bottom > 0) grid.style.setProperty('--hs-overflow-card-offset', bottom + 'px');
-        };
-        syncOffset();
-        if (window.ResizeObserver) {
-            overflowLayoutObserver = new ResizeObserver(syncOffset);
-            overflowLayoutObserver.observe(topCard);
-        }
-    }
-
-    function syncPackedOverflowCards(grid, packedPreferences) {
+    function syncCardLayout(grid) {
+        if (!HSL) return; // CSS grid remains the non-JS fallback.
         const cards = Array.from(grid.children);
-        const topCards = cards.slice(0, 3);
-        const overflowCards = cards.slice(3);
-        if (topCards.length !== 3 || overflowCards.length !== packedPreferences.length) return;
-
-        const clearPackedStyles = () => {
-            cards.forEach((card) => {
-                card.style.removeProperty('grid-column');
-                card.style.removeProperty('grid-row');
-                card.style.removeProperty('margin-top');
-            });
-        };
+        let scheduled = false;
         const syncPositions = () => {
+            scheduled = false;
             if (!grid.isConnected) return;
-            // Packing is a three-column enhancement. Container-sized two/one
-            // column layouts use normal flow, including after a live resize.
-            if (getComputedStyle(grid).getPropertyValue('--hs-card-columns').trim() !== '3') {
-                clearPackedStyles();
-                return;
-            }
-            // Pin every card to an explicit grid area before measuring. If the
-            // overflow cards alone are positioned, CSS auto-placement can move
-            // H2/H3 out of the first row while ResizeObserver is settling.
-            primePackedOverflowGrid(grid, packedPreferences);
-            const gridTop = grid.getBoundingClientRect().top;
-            const gridStyle = window.getComputedStyle(grid);
-            const gap = parseFloat(gridStyle.rowGap || gridStyle.gap) || 14;
-            const columnBottoms = topCards.map((card) =>
-                Math.ceil(card.getBoundingClientRect().bottom - gridTop)
-            );
-            overflowCards.forEach((card, index) => {
-                let column = Number(packedPreferences[index]);
-                if (!Number.isInteger(column) || column < 1 || column > 3) {
-                    column = 1;
-                    for (let candidate = 2; candidate <= 3; candidate += 1) {
-                        if (columnBottoms[candidate - 1] < columnBottoms[column - 1]) {
-                            column = candidate;
-                        }
-                    }
-                }
-                const offset = Math.ceil(columnBottoms[column - 1] + gap);
-                card.style.gridColumn = ((column - 1) * 2 + 1) + ' / span 2';
+            const style = window.getComputedStyle(grid);
+            const columns = Math.min(cards.length, parseInt(style.getPropertyValue('--hs-card-columns'), 10) || 1);
+            // Establish the correct width before measuring heights, including
+            // after live breakpoint changes. No reparenting or absolute cards:
+            // shared-row margins make the grid reserve the tallest column's
+            // full height while keeping the original reading and focus order.
+            cards.forEach((card, index) => {
+                card.style.gridColumn = String(index % columns + 1);
                 card.style.gridRow = '1';
-                card.style.marginTop = offset + 'px';
-                columnBottoms[column - 1] = offset + Math.ceil(card.getBoundingClientRect().height);
+            });
+            const positions = HSL.packCards(cards.map(card => card.offsetHeight), columns, parseFloat(style.rowGap) || 14);
+            cards.forEach((card, index) => {
+                card.style.gridColumn = String(positions[index].column);
+                card.style.marginTop = positions[index].top + 'px';
             });
         };
         syncPositions();
         if (window.ResizeObserver) {
-            overflowLayoutObserver = new ResizeObserver(syncPositions);
+            overflowLayoutObserver = new ResizeObserver(() => {
+                if (!scheduled) {
+                    scheduled = true;
+                    requestAnimationFrame(syncPositions);
+                }
+            });
+            overflowLayoutObserver.observe(grid);
             cards.forEach((card) => overflowLayoutObserver.observe(card));
         }
-    }
-
-    function primePackedOverflowGrid(grid, packedPreferences) {
-        const cards = Array.from(grid.children);
-        if (cards.length < 5 || !Array.isArray(packedPreferences)) return;
-        if (window.matchMedia && window.matchMedia('(max-width: 680px)').matches) return;
-        cards.slice(0, 3).forEach((card, index) => {
-            card.style.gridColumn = (index * 2 + 1) + ' / span 2';
-            card.style.gridRow = '1';
-            card.style.removeProperty('margin-top');
-        });
-        cards.slice(3).forEach((card, index) => {
-            const preferred = Number(packedPreferences[index]);
-            const column = Number.isInteger(preferred) && preferred >= 1 && preferred <= 3
-                ? preferred : 1;
-            card.style.gridColumn = ((column - 1) * 2 + 1) + ' / span 2';
-            card.style.gridRow = '1';
-        });
     }
 
     function renderCard(h, selectedIndex) {
@@ -2029,6 +1952,10 @@
                 renderOptions = { restoreScrollTop: priorScrollTop };
             }
             renderCards(renderOptions);
+            // renderCards replaces the clicked button; keep keyboard focus on
+            // the corresponding toggle without jumping the scroll viewport.
+            const toggle = els.cards.querySelector('.hs-card[data-index="' + idx + '"] .hs-card-expand');
+            if (toggle) toggle.focus({ preventScroll: true });
         });
 
         if (expanded) {
@@ -2401,16 +2328,15 @@
         if (!els.cards || !els.workspaceMain || els.workspaceMain.classList.contains('has-expanded-hypothesis')) return;
         const surface = els.cards.querySelector('.hs-hypothesis-surface');
         const grid = surface && surface.querySelector('.hs-card-grid');
-        const topRowCards = grid ? Array.from(grid.children).slice(0, 3) : [];
+        const columns = grid ? parseInt(getComputedStyle(grid).getPropertyValue('--hs-card-columns'), 10) || 1 : 1;
+        const topRowCards = grid ? Array.from(grid.children).slice(0, columns) : [];
         if (!surface || !topRowCards.length) return;
-        const surfaceRect = surface.getBoundingClientRect();
         const surfaceStyle = window.getComputedStyle(surface);
-        const rowBottom = Math.max.apply(null, topRowCards.map((card) => card.getBoundingClientRect().bottom));
-        // One complete desktop row includes the surface's top inset, the
-        // tallest of H1-H3 (including its controls/footer), and bottom inset.
-        // Extra rows deliberately do not participate in the pane minimum.
+        // Untransformed box heights are independent of surface scroll and the
+        // compact hover transform. Extra rows do not inflate the pane minimum.
+        const rowHeight = Math.max.apply(null, topRowCards.map((card) => card.offsetHeight));
         const height = Math.ceil(
-            rowBottom - surfaceRect.top + (parseFloat(surfaceStyle.paddingBottom) || 0)
+            rowHeight + (parseFloat(surfaceStyle.paddingTop) || 0) + (parseFloat(surfaceStyle.paddingBottom) || 0)
         );
         if (height <= 0) return;
         hypothesisSplit.collapsedHeight = height;
@@ -2424,11 +2350,9 @@
         const surface = els.cards.querySelector('.hs-hypothesis-surface');
         const grid = surface && surface.querySelector('.hs-card-grid');
         if (!surface || !grid || !grid.children.length) return null;
-        const surfaceRect = surface.getBoundingClientRect();
-        const gridRect = grid.getBoundingClientRect();
         const surfaceStyle = window.getComputedStyle(surface);
         const height = Math.ceil(
-            gridRect.bottom - surfaceRect.top + (parseFloat(surfaceStyle.paddingBottom) || 0)
+            grid.offsetHeight + (parseFloat(surfaceStyle.paddingTop) || 0) + (parseFloat(surfaceStyle.paddingBottom) || 0)
         ) + 2;
         return height > 0 ? height : null;
     }
@@ -2457,14 +2381,14 @@
 
     function hypothesisPanelLimits() {
         const workspaceHeight = Math.max(0, els.workspaceMain.getBoundingClientRect().height);
-        const minimum = Math.max(176, Math.ceil(hypothesisSplit.collapsedHeight || 0));
         const fixedChatHeight = visibleOuterHeight(els.chatScope) + visibleOuterHeight(els.composer);
         const dividerHeight = visibleOuterHeight(els.workspaceDivider);
         // Keep the complete composer and fixed chat affordances visible, plus
         // enough of the flexible transcript to retain conversational context.
-        const maximum = Math.max(minimum, Math.floor(
+        const maximum = Math.max(176, Math.floor(
             workspaceHeight - dividerHeight - fixedChatHeight - MIN_TRANSCRIPT_PREVIEW_HEIGHT
         ));
+        const minimum = Math.min(maximum, Math.max(176, Math.ceil(hypothesisSplit.collapsedHeight || 0)));
         return { min: minimum, max: maximum, workspaceHeight: workspaceHeight };
     }
 

@@ -1,46 +1,22 @@
 // Pure, DOM-free layout helpers for Hypothesis Studio.
 //
-// The fourth card remains fourth in data/DOM order. This helper only chooses
-// the visual column where that single overflow card should be displayed.
+// Visual placement only: hypotheses remain in their original DOM/tab order.
 (function (root, factory) {
     if (typeof module !== 'undefined' && module.exports) module.exports = factory();
     else root.HSLayout = factory();
 })(typeof self !== 'undefined' ? self : this, function () {
     'use strict';
 
-    function singleOverflowColumn(cards, expanded) {
-        if (!Array.isArray(cards) || cards.length !== 4) return null;
-        const topCards = cards.slice(0, 3);
-        const isExpanded = function (column) {
-            const card = topCards[column - 1];
-            return !!(card && expanded && expanded[Number(card.index)]);
-        };
-
-        // Keep the established centered default while it is available. If it
-        // is not, prefer the collapsed card on the left, then the right.
-        if (!isExpanded(2)) return 2;
-        if (!isExpanded(1)) return 1;
-        if (!isExpanded(3)) return 3;
-        return 2;
-    }
-
-    function packedOverflowPreferences(cards, expanded) {
-        if (!Array.isArray(cards) || cards.length < 5) return null;
-        const topCards = cards.slice(0, 3);
-        const anyExpanded = topCards.some(function (card) {
-            return !!(card && expanded && expanded[Number(card.index)]);
-        });
-        if (!anyExpanded) return null;
-
-        // Overflow cards first fill the still-collapsed top-card columns from
-        // left to right. Any remaining card is assigned at render time to the
-        // currently shortest column after real card heights are measured.
-        const collapsedColumns = [];
-        topCards.forEach(function (card, index) {
-            if (!(expanded && expanded[Number(card.index)])) collapsedColumns.push(index + 1);
-        });
-        return cards.slice(3).map(function (_card, index) {
-            return index < collapsedColumns.length ? collapsedColumns[index] : null;
+    function packCards(heights, columns, gap) {
+        const count = Math.max(1, Math.min(3, Math.floor(Number(columns) || 1)));
+        const bottoms = Array(count).fill(0);
+        return heights.map(function (height, index) {
+            // Seed the first row left-to-right, then choose the shortest column.
+            // Stable left-to-right tie breaking makes placement deterministic.
+            const column = index < count ? index : bottoms.indexOf(Math.min.apply(null, bottoms));
+            const top = bottoms[column];
+            bottoms[column] = top + Math.max(0, Number(height) || 0) + Math.max(0, Number(gap) || 0);
+            return { column: column + 1, top: top };
         });
     }
 
@@ -69,8 +45,7 @@
     }
 
     return {
-        singleOverflowColumn: singleOverflowColumn,
-        packedOverflowPreferences: packedOverflowPreferences,
+        packCards: packCards,
         hypothesisExpansionPanelRatio: hypothesisExpansionPanelRatio,
         visibleExpandedState: visibleExpandedState,
         isOpeningFirstVisibleExpansion: isOpeningFirstVisibleExpansion,

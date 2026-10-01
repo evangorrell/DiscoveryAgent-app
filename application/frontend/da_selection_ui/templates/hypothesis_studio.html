@@ -3,7 +3,7 @@
 {% block title %}Hypothesis Studio &middot; DiscoveryAgent{% endblock %}
 
 {% block head %}
-<link rel="stylesheet" href="{{ url_for('static', filename='hypothesis_studio.css') }}?v=20261001-card-polish-1">
+<link rel="stylesheet" href="{{ url_for('static', filename='hypothesis_studio.css') }}?v=20261001-layout-final-1">
 <!--
   Configuration for the Hypothesis Studio controller. The count is passed as
   data (default 3, allowed 1-10) so 3 is never hardcoded into the reusable
@@ -239,7 +239,7 @@
      controller consumes them via window.HSEvents. -->
 <script src="{{ url_for('static', filename='hypothesis_events.js') }}?v=20260808-selected-lineage-reindex"></script>
 <!-- Pure visual placement rule for the single fourth-card overflow. -->
-<script src="{{ url_for('static', filename='hypothesis_layout.js') }}?v=20260817-regeneration-independent-expansion"></script>
+<script src="{{ url_for('static', filename='hypothesis_layout.js') }}?v=20261001-layout-final-1"></script>
 <!-- Shared, single-seam round-start action for the Start round overlay button. -->
-<script src="{{ url_for('static', filename='hypothesis_studio.js') }}?v=20261001-card-polish-1"></script>
+<script src="{{ url_for('static', filename='hypothesis_studio.js') }}?v=20261001-layout-final-1"></script>
 {% endblock %}

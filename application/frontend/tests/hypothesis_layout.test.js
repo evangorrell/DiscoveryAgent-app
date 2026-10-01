@@ -33,49 +33,89 @@ function runExpansionPrime({ expanded = {}, height = 300, ratio = 0.3 } = {}) {
     return hypothesisSplit.temporaryExpandedRatio;
 }
 
-const cards = [1, 2, 3, 4].map((index) => ({ index }));
-
-test('fourth card defaults to the center column', () => {
-    assert.equal(HSL.singleOverflowColumn(cards, {}), 2);
+test('three wide cards start left to right even with a long expanded middle card', () => {
+    assert.deepEqual(HSL.packCards([180, 5000, 220], 3, 14), [
+        {column: 1, top: 0}, {column: 2, top: 0}, {column: 3, top: 0},
+    ]);
 });
 
-test('expanded center prefers a collapsed left card, then right', () => {
-    assert.equal(HSL.singleOverflowColumn(cards, { 2: true }), 1);
-    assert.equal(HSL.singleOverflowColumn(cards, { 1: true, 2: true }), 3);
+test('medium layout places Card 3 directly below compact Card 1, not expanded Card 2', () => {
+    assert.deepEqual(HSL.packCards([180, 5000, 220], 2, 14), [
+        {column: 1, top: 0}, {column: 2, top: 0}, {column: 1, top: 194},
+    ]);
 });
 
-test('center remains stable while it is collapsed', () => {
-    assert.equal(HSL.singleOverflowColumn(cards, { 1: true }), 2);
-    assert.equal(HSL.singleOverflowColumn(cards, { 3: true }), 2);
-    assert.equal(HSL.singleOverflowColumn(cards, { 1: true, 3: true }), 2);
+test('expanding Card 1 instead fills the available space beneath Card 2', () => {
+    assert.deepEqual(HSL.packCards([5000, 200, 220], 2, 14)[2], {column: 2, top: 214});
 });
 
-test('all expanded falls back to the center column', () => {
-    assert.equal(HSL.singleOverflowColumn(cards, { 1: true, 2: true, 3: true }), 2);
+test('single column stays in numbered order with exact natural spacing', () => {
+    assert.deepEqual(HSL.packCards([180, 5000, 220], 1, 14), [
+        {column: 1, top: 0}, {column: 1, top: 194}, {column: 1, top: 5208},
+    ]);
 });
 
-test('the overflow rule is scoped to exactly four cards', () => {
-    assert.equal(HSL.singleOverflowColumn(cards.slice(0, 3), {}), null);
-    assert.equal(HSL.singleOverflowColumn(cards.concat({ index: 5 }), {}), null);
+test('four and five-card overflow uses shortest columns rather than rigid rows', () => {
+    assert.deepEqual(HSL.packCards([180, 5000, 200, 150, 190], 3, 14).slice(3), [
+        {column: 1, top: 194}, {column: 3, top: 214},
+    ]);
+    assert.deepEqual(HSL.packCards([180, 5000, 200, 150], 3, 14)[3], {column: 1, top: 194});
 });
 
-const fiveCards = [1, 2, 3, 4, 5].map((index) => ({ index }));
-
-test('five-card packing is inactive while the top row is fully collapsed', () => {
-    assert.equal(HSL.packedOverflowPreferences(fiveCards, {}), null);
+test('collapse and resize recompute positions without stale expanded offsets', () => {
+    const heights = [180, 200, 220];
+    assert.deepEqual(HSL.packCards(heights, 2, 14)[2], {column: 1, top: 194});
+    assert.deepEqual(HSL.packCards(heights, 3, 14)[2], {column: 3, top: 0});
+    assert.deepEqual(heights, [180, 200, 220]);
 });
 
-test('five-card packing fills both remaining collapsed top columns', () => {
-    assert.deepEqual(HSL.packedOverflowPreferences(fiveCards, { 1: true }), [2, 3]);
-    assert.deepEqual(HSL.packedOverflowPreferences(fiveCards, { 2: true }), [1, 3]);
-    assert.deepEqual(HSL.packedOverflowPreferences(fiveCards, { 3: true }), [1, 2]);
+test('ten varying-height cards never overlap in a column and ties stay deterministic', () => {
+    const heights = [180, 190, 5000, 240, 160, 180, 800, 200, 190, 220];
+    for (const columns of [1, 2, 3]) {
+        const positions = HSL.packCards(heights, columns, 14);
+        const bottoms = Array(columns).fill(-14);
+        positions.forEach((p, i) => {
+            assert.equal(p.top, bottoms[p.column - 1] + 14);
+            bottoms[p.column - 1] = p.top + heights[i];
+        });
+    }
 });
 
-test('after the only collapsed column, the next card uses measured shortest-column packing', () => {
-    assert.deepEqual(HSL.packedOverflowPreferences(fiveCards, { 1: true, 2: true }), [3, null]);
-    assert.deepEqual(HSL.packedOverflowPreferences(fiveCards, { 1: true, 3: true }), [2, null]);
-    assert.deepEqual(HSL.packedOverflowPreferences(fiveCards, { 2: true, 3: true }), [1, null]);
-    assert.deepEqual(HSL.packedOverflowPreferences(fiveCards, { 1: true, 2: true, 3: true }), [null, null]);
+test('packing retains direct DOM children and measures untransformed heights after width assignment', () => {
+    const sync = studioSource.slice(studioSource.indexOf('    function syncCardLayout('), studioSource.indexOf('    function renderCard('));
+    assert.match(sync, /cards\.map\(card => card\.offsetHeight\)/);
+    assert.match(sync, /overflowLayoutObserver\.observe\(grid\)/);
+    assert.match(sync, /requestAnimationFrame\(syncPositions\)/);
+    assert.doesNotMatch(sync, /appendChild|insertBefore|\.sort\(|tabIndex|position\s*=\s*['"]absolute/);
+});
+
+test('automatic pane measurement is independent of scroll and only includes the actual first row minimum', () => {
+    const start = studioSource.indexOf('    function rememberCollapsedHypothesisHeight(');
+    const end = studioSource.indexOf('    function hypothesisPanelContextKey(', start);
+    const cards = [{offsetHeight:200}, {offsetHeight:240}, {offsetHeight:220}];
+    const grid = {children:cards, offsetHeight:474};
+    const surface = {scrollTop:2500, querySelector:()=>grid};
+    const els = {cards:{querySelector:()=>surface}, workspaceMain:{classList:{contains:()=>false}}};
+    const style = e => e===grid ? {getPropertyValue:()=> '2'} : {paddingTop:'6px',paddingBottom:'10px'};
+    const split = {};
+    const functions = new Function('els','hypothesisSplit','getComputedStyle','window','hypothesisPanelCollapsedHeightKey',
+        studioSource.slice(start,end)+'\nreturn {rememberCollapsedHypothesisHeight,completeCollapsedHypothesisHeight};'
+    )(els,split,style,{getComputedStyle:style,localStorage:{setItem(){}}},'fixture');
+    functions.rememberCollapsedHypothesisHeight();
+    assert.equal(split.collapsedHeight,256);
+    assert.equal(functions.completeCollapsedHypothesisHeight(),492);
+    surface.scrollTop=0;
+    assert.equal(functions.completeCollapsedHypothesisHeight(),492);
+});
+
+test('stale oversized pane minimum cannot push chat and composer outside the workspace', () => {
+    const start = studioSource.indexOf('    function hypothesisPanelLimits(');
+    const end = studioSource.indexOf('    function applyHypothesisPanelHeight(', start);
+    const limits = new Function('els','hypothesisSplit','visibleOuterHeight','MIN_TRANSCRIPT_PREVIEW_HEIGHT',
+        studioSource.slice(start,end)+'\nreturn hypothesisPanelLimits();'
+    )({workspaceMain:{getBoundingClientRect:()=>({height:800})},chatScope:40,composer:100,workspaceDivider:12},
+        {collapsedHeight:2505},node=>node,88);
+    assert.deepEqual(limits,{min:560,max:560,workspaceHeight:800});
 });
 
 test('expanded-view floor moves a divider above halfway down to halfway', () => {
