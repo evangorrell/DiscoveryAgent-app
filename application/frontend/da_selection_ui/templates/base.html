@@ -6,6 +6,7 @@
     <title>{% block title %}DiscoveryAgent{% endblock %}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=20260929-release-acceptance-1">
     {% block head %}{% endblock %}
+    <link rel="stylesheet" href="{{ url_for('static', filename='round_launch.css', v='20261001-controls-1') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='native_scrollbars.css', v='20260930-native-1') }}">
 </head>
 <body class="v2{% if page_class %} {{ page_class }}{% endif %}">

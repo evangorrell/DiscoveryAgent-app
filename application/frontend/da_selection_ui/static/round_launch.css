@@ -1,0 +1,60 @@
+/* Visual-only overrides for the shared Round Launch dialog. */
+.v2-round-launch-modal .v2-input {
+    min-height: 42px;
+    padding: 8px 12px;
+    font-size: 1.0625rem;
+    line-height: 1.4;
+}
+.v2-round-launch-modal .v2-select { padding-right: 40px; }
+.v2-round-launch-modal #round-launch-queries { width: 160px; max-width: 100%; }
+
+.v2-round-launch-tools input[type="checkbox"] {
+    -webkit-appearance: none;
+    appearance: none;
+    display: grid;
+    place-content: center;
+    box-sizing: border-box;
+    width: 16px;
+    height: 16px;
+    padding: 0;
+    border: 1px solid var(--v2-muted);
+    border-radius: 4px;
+    background: var(--v2-surface);
+    color: #f7faf7;
+    cursor: pointer;
+}
+.v2-round-launch-tools input[type="checkbox"]::before {
+    content: "";
+    width: 8px;
+    height: 4px;
+    border-left: 2px solid currentColor;
+    border-bottom: 2px solid currentColor;
+    transform: translateY(-1px) rotate(-45deg);
+    visibility: hidden;
+}
+.v2-round-launch-tools input[type="checkbox"]:checked {
+    background: var(--v2-accent);
+    border-color: var(--v2-accent);
+}
+.v2-round-launch-tools input[type="checkbox"]:checked::before { visibility: visible; }
+.v2-round-launch-tools .v2-checkbox-row:hover input:not(:disabled) {
+    border-color: var(--v2-accent-hover);
+}
+.v2-round-launch-tools .v2-checkbox-row:hover input:checked:not(:disabled) {
+    background: var(--v2-accent-hover);
+}
+.v2-round-launch-tools input[type="checkbox"]:focus-visible {
+    outline: 2px solid var(--v2-accent);
+    outline-offset: 3px;
+}
+.v2-round-launch-tools input[type="checkbox"]:disabled { opacity: .55; cursor: not-allowed; }
+
+/* Let the OS provide high-contrast checkmarks and colors when requested. */
+@media (forced-colors: active) {
+    .v2-round-launch-tools input[type="checkbox"] {
+        -webkit-appearance: auto;
+        appearance: auto;
+    }
+    .v2-round-launch-tools input[type="checkbox"]::before { display: none; }
+    .v2-round-launch-tools input[type="checkbox"]:focus-visible { outline-color: Highlight; }
+}
