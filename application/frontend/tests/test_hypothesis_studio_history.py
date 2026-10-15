@@ -3465,6 +3465,48 @@ def test_repeated_remove_with_removed_state_id_cannot_delete_shifted_neighbor(mo
     assert gen.hypothesis_state_ids == ["sid-2"]
 
 
+def test_concurrent_remove_cannot_redirect_a_direct_manual_edit(monkeypatch, tmp_path):
+    gen = FakeGenerator(_round_dir(tmp_path))
+    gen.hypotheses = [HYP1, HYP2, HYP3]
+    gen.hypothesis_state_ids = ["sid-1", "sid-2", "sid-3"]
+    client = _wire(monkeypatch, gen)
+    edited = HYP2.replace("Microglial state", "Edited microglial state")
+    removal_done = threading.Event()
+    results = {}
+
+    def remove_first_card():
+        results["remove"] = client.post(
+            "/api/remove_hypothesis", json={"index": 1, "state_id": "sid-1"}
+        ).get_json()
+        removal_done.set()
+
+    original_capture = app_module._capture_hypothesis_operation_state
+
+    def capture_then_race_remove(*args, **kwargs):
+        captured = original_capture(*args, **kwargs)
+        # Remove the card in front of the edited one after the edit resolved
+        # its position but before it commits the new text.
+        worker = threading.Thread(target=remove_first_card)
+        worker.start()
+        removal_done.wait(0.5)
+        results["worker"] = worker
+        return captured
+
+    monkeypatch.setattr(
+        app_module, "_capture_hypothesis_operation_state", capture_then_race_remove
+    )
+    response = client.post("/api/edit", json={
+        "index": 2, "state_id": "sid-2", "manual_hypothesis": edited,
+    }).get_json()
+    results["worker"].join(timeout=2)
+
+    assert response["success"] is True
+    assert results["remove"]["success"] is True
+    assert len(gen.hypotheses) == 2
+    assert "Edited microglial state" in gen.hypotheses[0]
+    assert gen.hypotheses[1] == HYP3
+
+
 def test_remove_final_hypothesis_returns_an_empty_active_set(monkeypatch, tmp_path):
     rd = _round_dir(tmp_path)
     gen = FakeGenerator(rd)

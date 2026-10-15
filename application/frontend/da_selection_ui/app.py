@@ -5402,9 +5402,14 @@ def with_hypothesis_card_operation_lock(operation_name: str, *, direct_manual_is
                 _get_hypothesis_card_operation_lock(session_id, index)
                 if session_id and index > 0 else nullcontext()
             )
+            # A literal manual edit is a short in-memory mutation. Hold the
+            # same state lock as Remove across its whole commit so a removal
+            # cannot shift the card it resolved before the text is written.
+            state_lock = HYPOTHESIS_STATE_LOCK if independent_manual else nullcontext()
             with card_lock:
-                with _session_operation_context(operation_name, serialize=not independent_manual):
-                    return func(*args, **kwargs)
+                with state_lock:
+                    with _session_operation_context(operation_name, serialize=not independent_manual):
+                        return func(*args, **kwargs)
         return _wrapped
     return _decorator
 
