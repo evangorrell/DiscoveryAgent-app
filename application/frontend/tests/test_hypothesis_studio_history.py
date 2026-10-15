@@ -1775,7 +1775,7 @@ def test_studio_render_keeps_pristine_overlay_but_enables_eligible_generation(mo
     assert "hypothesis_studio.css') }}" not in html
     assert "hypothesis_studio.css?v=20261001-review-footer-1" in html
     assert "hypothesis_layout.js?v=20261001-layout-final-1" in html
-    assert "hypothesis_studio.js?v=20261001-footer-stable-1" in html
+    assert "hypothesis_studio.js?v=20261014-manual-draft-1" in html
     assert "hypothesis_events.js?v=20260808-selected-lineage-reindex" in html
     assert "hypothesis_activity.js?v=20260711-unseen-activity" in html
     assert 'Select <span class="v2-arrow" aria-hidden="true">&rarr;</span>' in html

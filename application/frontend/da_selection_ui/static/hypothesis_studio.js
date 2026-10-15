@@ -4013,8 +4013,12 @@
             if (manualEditRequest(idx) !== activeRequest || activeRequest.canceled) return;
             delete activeManualEditRequests[idx];
             if (resp.ok && data && data.success && data.hypothesis) {
-                state.manualEditIndex = null;
-                state.manualEditDraft = '';
+                // Another card's editor may have opened while this save was
+                // in flight. Close only the editor that owns this save.
+                if (state.manualEditIndex === idx) {
+                    state.manualEditIndex = null;
+                    state.manualEditDraft = '';
+                }
                 state.events.push({
                     kind: 'revision', id: nextEventId(), index: idx,
                     source: editingHistorical ? 'historical-edit' : 'revised',
