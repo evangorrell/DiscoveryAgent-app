@@ -2,7 +2,7 @@
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/header-dark.png">
     <source media="(prefers-color-scheme: light)" srcset="docs/assets/header-light.png">
-    <img alt="DiscoveryAgent: scientist-centric agentic AI for long-horizon research you can steer and audit." src="docs/assets/header-light.png" width="100%">
+    <img alt="DiscoveryAgent: long-horizon AI research that you can steer and audit." src="docs/assets/header-light.png" width="100%">
   </picture>
 </p>
 
@@ -14,11 +14,7 @@
   <a href="#paper">Paper</a>
 </p>
 
-<h3 align="center">Agents run the research. You decide what's worth asking.</h3>
-
-DiscoveryAgent is a multi-agent AI system for semi-autonomous scientific research. Give it your data and a research objective, and it carries out iterative investigations: exploring your data, connecting findings to the scientific literature, performing computational analyses, and developing new hypotheses.
-
-Within a hypothesis, a coordinated team of specialized agents plans the investigation, synthesizes the literature, writes and executes analyses, and critiques intermediate findings. Between hypotheses, you select, refine, or replace the next direction. Research unfolds in rounds, each carrying forward the evidence and context of the last, and an Audit Agent lets you trace any claim back to the code and data behind it.
+DiscoveryAgent is a domain-agnostic, scientist-centric AI discovery system. Give it your data and a research objective, and agents investigate autonomously within a hypothesis: exploring your data, connecting findings to the scientific literature, and writing and executing analyses. Between hypotheses, you decide where the research goes, with an Audit Agent that lets you check what any claim actually rests on.
 
 DiscoveryAgent runs locally on your Mac as a persistent research workspace.
 
@@ -26,27 +22,17 @@ DiscoveryAgent runs locally on your Mac as a persistent research workspace.
 
 https://github.com/user-attachments/assets/0ce3b30c-fe8b-4726-8b28-6bfcd3c17de1
 
-## Why DiscoveryAgent
+## The idea
 
-<table>
-  <tr>
-    <td width="33%" valign="top">
-      <sub><code>TRANSPARENCY</code></sub><br>
-      <strong>The research history is an output</strong><br><br>
-      Each round's queries, code, reports, and figures stay in your project, so the work behind a finding remains available to inspect.
-    </td>
-    <td width="33%" valign="top">
-      <sub><code>AUDITABILITY</code></sub><br>
-      <strong>A record you can interrogate</strong><br><br>
-      No one can read every line of agent-written code before each decision. The Audit Agent navigates the investigation for you: find where a claim came from, inspect the analysis behind it, or probe it with a follow-up.
-    </td>
-    <td width="33%" valign="top">
-      <sub><code>STEERABILITY</code></sub><br>
-      <strong>Direct the science, not the keystrokes</strong><br><br>
-      You step in at hypothesis boundaries to choose, edit, or replace the next direction while agents carry out the analyses. Your attention goes where judgment matters.
-    </td>
-  </tr>
-</table>
+### Put scientific judgment where it matters.
+
+Coding agents are interactive, but you have to decompose and supervise every analysis. End-to-end AI scientists run for days, then hand you a report you had no part in. Neither fits how research works: results keep changing which question is worth asking next.
+
+DiscoveryAgent scopes agent autonomy to one hypothesis at a time and puts you at the boundaries. It is built around three requirements.
+
+- **Transparency.** Each round's queries, code, reports, and figures stay in your project. The research history is an output, not exhaust.
+- **Auditability.** No one can read every line of agent-written code before each decision. The Audit Agent traces claims to their evidence and answers follow-up questions about the investigation.
+- **Steerability.** You select, refine, or replace hypotheses as results emerge. Agents handle the well-scoped analyses needed to test them.
 
 ## Quick Start
 
@@ -80,12 +66,11 @@ This starts the local DiscoveryAgent app and opens it in your browser. On first 
   <code>Data &amp; context</code> → <code>Explore</code> → <code>Develop hypotheses</code> → <code>Investigate</code> → <code>Review &amp; audit</code> → <code>Continue</code>
 </p>
 
-| Step | What happens |
-| --- | --- |
-| **Explore & steer** | An exploratory round builds an understanding of your research problem. At each round boundary, the hypothesis agent proposes candidates grounded in everything found so far; you accept, edit, or replace them. |
-| **Investigate** | Agents launch a focused research round on the selected hypothesis and end it with a round report. |
-| **Audit** | Ask the Audit Agent why an analysis was run, where a number came from, or which script produced a figure. It works from the project's reports, code, and supporting evidence, not just the summary. |
-| **Continue** | Choose the next direction. Each round builds on the evidence and context of the last. |
+**Steering: choose the next hypothesis, not the next command.** An exploratory round builds an understanding of your research problem. At the end of each round, a hypothesis agent proposes candidates grounded in the accumulated findings. In **Hypothesis Studio** you pick one, edit it, regenerate, or write your own, and you can question the Audit Agent first. Agents then run a focused round on your selection and end it with a round report.
+
+**Auditing: ask the trace.** The Audit Agent sits outside the research stream and works from the project's record: reports, code, and supporting evidence. Ask it why an analysis was run, where a number came from, or which script produced a figure.
+
+**Continuing.** Each round carries forward the evidence and context of the last, so the investigation deepens over time.
 
 ## App Overview
 
@@ -95,9 +80,9 @@ This starts the local DiscoveryAgent app and opens it in your browser. On first 
 | **Data (Home)** | Register local files and folders, then choose which projects can access them. |
 | **Hypothesis Studio** | Generate, discuss, revise, and select candidate hypotheses. |
 | **Round Workspace** | Follow research activity and browse each round's code, reports, figures, and outputs. |
-| **Reports** | Read a summary or full research round report and inspect supporting analyses and figures. |
+- **Reports.** Read a summary or full research round report and inspect supporting analyses and figures.
 | **Audit Agent** | Ask questions about the investigation and inspect its reports, code, and supporting evidence. |
-| **Skills** | Import project-specific skills for execution agents. |
+- **Skills.** Import project-specific skills for execution agents.
 
 ## Agent System
 
@@ -105,7 +90,7 @@ DiscoveryAgent coordinates several agent roles around an investigation:
 
 | Role | Responsibility |
 | --- | --- |
-| **Director** | Guides the sequence of research queries within a round. |
+- **Director.** Guides the sequence of research queries within a round.
 | **Research & execution agents** | Gather information from the literature and carry out analyses. |
 | **Review agent** | Evaluates intermediate findings and helps refine the investigation. |
 | **Hypothesis agents** | Propose possible next directions at round boundaries. |
