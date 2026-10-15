@@ -119,6 +119,30 @@ test('completed run resists a late running poll for the same run', () => {
     assert.equal(acceptRunStatus({ run_id: runId, status: 'completed' }), true);
 });
 
+test('focusing a split pane preserves its loaded file and scroll state', () => {
+    const focusSource = functionSource('focusPane', 'renderPanes');
+    const classes = [new Set(['is-active']), new Set()];
+    const panes = classes.map((set) => ({
+        classList: { toggle(name, enabled) { enabled ? set.add(name) : set.delete(name); } },
+    }));
+    const state = { activePane: 0 };
+    let persisted = 0;
+    const focusPane = new Function('state', 'els', 'persistViewer',
+        `${focusSource}; return focusPane;`)(
+        state,
+        { panes: { querySelectorAll() { return panes; } } },
+        () => { persisted += 1; },
+    );
+    focusPane(1);
+    assert.equal(state.activePane, 1);
+    assert.equal(classes[0].has('is-active'), false);
+    assert.equal(classes[1].has('is-active'), true);
+    assert.equal(persisted, 1);
+    focusPane(1);
+    assert.equal(persisted, 1);
+    assert.match(source, /pane\.addEventListener\('click',\(\)=>focusPane\(i\)\)/);
+});
+
 test('Activity is round-local and excludes successor lifecycle presentation', () => {
     const render = functionSource('renderActivity', 'renderActivitySelection');
     assert.match(render, /replaceChildren\(summary,renderActivityQueryStream/);

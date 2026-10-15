@@ -427,7 +427,7 @@ test('scrollbar accessibility and cache-safe asset ordering are explicit', () =>
     assert.ok(moduleIndex > 0 && workspaceIndex > moduleIndex);
     assert.match(template, /round_workspace\.css', v='20261001-configuration-polish-1'/);
     assert.match(template, /round_workspace_tab_scrollbar\.js', v='20260823-tab-scrollbar-overflow-1'/);
-    assert.match(template, /round_workspace\.js', v='20261014-run-status-1'/);
+    assert.match(template, /round_workspace\.js', v='20261014-pane-focus-1'/);
 });
 
 test('missing optional scrollbar global or pane container is a safe no-op', () => {

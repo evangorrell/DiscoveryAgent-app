@@ -426,6 +426,14 @@
       });
     }catch(error){reportTabScrollbarFailure(error);}
   }
+  function focusPane(index){
+    // Moving focus between split viewers must not rebuild them; a rebuild
+    // resets loaded content, scroll position, and execution-log polling.
+    if(state.activePane===index)return;
+    state.activePane=index;
+    els.panes.querySelectorAll('.rw-pane').forEach((pane,paneIndex)=>pane.classList.toggle('is-active',paneIndex===index));
+    persistViewer();
+  }
   function renderPanes() {
     clearStandaloneFigureViews();
     clearTabScrollbarControllers();
@@ -433,7 +441,7 @@
     stopExecutionLogPolls();
     els.panes.replaceChildren(); els.empty.hidden = state.panes.length > 0; els.panes.hidden = state.panes.length === 0;
     els.panes.className = 'rw-panes ' + (state.orientation === 'vertical' ? 'is-vertical' : 'is-horizontal');
-    state.panes.forEach((paneModel, i) => { const file=paneModel.tabs[paneModel.activeTab];const pane = node('section','rw-pane' + (i === state.activePane ? ' is-active' : '') + (!file?' is-empty':'')); pane.addEventListener('click',()=>{if(state.activePane!==i){state.activePane=i;renderPanes();}});
+    state.panes.forEach((paneModel, i) => { const file=paneModel.tabs[paneModel.activeTab];const pane = node('section','rw-pane' + (i === state.activePane ? ' is-active' : '') + (!file?' is-empty':'')); pane.addEventListener('click',()=>focusPane(i));
       const head=node('header','rw-pane-header');const tabs=node('div','rw-file-tabs');paneModel.tabs.forEach((tabFile,tabIndex)=>{const tabIsActive=tabIndex===paneModel.activeTab;const tab=node('div','rw-file-tab'+(tabIsActive?' is-active':''));tab.title=fileLocation(tabFile)+' / '+tabFile.path;tab.draggable=true;tab.addEventListener('dragstart',e=>{state.dragFile=tabFile;state.dragSource={pane:i,tab:tabIndex};state.dragKind='workspace-file';e.dataTransfer.effectAllowed='move';e.dataTransfer.setData('application/json',JSON.stringify(tabFile));tab.classList.add('is-dragging');});tab.addEventListener('dragend',()=>{tab.classList.remove('is-dragging');hideDropOverlay();});const label=node('button','rw-file-tab-label',tabFile.name);label.type='button';label.addEventListener('click',e=>{e.stopPropagation();state.activePane=i;paneModel.activeTab=tabIndex;renderPanes();});const close=node('button','rw-file-tab-close','×');close.type='button';close.tabIndex=tabIsActive?0:-1;if(!tabIsActive)close.setAttribute('aria-hidden','true');close.setAttribute('aria-label','Close '+tabFile.name);close.addEventListener('click',e=>{e.stopPropagation();const wasActive=tabIndex===paneModel.activeTab;if(isReport(tabFile))clearReportViewUrl();paneModel.tabs.splice(tabIndex,1);if(!paneModel.tabs.length){state.panes.splice(i,1);state.activePane=0;state.paneRatio=50;}else if(tabIndex<paneModel.activeTab){paneModel.activeTab-=1;}else if(wasActive){paneModel.activeTab=Math.min(tabIndex,paneModel.tabs.length-1);}renderPanes();});tab.append(label,close);tabs.append(tab);});head.append(tabs);
       if(!file){const emptyBody=node('div','rw-pane-empty','Open a file from the round explorer.');pane.append(head,emptyBody);if(state.panes.length===2)pane.style.flex='0 0 '+(i===0?state.paneRatio:100-state.paneRatio)+'%';els.panes.append(pane);if(i===0&&state.panes.length===2)els.panes.append(createPaneDivider());return;}
       const codeSelection=file.sourceKind==='project-code';const breadcrumb=node('nav','rw-pane-breadcrumb');breadcrumb.setAttribute('aria-label','File path');breadcrumb.title=codeSelection?file.path:fileLocation(file)+' / '+file.path;const breadcrumbPath=node('div','rw-pane-breadcrumb-path');if(!codeSelection)breadcrumbPath.append(node('span','rw-breadcrumb-round',fileLocation(file)));String(file.path||file.name).split('/').filter(Boolean).forEach((part,index)=>{if(!codeSelection||index>0){const separator=node('span','rw-breadcrumb-separator','›');separator.setAttribute('aria-hidden','true');breadcrumbPath.append(separator);}breadcrumbPath.append(node('span','rw-breadcrumb-part',part));});breadcrumb.append(breadcrumbPath);const viewControls=artifactViewControls(file);if(viewControls)breadcrumb.append(viewControls);
