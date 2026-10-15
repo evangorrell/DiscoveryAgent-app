@@ -425,6 +425,13 @@ def install_production_release(
         staging_root = paths.root / "staging"
         staging_root.mkdir(parents=True, exist_ok=True)
         previous = existing_installation_state(paths)
+        # A reinstall without an explicit --data-root keeps the project folder
+        # the scientist already chose instead of resetting it to the default.
+        data_root = (
+            Path(previous.data_root)
+            if previous is not None and config.data_root is None
+            else selected.data_root
+        )
         if frontend_checker(paths, previous):
             raise BootstrapError(
                 "DiscoveryAgent is currently running. Stop it before installing."
@@ -525,7 +532,7 @@ def install_production_release(
                 paths,
                 metadata,
                 runtimes,
-                selected.data_root,
+                data_root,
                 path_change.cli_state,
                 previous,
             )

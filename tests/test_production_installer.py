@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from manager.discoveryagent_cli.bootstrap import EnvironmentValidation, install_cli_shim
@@ -356,6 +357,39 @@ class ProductionInstallerTests(unittest.TestCase):
             if path.is_file()
         }
         self.assertEqual(manager_before, manager_after)
+
+    def test_reinstall_without_data_override_keeps_chosen_project_folder(self) -> None:
+        first = self.install_release()
+        chosen = self.root / "chosen projects"
+        write_state_atomic(
+            first.paths.state_file,
+            replace(first.state, data_root=str(chosen)),
+        )
+        config = ProductionInstallConfig(
+            payload_root=self.payload,
+            install_root=self.install,
+            cli_path=self.cli,
+        )
+        install_production_release(
+            config,
+            runtime_acquirer=self.acquire,
+            environment_syncer=self.sync,
+            release_validator=self.validate,
+            frontend_checker=lambda _paths, _state: False,
+        )
+        self.assertEqual(load_state(first.paths.state_file).data_root, str(chosen))
+
+    def test_reinstall_with_explicit_data_override_uses_override(self) -> None:
+        first = self.install_release()
+        write_state_atomic(
+            first.paths.state_file,
+            replace(first.state, data_root=str(self.root / "chosen projects")),
+        )
+        self.install_release()
+        self.assertEqual(
+            load_state(first.paths.state_file).data_root,
+            str(self.data.resolve()),
+        )
 
     def test_state_is_written_only_after_manager_and_cli(self) -> None:
         events: list[str] = []
