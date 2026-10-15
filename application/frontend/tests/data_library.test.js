@@ -284,8 +284,8 @@ test('shared folder rows toggle once from row, caret, name, or keyboard while X 
     assert.match(sourceRenderer, /remove\.addEventListener\('click',[\s\S]*event\.stopPropagation\(\)[\s\S]*options\.onRemove\(entry, remove\)/s);
     assert.match(styleSource, /\.v2-data-source:not\(\.v2-data-source-file\) > \.v2-data-source-row,\s*\.v2-data-tree-folder-row\s*\{\s*cursor:\s*pointer;\s*\}/s);
     assert.match(styleSource, /\.v2-data-source:focus-visible > \.v2-data-source-row,[\s\S]*\.v2-data-tree-item:focus-visible > \.v2-data-tree-row/s);
-    assert.match(dataTemplate, /data_tree\.js'\) \}\}\?v=20261001-preserve-data-1/);
-    assert.match(projectsTemplate, /data_tree\.js'\) \}\}\?v=20261001-preserve-data-1/);
+    assert.match(dataTemplate, /data_tree\.js'\) \}\}\?v=20261014-tree-retry-1/);
+    assert.match(projectsTemplate, /data_tree\.js'\) \}\}\?v=20261014-tree-retry-1/);
 });
 test('dedicated Data page uses the compact shared Skill dropzone empty state', () => {
     assert.match(dataTemplate, /<h1[^>]*id="data-library-title">Data<\/h1>/);

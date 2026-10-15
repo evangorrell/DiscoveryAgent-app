@@ -100,13 +100,19 @@
 
         function wireDirectory(item, row, button, children, name, load) {
             item.tabIndex = 0;
+            let loading = false;
             const toggle = async () => {
                 const opening = button.getAttribute('aria-expanded') !== 'true';
                 setDisclosure(button, item, opening, name);
                 children.hidden = !opening;
-                if (opening && !children.dataset.loaded) {
-                    children.dataset.loaded = 'true';
-                    await load();
+                if (opening && !children.dataset.loaded && !loading) {
+                    loading = true;
+                    children.replaceChildren();
+                    try {
+                        if (await load()) children.dataset.loaded = 'true';
+                    } finally {
+                        loading = false;
+                    }
                 }
             };
             row.addEventListener('click', () => toggle());
@@ -140,8 +146,13 @@
                 children.hidden = true;
                 children.setAttribute('role', 'group');
                 wireDirectory(item, row, disclosure, children, child.name, async () => {
-                    try { await loadChildren(entry, children, child.path, 0, false, rowDepth + 1); }
-                    catch (error) { await handleLoadError('child', error, item, children, entry); }
+                    try {
+                        await loadChildren(entry, children, child.path, 0, false, rowDepth + 1);
+                        return true;
+                    } catch (error) {
+                        await handleLoadError('child', error, item, children, entry);
+                        return false;
+                    }
                 });
                 item.append(row, children);
             } else {
@@ -171,9 +182,16 @@
                 more.type = 'button';
                 more.addEventListener('click', async () => {
                     more.disabled = true;
-                    moreItem.remove();
-                    try { await loadChildren(entry, parent, relative, data.next_cursor, true, depth); }
-                    catch (error) { appendError(parent, error); }
+                    const previousError = moreItem.querySelector('.v2-data-tree-error');
+                    if (previousError) previousError.remove();
+                    try {
+                        await loadChildren(entry, parent, relative, data.next_cursor, true, depth);
+                        moreItem.remove();
+                    } catch (error) {
+                        moreItem.appendChild(node('span', 'v2-data-tree-error', error && error.message
+                            ? error.message : 'Could not open that folder.'));
+                        more.disabled = false;
+                    }
                 });
                 moreItem.appendChild(more);
                 parent.appendChild(moreItem);
@@ -241,8 +259,13 @@
                 tree.hidden = true;
                 tree.setAttribute('role', 'group');
                 wireDirectory(item, row, disclosure, tree, source.display_name, async () => {
-                    try { await loadChildren(entry, tree, '.', 0, false, 1); }
-                    catch (error) { await handleLoadError('source', error, item, tree, entry); }
+                    try {
+                        await loadChildren(entry, tree, '.', 0, false, 1);
+                        return true;
+                    } catch (error) {
+                        await handleLoadError('source', error, item, tree, entry);
+                        return false;
+                    }
                 });
                 item.append(row, tree);
             }
