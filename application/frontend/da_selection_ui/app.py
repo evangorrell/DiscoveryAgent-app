@@ -14036,11 +14036,17 @@ def rewrite_image_sources(
         cleaned = src.lstrip('./')
         return f"{base_prefix}{cleaned}"
 
+    from html import escape, unescape
+
     def _replace(match: re.Match) -> str:
         lead = match.group(1)
         quote = match.group(2)
         src = match.group(3)
-        return f"{lead}{quote}{_rewrite_src(src)}{quote}"
+        # The sanitized src is entity-encoded, and resolving it can follow a
+        # symlink to a filename containing quotes. Decode before resolving
+        # and re-encode the result so it cannot leave the src attribute.
+        rewritten = escape(_rewrite_src(unescape(src)), quote=True)
+        return f"{lead}{quote}{rewritten}{quote}"
 
     return IMG_SRC_PATTERN.sub(_replace, html_content)
 
