@@ -12,7 +12,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from manager.discoveryagent_cli.bootstrap import EnvironmentValidation, install_cli_shim
-from manager.discoveryagent_cli.errors import BootstrapError
+from manager.discoveryagent_cli.errors import ActiveResearchError, BootstrapError
 from manager.discoveryagent_cli.installer import (
     InstallationLock,
     ProductionInstallConfig,
@@ -357,6 +357,56 @@ class ProductionInstallerTests(unittest.TestCase):
             if path.is_file()
         }
         self.assertEqual(manager_before, manager_after)
+
+    def test_existing_active_research_refuses_reinstall_before_runtime_changes(self) -> None:
+        first = self.install_release()
+        state_before = first.paths.state_file.read_bytes()
+
+        def refuse(_state, *, action):
+            self.assertEqual(action, "installing")
+            raise ActiveResearchError("active research round")
+
+        with self.assertRaisesRegex(ActiveResearchError, "active research round"):
+            self.install_release(
+                research_guard=refuse,
+                runtime_acquirer=lambda *_args: self.fail("runtime acquisition must not run"),
+            )
+        self.assertEqual(first.paths.state_file.read_bytes(), state_before)
+
+    def test_research_started_during_environment_setup_refuses_before_manager(self) -> None:
+        first = self.install_release()
+        state_before = first.paths.state_file.read_bytes()
+        calls = 0
+
+        def guard(_state, *, action):
+            nonlocal calls
+            self.assertEqual(action, "installing")
+            calls += 1
+            if calls == 2:
+                raise ActiveResearchError("round started during setup")
+
+        with self.assertRaisesRegex(ActiveResearchError, "round started during setup"):
+            self.install_release(
+                research_guard=guard,
+                manager_installer=lambda *_args: self.fail("manager must not be replaced"),
+            )
+        self.assertEqual(calls, 2)
+        self.assertEqual(first.paths.state_file.read_bytes(), state_before)
+
+    def test_frontend_started_during_environment_setup_refuses_before_manager(self) -> None:
+        first = self.install_release()
+        checks = iter([False, True])
+        with self.assertRaisesRegex(BootstrapError, "currently running"):
+            self.install_release(
+                frontend_checker=lambda _paths, _state: next(checks),
+                manager_installer=lambda *_args: self.fail("manager must not be replaced"),
+            )
+        self.assertEqual(load_state(first.paths.state_file), first.state)
+
+    def test_first_install_does_not_inspect_research(self) -> None:
+        self.install_release(
+            research_guard=lambda *_args, **_kwargs: self.fail("no previous state to inspect"),
+        )
 
     def test_reinstall_without_data_override_keeps_chosen_project_folder(self) -> None:
         first = self.install_release()
