@@ -20514,6 +20514,15 @@ def api_remove_hypothesis():
         return pending_card_lock
 
     idx, idx_error = _resolve_hypothesis_index(generator, raw_idx, state_id)
+    if idx_error == 'stale_state' and _hypothesis_state_id_was_removed(state_id):
+        # A repeated or retried remove of an already removed card must not
+        # fall back to its old position, which now holds the next card.
+        return jsonify({
+            'success': False,
+            'error': 'That hypothesis was already removed. Re-open the current list.',
+            'stale_selection': True,
+            'removed': True,
+        })
     if idx_error == 'stale_state':
         # Remove is a card-position operation. If the card's version id is stale
         # but the displayed index still exists, remove that current slot instead

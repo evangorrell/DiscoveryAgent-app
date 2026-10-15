@@ -3447,6 +3447,24 @@ def test_remove_hypothesis_falls_back_to_index_when_state_id_is_stale(monkeypatc
     assert gen.hypotheses == [HYP2]
 
 
+def test_repeated_remove_with_removed_state_id_cannot_delete_shifted_neighbor(monkeypatch, tmp_path):
+    rd = _round_dir(tmp_path)
+    gen = FakeGenerator(rd)
+    gen.hypotheses = [HYP1, HYP2]
+    gen.hypothesis_state_ids = ["sid-1", "sid-2"]
+    client = _wire(monkeypatch, gen)
+
+    first = client.post("/api/remove_hypothesis", json={"index": 1, "state_id": "sid-1"})
+    assert first.get_json()["success"] is True
+    repeated = client.post("/api/remove_hypothesis", json={"index": 1, "state_id": "sid-1"})
+    payload = repeated.get_json()
+
+    assert payload["success"] is False
+    assert payload["removed"] is True
+    assert gen.hypotheses == [HYP2]
+    assert gen.hypothesis_state_ids == ["sid-2"]
+
+
 def test_remove_final_hypothesis_returns_an_empty_active_set(monkeypatch, tmp_path):
     rd = _round_dir(tmp_path)
     gen = FakeGenerator(rd)
