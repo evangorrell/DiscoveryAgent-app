@@ -1,48 +1,73 @@
-# DiscoveryAgent
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/header-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/header-light.png">
+    <img alt="DiscoveryAgent: scientist-centric agentic AI for long-horizon research you can steer and audit." src="docs/assets/header-light.png" width="100%">
+  </picture>
+</p>
 
-DiscoveryAgent is a multi-agent AI system for semi-autonomous scientific research. Give it your data and a research objective, and it carries out iterative scientific investigations—exploring your data, connecting findings to the scientific literature, performing computational analyses, and developing new hypotheses.
+<p align="center">
+  <a href="#quick-start"><strong>Install</strong></a> &nbsp;·&nbsp;
+  <a href="#see-it-in-action">Demo</a> &nbsp;·&nbsp;
+  <a href="#how-it-works">How it works</a> &nbsp;·&nbsp;
+  <a href="docs/user-guide.md">User guide</a> &nbsp;·&nbsp;
+  <a href="#paper">Paper</a>
+</p>
 
-Once you select a hypothesis, a coordinated team of specialized AI agents plans the investigation, searches and synthesizes the literature, writes and executes analyses, critiques intermediate findings, and builds on what it learns. Research unfolds in rounds, with each round carrying forward the evidence and context from the last so the investigation can deepen over time.
+<h3 align="center">Agents run the research. You decide what's worth asking.</h3>
+
+DiscoveryAgent is a multi-agent AI system for semi-autonomous scientific research. Give it your data and a research objective, and it carries out iterative investigations: exploring your data, connecting findings to the scientific literature, performing computational analyses, and developing new hypotheses.
+
+Within a hypothesis, a coordinated team of specialized agents plans the investigation, synthesizes the literature, writes and executes analyses, and critiques intermediate findings. Between hypotheses, you select, refine, or replace the next direction. Research unfolds in rounds, each carrying forward the evidence and context of the last, and an Audit Agent lets you trace any claim back to the code and data behind it.
 
 DiscoveryAgent runs locally on your Mac as a persistent research workspace.
 
-<details>
-<summary><strong> Watch the 30-second DiscoveryAgent demo</strong></summary>
+## See it in action
 
 https://github.com/user-attachments/assets/0ce3b30c-fe8b-4726-8b28-6bfcd3c17de1
 
-</details>
+## Why DiscoveryAgent
+
+<table>
+  <tr>
+    <td width="33%" valign="top">
+      <sub><code>TRANSPARENCY</code></sub><br>
+      <strong>The research history is an output</strong><br><br>
+      Each round's queries, code, reports, and figures stay in your project, so the work behind a finding remains available to inspect.
+    </td>
+    <td width="33%" valign="top">
+      <sub><code>AUDITABILITY</code></sub><br>
+      <strong>A record you can interrogate</strong><br><br>
+      No one can read every line of agent-written code before each decision. The Audit Agent navigates the investigation for you: find where a claim came from, inspect the analysis behind it, or probe it with a follow-up.
+    </td>
+    <td width="33%" valign="top">
+      <sub><code>STEERABILITY</code></sub><br>
+      <strong>Direct the science, not the keystrokes</strong><br><br>
+      You step in at hypothesis boundaries to choose, edit, or replace the next direction while agents carry out the analyses. Your attention goes where judgment matters.
+    </td>
+  </tr>
+</table>
 
 ## Quick Start
 
-### Requirements
+> **Requirements:** an Apple Silicon Mac running macOS 15 or newer, and an Anthropic API key.<br>
+> The installer manages the application runtime and dependencies for you. Paperclip authentication for literature research is handled during setup.
 
-- **Apple Silicon Mac, macOS 15 or newer**
-- **Anthropic API key**
-
-The installer manages the application runtime and dependencies for you. Paperclip authentication for literature research is handled during setup.
-
-### Install
+**1. Install**
 
 ```bash
 curl -fsSL https://github.com/evangorrell/DiscoveryAgent-app/releases/latest/download/install.sh | sh
 ```
 
-This installs DiscoveryAgent and everything it needs to run.
-
-### Run
-
-After installation, open a new Terminal window and run:
+**2. Launch.** Open a new Terminal window and run:
 
 ```bash
 discoveryagent
 ```
 
-This launches the local DiscoveryAgent app and opens it in your browser.
+This starts the local DiscoveryAgent app and opens it in your browser. On first launch, follow the Terminal prompts for your project folder, Anthropic API key, and Paperclip sign-in; prompts for credentials that are already configured are skipped. Keep Terminal open while using the app, and press **Ctrl+C** there when finished.
 
-On first launch, follow the Terminal prompts for your project folder, Anthropic API key, and Paperclip sign-in. If credentials are already configured, those prompts are skipped. Keep Terminal open while using the app; press **Ctrl+C** there when finished.
-
-### Your first investigation
+**3. Run your first investigation**
 
 1. **Add your data.** Register the files or folders you want DiscoveryAgent to work with.
 2. **Create a project.** Select your data, provide a research objective, and add relevant scientific context.
@@ -51,9 +76,16 @@ On first launch, follow the Terminal prompts for your project folder, Anthropic 
 
 ## How It Works
 
-**Data & context → Explore → Develop hypotheses → Investigate → Review & audit → Continue**
+<p align="center">
+  <code>Data &amp; context</code> → <code>Explore</code> → <code>Develop hypotheses</code> → <code>Investigate</code> → <code>Review &amp; audit</code> → <code>Continue</code>
+</p>
 
-Start with an exploratory round to build an understanding of your research problem. Use those findings to develop and select a hypothesis, then launch a focused research round. Review the evidence, question the results with the Audit Agent, and choose the next direction.
+| Step | What happens |
+| --- | --- |
+| **Explore & steer** | An exploratory round builds an understanding of your research problem. At each round boundary, the hypothesis agent proposes candidates grounded in everything found so far; you accept, edit, or replace them. |
+| **Investigate** | Agents launch a focused research round on the selected hypothesis and end it with a round report. |
+| **Audit** | Ask the Audit Agent why an analysis was run, where a number came from, or which script produced a figure. It works from the project's reports, code, and supporting evidence, not just the summary. |
+| **Continue** | Choose the next direction. Each round builds on the evidence and context of the last. |
 
 ## App Overview
 
@@ -69,10 +101,19 @@ Start with an exploratory round to build an understanding of your research probl
 
 ## Agent System
 
-DiscoveryAgent coordinates several agent roles around an investigation. A Director agent guides the sequence of research queries; research and execution agents gather information and carry out analyses. A review agent evaluates intermediate findings and helps refine the investigation, while hypothesis-generation agents propose possible next directions. Memory and reporting components retain context across the work and assemble results for review.
+DiscoveryAgent coordinates several agent roles around an investigation:
 
-These roles connect literature, analysis, and interpretation across research rounds. In the app, you set the objective, make data available, select hypotheses, and decide when to continue. Agents generate reports, code, and figures to let you examine how a result was reached.
+| Role | Responsibility |
+| --- | --- |
+| **Director** | Guides the sequence of research queries within a round. |
+| **Research & execution agents** | Gather information from the literature and carry out analyses. |
+| **Review agent** | Evaluates intermediate findings and helps refine the investigation. |
+| **Hypothesis agents** | Propose possible next directions at round boundaries. |
+| **Memory & reporting** | Retain context across rounds and assemble results for review. |
 
+In the app, you set the objective, make data available, select hypotheses, and decide when to continue. Agents produce reports, code, and figures so you can examine how each result was reached.
+
+> [!NOTE]
 > For more details on the technical architecture, evaluation, and scientific methodology, see the accompanying [paper](#paper).
 
 ## Skills
@@ -106,11 +147,12 @@ See [Updating and troubleshooting](docs/user-guide.md#updating-and-troubleshooti
 
 The interface, project files, and analysis environment run locally on your Mac. Registered input data stays at its original location; keep those files available when reopening or moving a project.
 
-**Local does not mean offline.** Research uses external services, including Anthropic and Paperclip; relevant data, excerpts, and research context may be sent to them. Agents can generate and execute code locally. Use only data permitted by your organization's policies.
+> [!IMPORTANT]
+> **Local does not mean offline.** Research uses external services, including Anthropic and Paperclip; relevant data, excerpts, and research context may be sent to them. Agents can generate and execute code locally. Use only data permitted by your organization's policies.
 
 ## Documentation
 
-- [User Guide](docs/user-guide.md) — authentication, project data, models, skills, updating, and troubleshooting
+- [User Guide](docs/user-guide.md): authentication, project data, models, skills, updating, and troubleshooting
 
 ## Paper
 
