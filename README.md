@@ -28,7 +28,7 @@ https://github.com/user-attachments/assets/0ce3b30c-fe8b-4726-8b28-6bfcd3c17de1
 
 Coding agents are interactive, but you have to decompose and supervise every analysis. End-to-end AI scientists run for days, then hand you a report you had no part in. Neither fits how research works: results keep changing which question is worth asking next.
 
-DiscoveryAgent scopes agent autonomy to one hypothesis at a time and puts you at the boundaries. It is built around three requirements.
+DiscoveryAgent scopes agent autonomy to one hypothesis at a time and puts you at the boundaries. It is built around three requirements:
 
 - **Transparency.** Each round's queries, code, reports, and figures stay in your project. The research history is an output, not exhaust.
 - **Auditability.** No one can read every line of agent-written code before each decision. The Audit Agent traces claims to their evidence and answers follow-up questions about the investigation.
@@ -80,9 +80,9 @@ This starts the local DiscoveryAgent app and opens it in your browser. On first 
 | **Data (Home)** | Register local files and folders, then choose which projects can access them. |
 | **Hypothesis Studio** | Generate, discuss, revise, and select candidate hypotheses. |
 | **Round Workspace** | Follow research activity and browse each round's code, reports, figures, and outputs. |
-- **Reports.** Read a summary or full research round report and inspect supporting analyses and figures.
+| **Reports** | Read a summary or full research round report and inspect supporting analyses and figures. |
 | **Audit Agent** | Ask questions about the investigation and inspect its reports, code, and supporting evidence. |
-- **Skills.** Import project-specific skills for execution agents.
+| **Skills** | Import project-specific skills for execution agents. |
 
 ## Agent System
 
@@ -90,7 +90,7 @@ DiscoveryAgent coordinates several agent roles around an investigation:
 
 | Role | Responsibility |
 | --- | --- |
-- **Director.** Guides the sequence of research queries within a round.
+| **Director** | Guides the sequence of research queries within a round. |
 | **Research & execution agents** | Gather information from the literature and carry out analyses. |
 | **Review agent** | Evaluates intermediate findings and helps refine the investigation. |
 | **Hypothesis agents** | Propose possible next directions at round boundaries. |
