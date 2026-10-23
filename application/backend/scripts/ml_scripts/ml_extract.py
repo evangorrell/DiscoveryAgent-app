@@ -62,7 +62,7 @@ IMPORTANT: Your job is to translate the existing ML model into the required form
 
 
 def parse_stream_message(message) -> str:
-    """Best-effort formatter for Claude Code streamed messages for readable stdout."""
+    """Format Claude Code streamed messages for readable stdout."""
     msg_str = str(message)
     try:
         if "SystemMessage" in msg_str and "subtype='init'" in msg_str:

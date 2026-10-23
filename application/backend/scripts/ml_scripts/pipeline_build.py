@@ -59,7 +59,7 @@ IMPORTANT: Focus on creating a robust ML pipeline that can handle various types 
 
 
 def parse_stream_message(message) -> str:
-    """Best-effort formatter for Claude Code streamed messages for readable stdout."""
+    """Format Claude Code streamed messages for readable stdout."""
     msg_str = str(message)
     try:
         if "SystemMessage" in msg_str and "subtype='init'" in msg_str:

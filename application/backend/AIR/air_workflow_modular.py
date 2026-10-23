@@ -84,7 +84,7 @@ class AIRWorkflowModular:
                  review_search = False,
                  review_design = False,
                  review_designer_llm_config = None,
-                 report_summarization_llm_config = None, # TODO: will need to update this in the future if we want it to be multi-agent
+                 report_summarization_llm_config = None,
                  explicit_hypothesis_step = None,
                  exploratory_phase_warmup_steps = None,
                  hold_reviews_in_exploratory_phase = True,
@@ -549,7 +549,7 @@ class AIRWorkflowModular:
             if self.multiturn_hypothesis:
                 dir_tokens = self.director_agent.estimate_context_tokens()
             else:
-                dir_tokens = 0 # TODO: Move this functionality back to director agent
+                dir_tokens = 0
             self.logger.log_action("director_context_tokens", f"query={query_num}, tokens={dir_tokens}")
 
             # Generate query from director agent
@@ -577,9 +577,6 @@ class AIRWorkflowModular:
                 break  # Exit while loop
             
             self.logger.log_response(f"Generated query: {query}", "hypothesis_agent")
-            
-            # Reset conversation context for new query
-            # TODO: reset conversation context for all agents
             
             # Execute query with CodeAct execution agent
             self.logger.log_action("execute_query", f"Executing query {query_num} with CodeAct framework")

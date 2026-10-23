@@ -3140,8 +3140,6 @@ body.v2 .hs-welcome-heading {
     margin-top: 0;
 }
 
-/* Quiet pending line beneath a Start round button (round_start.js reveals it).
-   Not an error; a calm note that the launch is not yet connected. */
 .v2-start-round-note {
     margin: 14px 0 0;
     font-family: var(--v2-sans);

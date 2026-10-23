@@ -678,8 +678,7 @@ def _remove_feedback_from_memory_report(round_dir: Path) -> bool:
 
 
 def _locate_selected_hypothesis_context(active_round_dir: Path) -> Path | None:
-    """
-    Best-effort, display-only lookup of selected_hypothesis.md for context.
+    """Locate selected_hypothesis.md for display context.
 
     Search order: round_{N-1}/selected_hypothesis.md (where selection for the
     active round is typically recorded), then active_round_dir itself as a
@@ -748,7 +747,7 @@ def _extract_hypothesis_display_text(raw_text: str | None) -> str:
 
     # Fallback: no usable "Hypothesis" label found. Drop any Title line and
     # anything from "Justification" onward, then take the first substantial
-    # paragraph as the best-effort hypothesis text.
+    # paragraph as the hypothesis text.
     no_title = _TITLE_LABEL_LINE_RE.sub('', text)
     justification_match = _JUSTIFICATION_LABEL_RE.search(no_title)
     if justification_match:
@@ -880,8 +879,7 @@ def _infer_query_statuses(
     has_round_report: bool,
     log_text: str | None,
 ) -> dict[str, str]:
-    """
-    Best-effort completed/in_progress status per query_* dir.
+    """Infer completed/in_progress status for each query_* directory.
 
     Heuristics (filesystem/log evidence only, never raised as an error):
       - If round_report.md exists, every query is 'completed'.
@@ -943,8 +941,7 @@ def _infer_query_description(
     log_text: str | None,
     exclude: set[str] | None = None,
 ) -> str:
-    """
-    Best-effort one-line description of what a query_* dir is/was doing.
+    """Infer a one-line description of a query_* directory's work.
 
     Priority: query_NNN/query_NNN.md labeled field or first meaningful
     paragraph -> nearby log mentions -> generic fallback. Generic headings
@@ -1592,7 +1589,7 @@ def _checkpoint_predates_round_event(round_dir: Path, timestamp: object) -> bool
 
 def _scan_log_for_query_timing(log_text: str | None) -> dict[int, dict]:
     """
-    Single forward pass over the log producing best-effort timing evidence
+    Scan the log once to collect timing evidence
     per numeric query index: {'started_at', 'completed_at', 'had_checkpoint',
     'had_markdown'}. This is the sole source of "WHEN" for query events; the
     query directories/files themselves (see _infer_query_description) supply
@@ -2052,7 +2049,7 @@ _SPACE_TIMESTAMP_RE = re.compile(r'^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})')
 
 def _normalize_activity_timestamp(raw: str | float | None) -> str | None:
     """
-    Best-effort reformat of a timestamp already produced elsewhere in this
+    Reformat a timestamp already produced elsewhere in this
     file (log-derived "%Y-%m-%d %H:%M:%S" strings, mtime fallbacks, or
     whatever a query_status.json/round_activity.jsonl writer used) into an
     ISO-8601-shaped string for the frontend. This is a syntactic reformat
@@ -3818,7 +3815,7 @@ def _build_discovery_query_item(
 
 
 def _infer_round_event_source(message: str, log_name: str | None, round_dir: Path) -> str:
-    """Best-effort provenance label for a round-level (non-query) timeline row."""
+    """Return the provenance label for a round-level timeline row."""
     if message in _ROUND_ACTIVITY_EVENT_LABELS.values() and (round_dir / 'round_activity.jsonl').exists():
         return 'round_activity.jsonl'
     if log_name:
@@ -8212,7 +8209,7 @@ def api_hypothesis_history_round(round_index):
     Source preference, deterministic and truthful:
       1. The durable per-round event log (hypothesis_studio_history.json) when
          present — the authoritative full chronology going forward.
-      2. Otherwise a best-effort reconstruction from artifacts that DO exist
+      2. Otherwise reconstruct from artifacts that exist
          (generated_hypotheses.json, a legacy interactive session, and the same
          set's selected hypothesis),
          marked partial_history=True. Never
@@ -9029,7 +9026,7 @@ def _v2_rollback_project_edit(
     registry_before: bytes | None,
     registry_write_attempted: bool,
 ) -> list[str]:
-    """Best-effort rollback for an Edit transaction, with explicit failures."""
+    """Roll back an Edit transaction and return explicit failures."""
     errors: list[str] = []
     try:
         _v2_rollback_project_relocation(relocation)
@@ -13795,7 +13792,7 @@ def api_project_objective():
 
 
 def _load_readme_content(readme_path: str):
-    """Best-effort loader for the dataset README content."""
+    """Load the dataset README content."""
     normalized_path = _clean_path_value(readme_path)
     if not normalized_path:
         return None, 'No README path configured'
@@ -14068,7 +14065,7 @@ def render_report_html(md_text: str, generator: InteractiveHypothesisGenerator |
 
 
 def _load_text_file(path: Path) -> str:
-    """Best-effort UTF-8 file reader with logging."""
+    """Read a UTF-8 text file and log failures."""
     try:
         return path.read_text(encoding='utf-8')
     except Exception as exc:
@@ -17939,9 +17936,8 @@ def _studio_hypothesis_snapshot(generator, index: int, full_text: str | None = N
 def _studio_record_events(round_dir, events: list, *, strict: bool = False) -> dict | None:
     """Append events, optionally surfacing a persistence failure to the caller.
 
-    Normal history instrumentation remains best-effort. Historical-result
-    activation uses ``strict=True`` because its content and thread association
-    must be committed together or rolled back together.
+    Historical-result activation uses ``strict=True`` because its content and
+    thread association must be committed together or rolled back together.
     """
     if not round_dir or not events:
         return None
@@ -18191,7 +18187,7 @@ def _studio_pending_selection(generator) -> dict | None:
 
     # New events carry the exact card index. Require the event snapshot itself
     # to match the canonical file so this still works before the generator has
-    # hydrated its cards, without letting stale/best-effort history outrank
+    # hydrated its cards, without letting stale history outrank
     # selected_hypothesis.md.
     try:
         recorded_index = int(selected_snapshot.get('index'))
@@ -18249,7 +18245,7 @@ def _studio_pending_selection(generator) -> dict | None:
             }
 
     # The canonical selected snapshot normally matches exactly one current
-    # card. Prefer that direct association over best-effort event history.
+    # card. Prefer that direct association over event history.
     exact_indexes = [
         index for index, hypothesis in enumerate(hypotheses, 1)
         if str(hypothesis or '').strip() == selected_text
@@ -21007,7 +21003,7 @@ def api_select():
         # Durable chronology: the selection is the round's closing substantive
         # event. Snapshot the exact final scientific artifact the scientist
         # selected (hypothesis/justification/optional plan). Only reached after
-        # selected_hypothesis.md was persisted above; best-effort, non-fatal.
+        # selected_hypothesis.md was persisted above.
         if not CLI_DRY_RUN:
             _studio_record_selection(generator, {
                 'index': selection_index,

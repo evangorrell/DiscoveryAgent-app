@@ -44,7 +44,6 @@ def _update_symlink(link_path: Path, target: Path) -> None:
             link_path.unlink()
         link_path.symlink_to(target)
     except OSError:
-        # Symlink creation is best-effort only.
         return
 
 

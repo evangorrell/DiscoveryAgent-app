@@ -250,7 +250,7 @@ class HypothesisBrancher:
         round_report_path: str,
         memory_report_path: str,
     ) -> None:
-        """Best-effort summary generation after both full reports are durable."""
+        """Generate summaries after both full reports are durable."""
         summary_config = getattr(workflow, "report_summarization_llm_config", None)
         if summary_config is None:
             summary_config = self.workflow_config.report_summarization_llm_config
@@ -670,11 +670,6 @@ class HypothesisBrancher:
         # For subsequent rounds, you can incorporate insights from previous results
         round_info = f"\n\n--- Round {round_idx + 1} ---\n"
         round_info += f"Building upon insights from {len(previous_results)} previous workflow runs.\n"
-        
-        # TODO: Customize this based on your needs - you could:
-        # - Summarize findings from previous rounds
-        # - Incorporate hypotheses from results_memory
-        # - Add specific directions based on what was learned
         
         return base_task + round_info
     

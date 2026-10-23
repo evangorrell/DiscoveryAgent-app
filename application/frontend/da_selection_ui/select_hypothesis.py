@@ -1284,8 +1284,7 @@ class InteractiveHypothesisGenerator:
         return self._refinement_baseline_snapshot
 
     def _refinement_baseline(self) -> str:
-        """The generation-time baseline snapshot, or a best-effort rebuild when
-        no snapshot exists (e.g. legacy data restored without one)."""
+        """Return the generation-time baseline, rebuilding it when absent."""
         snapshot = getattr(self, '_refinement_baseline_snapshot', None)
         if snapshot:
             return self._sanitize_refinement_baseline_labels(snapshot)
@@ -1719,8 +1718,7 @@ Expected title style — a good **Title** is concise, title-like, specific enoug
 
         Writes <checkpoint_dir>/generated_hypotheses.json and .md using a
         write-temp-then-rename pattern so readers never see a partial file.
-        Best-effort: failures are logged but never raised, since this should
-        never block a generate/edit/regenerate request from succeeding.
+        Persistence failures are logged without blocking the request.
         """
         try:
             if not self.hypotheses:
@@ -1769,7 +1767,7 @@ Expected title style — a good **Title** is concise, title-like, specific enoug
 
         Called at the start of a full regeneration so stale files cannot be
         restored if the new generation fails or the session is restarted.
-        Best-effort: failures are logged but never raised.
+        Deletion failures are logged without blocking regeneration.
         """
         for fname in ("generated_hypotheses.json", "generated_hypotheses.md"):
             try:
