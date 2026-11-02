@@ -26,12 +26,10 @@ https://github.com/user-attachments/assets/0ce3b30c-fe8b-4726-8b28-6bfcd3c17de1
 
 ### Put scientific judgment where it matters.
 
-Coding agents are interactive, but you have to decompose and supervise every analysis. End-to-end AI scientists run for days, then hand you a report you had no part in. Neither fits how research works: results keep changing which question is worth asking next.
-
 DiscoveryAgent scopes agent autonomy to one hypothesis at a time and puts you at the boundaries. It is built around three requirements:
 
-- **Transparency.** Each round's queries, code, reports, and figures stay in your project. The research history is an output, not exhaust.
-- **Auditability.** No one can read every line of agent-written code before each decision. The Audit Agent traces claims to their evidence and answers follow-up questions about the investigation.
+- **Transparency.** Each round's queries, code, reports, and figures stay in your project.
+- **Auditability.** The Audit Agent uses the project's reports, code, and supporting evidence to answer follow-up questions about the investigation.
 - **Steerability.** You select, refine, or replace hypotheses as results emerge. Agents handle the well-scoped analyses needed to test them.
 
 ## Quick Start
@@ -141,21 +139,4 @@ The interface, project files, and analysis environment run locally on your Mac. 
 
 ## Paper
 
-**[Paper Title](paper-url)**<br>
-Authors...
-
-<!-- PUBLICATION: PAPER AND CITATION
-Replace Paper Title, paper-url, and Authors... above with the approved details.
-Add the final BibTeX citation below and keep the Agent System callout pointing
-to this Paper section.
-Required: title, authors, public URL, and approved BibTeX. Do not infer a venue,
-DOI, arXiv identifier, or publication date.
--->
-
-### Citation
-
-```bibtex
-```
-
-<!-- PUBLICATION: Add the approved license notice and link before publication.
-License and publication approval are pending; no license is asserted here. -->
+Paper and citation details will be added when available.
