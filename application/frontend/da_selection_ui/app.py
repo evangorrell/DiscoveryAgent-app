@@ -89,6 +89,7 @@ from .utils.memory_monitor import (
 try:
     # Prefer package-relative imports when installed
     from .select_hypothesis import (
+        HYPOTHESIS_STATE_LOCK,
         InteractiveHypothesisGenerator,
         display_card_title,
         parse_hypothesis_sections_text,
@@ -99,6 +100,7 @@ except Exception:
     # Fallback for running as a loose script
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from select_hypothesis import (
+        HYPOTHESIS_STATE_LOCK,
         InteractiveHypothesisGenerator,
         display_card_title,
         parse_hypothesis_sections_text,
@@ -220,7 +222,6 @@ REMOVED_HYPOTHESIS_STATE_IDS_LOCK = threading.Lock()
 # Literal manual edits do not use the shared LLM agent, so they may commit on
 # one card while another card's LLM call is in flight. These short locks keep
 # shared candidate identities and on-disk snapshots coherent at commit time.
-HYPOTHESIS_STATE_LOCK = threading.RLock()
 HYPOTHESIS_PERSIST_LOCK = threading.RLock()
 AUDIT_CHAT_JOBS: dict[str, dict] = {}
 AUDIT_CHAT_JOBS_LOCK = threading.Lock()
@@ -5218,6 +5219,15 @@ def _seed_hypothesis_from_request_draft(
     if idx < 1:
         return False
 
+    state_id = sanitize_field(raw_state_id, 64) if raw_state_id is not None else ''
+    state_id = state_id.strip() if isinstance(state_id, str) else ''
+    # Existing cards may have shifted; removed cards must not be recreated.
+    if state_id and (
+        state_id in _ensure_hypothesis_state_ids(generator)
+        or _hypothesis_state_id_was_removed(state_id)
+    ):
+        return False
+
     hypotheses = list(getattr(generator, 'hypotheses', []) or [])
     if idx <= len(hypotheses) and str(hypotheses[idx - 1] or '').strip():
         return False
@@ -5228,8 +5238,6 @@ def _seed_hypothesis_from_request_draft(
     generator.hypotheses = hypotheses
 
     state_ids = _ensure_hypothesis_state_ids(generator)
-    state_id = sanitize_field(raw_state_id, 64) if raw_state_id is not None else ''
-    state_id = state_id.strip() if isinstance(state_id, str) else ''
     if state_id and idx <= len(state_ids):
         state_ids[idx - 1] = state_id
         generator.hypothesis_state_ids = state_ids
@@ -20546,6 +20554,7 @@ def api_remove_hypothesis():
         _remember_removed_hypothesis_state_id(
             removed_snapshot.get('state_id') or state_id
         )
+        _remember_removed_hypothesis_state_id(state_id)
 
         # Drop the removed slot's state id FIRST so the surviving hypotheses
         # keep their original (stable) state ids after the index shift.

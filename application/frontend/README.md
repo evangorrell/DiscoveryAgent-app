@@ -1,8 +1,8 @@
 # DiscoveryAgent Frontend
 
-This repository contains the local web interface for DiscoveryAgent. It provides the workspace for creating research projects, developing hypotheses, following autonomous research rounds, reviewing results, importing execution-agent skills, and auditing project state.
+This directory contains the local web interface for DiscoveryAgent. It provides the workspace for creating research projects, developing hypotheses, following autonomous research rounds, reviewing results, importing execution-agent skills, and auditing project state.
 
-Autonomous research execution is provided by the separate [`discoveryagent`](https://github.com/owencqueen/discoveryagent) backend repository.
+Autonomous research execution is provided by the backend in [`../backend`](../backend).
 
 ## What the frontend provides
 
@@ -13,7 +13,7 @@ Autonomous research execution is provided by the separate [`discoveryagent`](htt
 - **Skills** — import project-specific instructions that are made available to the execution agent.
 - **Audit Agent** — conversationally investigate project research, code, checkpoints, and supporting context.
 
-The frontend can manage projects and browse existing research artifacts on its own. Starting, resuming, or resubmitting autonomous research rounds requires a local checkout of the DiscoveryAgent backend.
+The frontend can manage projects and browse existing research artifacts on its own. Starting, resuming, or resubmitting autonomous research rounds requires a configured DiscoveryAgent backend.
 
 ## Requirements
 
@@ -24,35 +24,35 @@ Node.js is only required to run the frontend JavaScript tests.
 
 ## Setup
 
-A convenient source layout places the frontend and backend beside one another:
+The app checkout places the frontend and backend beside one another:
 
 ```text
-workspace/
-├── DA_selection_ui/
-└── discoveryagent/
+application/
+├── frontend/
+└── backend/
 ```
 
 Install the frontend dependencies:
 
 ```bash
-cd /path/to/DA_selection_ui
+cd /path/to/DiscoveryAgent-app/application/frontend
 uv sync --python 3.11
 ```
 
-Configure the backend separately by following the [`discoveryagent`](https://github.com/owencqueen/discoveryagent) README.
+Configure the backend separately by following its [setup instructions](../backend/setup/README.md).
 
 With the sibling layout above, the frontend automatically resolves:
 
 ```text
-../discoveryagent
-../discoveryagent/.venv/bin/python
+../backend
+../backend/.venv/bin/python
 ```
 
 For another layout, set the backend paths before launching the frontend:
 
 ```bash
-export DISCOVERYAGENT_BACKEND_ROOT="/path/to/discoveryagent"
-export DISCOVERYAGENT_BACKEND_PYTHON="/path/to/discoveryagent/.venv/bin/python"
+export DISCOVERYAGENT_BACKEND_ROOT="/path/to/backend"
+export DISCOVERYAGENT_BACKEND_PYTHON="/path/to/backend/.venv/bin/python"
 ```
 
 These settings are only required for operations that launch the autonomous backend.
@@ -69,7 +69,7 @@ Set the key before launching the frontend and restart the frontend after changin
 
 ## Run the frontend
 
-From the frontend repository:
+From `application/frontend`:
 
 ```bash
 uv run python -m da_selection_ui
