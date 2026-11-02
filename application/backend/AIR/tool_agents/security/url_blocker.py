@@ -150,7 +150,7 @@ def _deny(reason: str) -> dict:
 
 
 def _log_deny(logger, action: str, reason: str) -> None:
-    """Keep security decisions independent from best-effort logging."""
+    """Keep security decisions independent from logging."""
     if logger is None:
         return
     try:

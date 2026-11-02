@@ -5,8 +5,7 @@ exceptions through here so that silent failures (empty completions, truncation,
 refusals, swallowed SDK errors) leave a searchable trace in ai_researcher.log
 instead of an empty string travelling downstream.
 
-Legacy diagnostic adapters remain best-effort. The durable audit logger raises
-on persistence failure rather than silently claiming a fully audited run.
+The durable audit logger raises on persistence failure.
 """
 
 from __future__ import annotations

@@ -86,8 +86,8 @@ def append_events(round_dir, new_events: list) -> dict:
 
     Each event dict is stamped with a stable id, a monotonic sequence number
     and a timestamp. Deterministic ordering is preserved (append order).
-    Returns the resulting history. Best-effort snapshots only — callers pass
-    fully-materialized content, never references to mutable files.
+    Returns the resulting history. Callers pass fully materialized content,
+    never references to mutable files.
     """
     if not new_events:
         return load_history(round_dir)

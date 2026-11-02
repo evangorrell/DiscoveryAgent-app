@@ -46,10 +46,7 @@ except Exception:
 
 
 def _parse_text_block(msg_str: str) -> Optional[str]:
-    """
-    Best-effort extraction of assistant text from a streamed message string.
-    We intentionally avoid leaking tool traces and only return assistant text blocks.
-    """
+    """Extract assistant text blocks from a streamed message string."""
     if "AssistantMessage" in msg_str and "TextBlock" in msg_str:
         matches = re.findall(r'TextBlock\(text="([^"]*)"', msg_str)
         if not matches:

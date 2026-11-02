@@ -1452,7 +1452,7 @@ class ExecutionAgentCC(BaseAgent):
 
         return tracked_images
     
-    def _get_system_prompt(self) -> str: # TODO: improve this prompt based on best ClaudeCode practices
+    def _get_system_prompt(self) -> str:
         """
         Get the system prompt for Claude Code autonomous analysis.
         """
@@ -1938,7 +1938,7 @@ Here's a description of the dataset you're working with:
         
         Args:
             file_paths (List[str]): List of file paths reported by Claude Code
-            max_retries (int): Maximum number of retry attempts (currently unused)
+            max_retries (int): Maximum number of retry attempts
             
         Returns:
             List[str]: List of validated file paths that actually exist

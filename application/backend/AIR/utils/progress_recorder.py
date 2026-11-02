@@ -97,7 +97,7 @@ def _load_existing(path: Path) -> Optional[Dict[str, Any]]:
 
 
 def _detect_artifacts(round_dir: PathLike, query_num: int) -> List[str]:
-    """Best-effort, deterministic listing of files already present in query_NNN/.
+    """Return a deterministic listing of files already present in query_NNN/.
 
     Lists canonical query artifacts and checkpoint.json first (if present), then any other
     files already in the directory, excluding query_status.json itself.

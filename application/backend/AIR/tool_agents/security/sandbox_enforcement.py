@@ -4,7 +4,7 @@ Sandbox enforcement hook for Claude Code SDK.
 Restricts the execution agent to operate within a designated sandbox directory.
 Write/Edit operations are confined to the sandbox root. Read/Glob/Grep operations
 are allowed within the sandbox AND a configurable set of additional read paths.
-Bash commands are checked on a best-effort basis for common shell patterns.
+Bash command checks cover common shell patterns.
 
 Symlinks inside the sandbox that resolve to external targets are permitted:
 the check passes if EITHER the literal absolute path OR the resolved real path
@@ -356,7 +356,7 @@ def create_sandbox_enforcement_hook(
         return _allow("PreToolUse")
 
     # ------------------------------------------------------------------
-    # Bash hook — best-effort: check writes AND reads
+    # Bash hook: check writes and reads
     # ------------------------------------------------------------------
     async def bash_hook(input_data, tool_use_id, context) -> dict:
         tool_input = input_data.get("tool_input", {})

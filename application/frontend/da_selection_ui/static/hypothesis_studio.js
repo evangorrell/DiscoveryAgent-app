@@ -3558,7 +3558,7 @@
         });
         if (requestId) {
             apiJson('/api/cancel_hypothesis_thread', 'POST', { request_id: requestId, index: idx })
-                .catch(() => { /* best-effort server cancellation */ });
+                .catch(() => {});
         }
         delete state.pendingThreadRequests[laneKey];
         delete activeThreadRequests[laneKey];
@@ -3937,7 +3937,7 @@
         activeRequest.canceled = true;
         rememberCanceledRegeneration(idx);
         apiJson('/api/cancel_regeneration', 'POST', { index: idx })
-            .catch(() => { /* best-effort server cancellation */ });
+            .catch(() => {});
         settleRegenerationRequest(idx, activeRequest);
         renderCards();
         persistStudioSnapshot();

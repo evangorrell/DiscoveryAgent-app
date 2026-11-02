@@ -92,7 +92,7 @@ class LLMConfig:
     max_tokens: Optional[int] = None  # Maximum tokens for output; None means use API default
     # MCP (Model Context Protocol) servers
     mcp_servers: Optional[List[dict]] = None
-    system_prompt: Optional[str] = None # May not be used by some agents
+    system_prompt: Optional[str] = None
     
     def __post_init__(self):
         """Auto-detect API provider if not specified."""
@@ -119,10 +119,6 @@ class LLMConfig:
         if self.api_provider not in ['openai', 'anthropic', 'perplexity']:
             raise ValueError("api_provider must be 'openai', 'anthropic' or 'perplexity'")
         
-        # TODO: add support for TOGETHER and other LLMs if we need them
-
-
-
 @dataclass
 class ExecutionAgentConfig:
     """Configuration for ExecutionAgent."""

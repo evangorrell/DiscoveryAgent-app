@@ -82,7 +82,7 @@ def get_visible_gpu_info() -> Optional[str]:
     Return a compact, human-readable summary of GPUs actually visible to this process.
 
     Primary signal: CUDA_VISIBLE_DEVICES (scheduler/device masking).
-    Optional enrichment: nvidia-smi details filtered to the visible set (best-effort).
+    Includes nvidia-smi details filtered to the visible set when available.
     """
     cvd = os.getenv("CUDA_VISIBLE_DEVICES")
     tokens = _parse_cuda_visible_devices(cvd)
@@ -93,7 +93,7 @@ def get_visible_gpu_info() -> Optional[str]:
         # If scheduler set it (even empty), trust it as the masking signal.
         visible_count = len(tokens)
 
-    # Best-effort: enrich with nvidia-smi.
+    # Enrich with nvidia-smi when available.
     # We *select* GPUs using CUDA_VISIBLE_DEVICES when possible to avoid showing
     # node-wide GPUs you don't actually have access to.
     #
@@ -209,7 +209,7 @@ def get_slurm_resource_info():
     
     # Get GPU information
     # IMPORTANT: SLURM's GPU vars can reflect node totals, not your cgroup/device access.
-    # Prefer "visibility" signals (CUDA_VISIBLE_DEVICES) and best-effort nvidia-smi enrichment.
+    # Prefer visibility signals (CUDA_VISIBLE_DEVICES) and available nvidia-smi details.
     gpu_info = get_visible_gpu_info()
     if gpu_info:
         resources.append(gpu_info)
@@ -261,7 +261,7 @@ class LLMConfig:
     max_tokens: Optional[int] = None  # Maximum tokens for output; None means use API default
     # MCP (Model Context Protocol) servers
     mcp_servers: Optional[List[dict]] = None
-    system_prompt: Optional[str] = None # May not be used by some agents
+    system_prompt: Optional[str] = None
 
     # AWS Bedrock-specific settings
     aws_access_key_id: Optional[str] = None
