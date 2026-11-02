@@ -760,7 +760,7 @@ def main(args):
         separate_hypotheses_generation=args.separate_hypotheses_generation,
         legacy_workflow=args.legacy_workflow,
         use_ace_memory=(not args.use_simple_memory),
-        memory_llm_config=LLMConfig(model_name=args.memory_llm_model, max_tokens = 18000), # TODO: Should we set this?
+        memory_llm_config=LLMConfig(model_name=args.memory_llm_model, max_tokens = 18000),
         run_config=run_config,
     )
 

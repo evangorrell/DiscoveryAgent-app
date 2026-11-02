@@ -34,7 +34,6 @@ from ..utils.token_utils import (
 )
 
 # Prompt for judge LLM to select most interesting hypothesis
-# TODO: Change this to be more specific to the given task
 HYPOTHESIS_JUDGE_PROMPT = """
 You will be presented with multiple scientific hypotheses. Your task is to select the most interesting one.
 
@@ -610,7 +609,7 @@ Your hypotheses should advance scientific understanding and be actionable throug
         self,
         dataset_description: str = None,
         task_description: str = None,
-        init_hypothesis: bool = False,  # Kept for backwards compatibility (currently unused)
+        init_hypothesis: bool = False,
         background_report: str = None,
         use_judge: bool = True,
         format_prompt_override: str = None,
@@ -705,7 +704,7 @@ Then you should focus on generating a hypothesis.
         self,
         dataset_description: str = None,
         task_description: str = None,
-        init_hypothesis: bool = False,  # Kept for backwards compatibility (currently unused)
+        init_hypothesis: bool = False,
         background_report: str = None,
     ) -> Optional[str]:
         """
@@ -966,7 +965,7 @@ Then you should focus on generating a hypothesis.
 
         except Exception as e:
             self.logger.log_error(f"Error parsing hypotheses from markdown: {str(e)}")
-            # Best-effort fallback: return whole text as a single hypothesis
+            # Return the whole response when structured parsing fails.
             stripped = text.strip()
             return [stripped] if stripped else []
 

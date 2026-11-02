@@ -52,7 +52,6 @@ BEDROCK_MODEL_ALIASES = {
     "bedrock-claude-3-opus": "anthropic.claude-3-opus-20240229-v1:0",
 }
 
-# TODO: update these costs
 def openai_api_calculate_cost(response,model="gpt-4o"):
     # Pricing as of early March 2025
     pricing = {

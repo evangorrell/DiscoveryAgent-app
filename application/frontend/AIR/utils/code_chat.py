@@ -33,7 +33,7 @@ _configure_claude_sdk_env()
 try:
     import claude_agent_sdk as _claude_sdk  # type: ignore
 
-    # Some SDK versions omit newer symbols; fetch best-effort without raising.
+    # Some SDK versions omit newer symbols.
     query = getattr(_claude_sdk, "query", None)
     ClaudeAgentOptions = getattr(_claude_sdk, "ClaudeAgentOptions", None)
     AgentDefinition = getattr(_claude_sdk, "AgentDefinition", None)
@@ -554,10 +554,7 @@ def _maybe_compact_conversation(
 
 
 def _parse_text_block(msg_str: str) -> Optional[str]:
-    """
-    Best-effort extraction of assistant text from a streamed message string.
-    We intentionally avoid leaking tool traces and only return assistant text blocks.
-    """
+    """Extract assistant text blocks from a streamed message string."""
     if "AssistantMessage" in msg_str and "TextBlock" in msg_str:
         matches = re.findall(r'TextBlock\(text="([^"]*)"', msg_str)
         if not matches:
@@ -731,7 +728,6 @@ async def _run_code_chat_stream(
             try:
                 await stream.aclose()
             except Exception:
-                # Best-effort shutdown of the streaming generator.
                 pass
             await message_queue.put(("done", None))
 

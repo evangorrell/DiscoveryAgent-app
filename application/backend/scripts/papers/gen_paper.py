@@ -147,7 +147,7 @@ IMPORTANT: Your research paper must be written in a new file based on the neurip
 
 
 def parse_stream_message(message) -> str:
-    """Best-effort formatter for Claude Code streamed messages for readable stdout."""
+    """Format Claude Code streamed messages for readable stdout."""
     msg_str = str(message)
     try:
         if "SystemMessage" in msg_str and "subtype='init'" in msg_str:
@@ -333,4 +333,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main() 
+    main()

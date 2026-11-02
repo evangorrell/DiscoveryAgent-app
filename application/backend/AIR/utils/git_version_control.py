@@ -98,8 +98,7 @@ class GitVersionControl:
         return self.working_directory / ".git" / "index.lock"
 
     def _is_index_lock_held(self, lock_path: Path) -> bool:
-        """
-        Best-effort check for an actively held lock file.
+        """Check for an actively held lock file.
 
         Uses `lsof` when available. If lsof is unavailable, we avoid deleting
         very fresh locks and treat older locks as stale.

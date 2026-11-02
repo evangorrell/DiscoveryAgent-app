@@ -155,7 +155,6 @@ DOI, arXiv identifier, or publication date.
 ### Citation
 
 ```bibtex
-% TODO: Add the approved BibTeX citation.
 ```
 
 <!-- PUBLICATION: Add the approved license notice and link before publication.

@@ -13,29 +13,6 @@ KEY DIFFERENCES FROM AIRWorkflowModular:
 - No mid-workflow hypothesis generation (explicit_hypothesis_step not used)
 - DirectorAgent is instructed to "explore and test" the hypothesis
 - Cleaner separation: HypothesisGenAgent generates, DirectorAgent tests
-
-UNCERTAINTIES & NOTES:
-1. Hypothesis Presentation: Currently using feedback mechanism to show hypothesis
-   to director. Alternative would be to add it to dataset_description or as a
-   separate parameter to generate_query(). Current approach keeps it visible
-   in logs and allows for easy modification.
-
-2. Resume Behavior: When resuming, we assume director agent state contains
-   hypothesis context. Could alternatively load hypothesis from checkpoint
-   and re-inject it. Need to test resume behavior.
-
-3. Hypothesis Storage: hypothesis_output is stored in local variable but not
-   as instance variable. Should we store self.hypothesis_output for access
-   later (e.g., in final report)?
-
-4. Multiturn Context: Both director and hypothesis agents maintain their own
-   conversation contexts. The hypothesis context after generation is not
-   explicitly transferred to director (only via the feedback text). This
-   seems intentional but worth noting.
-
-5. Final Report: Currently uses director_agent.generate_final_report() which
-   will see its own conversation history. Should final report mention the
-   original hypothesis? Currently implicit in director's context.
 """
 
 import re
@@ -519,7 +496,7 @@ class DirectorWorkflow:
                  review_search = False,
                  review_design = False,
                  review_designer_llm_config = None,
-                 report_summarization_llm_config = None, # TODO: will need to update this in the future if we want it to be multi-agent
+                 report_summarization_llm_config = None,
                  explicit_hypothesis_step = None,
                  exploratory_phase_warmup_steps = None,
                  hold_reviews_in_exploratory_phase = True,
