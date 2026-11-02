@@ -6,52 +6,49 @@
   </picture>
 </p>
 
-<p align="center">
-  <a href="#quick-start"><strong>Install</strong></a> &nbsp;·&nbsp;
-  <a href="#see-it-in-action">Demo</a> &nbsp;·&nbsp;
-  <a href="#how-it-works">How it works</a> &nbsp;·&nbsp;
-  <a href="docs/user-guide.md">User guide</a> &nbsp;·&nbsp;
-  <a href="#paper">Paper</a>
-</p>
+DiscoveryAgent is a multi-agent AI system for semi-autonomous scientific research. Give it your data and a research objective, and it carries out iterative scientific investigations—exploring your data, connecting findings to the scientific literature, performing computational analyses, and developing new hypotheses.
 
-DiscoveryAgent is a domain-agnostic, scientist-centric AI discovery system. Give it your data and a research objective, and agents investigate autonomously within a hypothesis: exploring your data, connecting findings to the scientific literature, and writing and executing analyses. Between hypotheses, you decide where the research goes, with an Audit Agent that lets you check what any claim actually rests on.
+Once you select a hypothesis, a coordinated team of specialized AI agents plans the investigation, searches and synthesizes the literature, writes and executes analyses, critiques intermediate findings, and builds on what it learns. Research unfolds in rounds, with each round carrying forward the evidence and context from the last so the investigation can deepen over time.
 
 DiscoveryAgent runs locally on your Mac as a persistent research workspace.
 
-## See it in action
+<details>
+<summary><strong> Watch the 30-second DiscoveryAgent demo</strong></summary>
 
 https://github.com/user-attachments/assets/0ce3b30c-fe8b-4726-8b28-6bfcd3c17de1
 
-## The idea
-
-### Put scientific judgment where it matters.
-
-DiscoveryAgent scopes agent autonomy to one hypothesis at a time and puts you at the boundaries. It is built around three requirements:
-
-- **Transparency.** Each round's queries, code, reports, and figures stay in your project.
-- **Auditability.** The Audit Agent uses the project's reports, code, and supporting evidence to answer follow-up questions about the investigation.
-- **Steerability.** You select, refine, or replace hypotheses as results emerge. Agents handle the well-scoped analyses needed to test them.
+</details>
 
 ## Quick Start
 
-> **Requirements:** an Apple Silicon Mac running macOS 15 or newer, and an Anthropic API key.<br>
-> The installer manages the application runtime and dependencies for you. Paperclip authentication for literature research is handled during setup.
+### Requirements
 
-**1. Install**
+- **Apple Silicon Mac, macOS 15 or newer**
+- **Anthropic API key**
+
+The installer manages the application runtime and dependencies for you. Paperclip authentication for literature research is handled during setup.
+
+### Install
 
 ```bash
 curl -fsSL https://github.com/evangorrell/DiscoveryAgent-app/releases/latest/download/install.sh | sh
 ```
 
-**2. Launch.** Open a new Terminal window and run:
+This installs DiscoveryAgent and everything it needs to run.
+
+### Run
+
+After installation, open a new Terminal window and run:
 
 ```bash
 discoveryagent
 ```
 
-This starts the local DiscoveryAgent app and opens it in your browser. On first launch, follow the Terminal prompts for your project folder, Anthropic API key, and Paperclip sign-in; prompts for credentials that are already configured are skipped. Keep Terminal open while using the app, and press **Ctrl+C** there when finished.
+This launches the local DiscoveryAgent app and opens it in your browser.
 
-**3. Run your first investigation**
+On first launch, follow the Terminal prompts for your project folder, Anthropic API key, and Paperclip sign-in. If credentials are already configured, those prompts are skipped. Keep Terminal open while using the app; press **Ctrl+C** there when finished.
+
+### Your first investigation
 
 1. **Add your data.** Register the files or folders you want DiscoveryAgent to work with.
 2. **Create a project.** Select your data, provide a research objective, and add relevant scientific context.
@@ -60,15 +57,9 @@ This starts the local DiscoveryAgent app and opens it in your browser. On first 
 
 ## How It Works
 
-<p align="center">
-  <code>Data &amp; context</code> → <code>Explore</code> → <code>Develop hypotheses</code> → <code>Investigate</code> → <code>Review &amp; audit</code> → <code>Continue</code>
-</p>
+**Data & context → Explore → Develop hypotheses → Investigate → Review & audit → Continue**
 
-**Steering: choose the next hypothesis, not the next command.** An exploratory round builds an understanding of your research problem. At the end of each round, a hypothesis agent proposes candidates grounded in the accumulated findings. In **Hypothesis Studio** you pick one, edit it, regenerate, or write your own, and you can question the Audit Agent first. Agents then run a focused round on your selection and end it with a round report.
-
-**Auditing: ask the trace.** The Audit Agent sits outside the research stream and works from the project's record: reports, code, and supporting evidence. Ask it why an analysis was run, where a number came from, or which script produced a figure.
-
-**Continuing.** Each round carries forward the evidence and context of the last, so the investigation deepens over time.
+Start with an exploratory round to build an understanding of your research problem. Use those findings to develop and select a hypothesis, then launch a focused research round. Review the evidence, question the results with the Audit Agent, and choose the next direction.
 
 ## App Overview
 
@@ -84,19 +75,10 @@ This starts the local DiscoveryAgent app and opens it in your browser. On first 
 
 ## Agent System
 
-DiscoveryAgent coordinates several agent roles around an investigation:
+DiscoveryAgent coordinates several agent roles around an investigation. A Director agent guides the sequence of research queries; research and execution agents gather information and carry out analyses. A review agent evaluates intermediate findings and helps refine the investigation, while hypothesis-generation agents propose possible next directions. Memory and reporting components retain context across the work and assemble results for review.
 
-| Role | Responsibility |
-| --- | --- |
-| **Director** | Guides the sequence of research queries within a round. |
-| **Research & execution agents** | Gather information from the literature and carry out analyses. |
-| **Review agent** | Evaluates intermediate findings and helps refine the investigation. |
-| **Hypothesis agents** | Propose possible next directions at round boundaries. |
-| **Memory & reporting** | Retain context across rounds and assemble results for review. |
+These roles connect literature, analysis, and interpretation across research rounds. In the app, you set the objective, make data available, select hypotheses, and decide when to continue. Agents generate reports, code, and figures to let you examine how a result was reached.
 
-In the app, you set the objective, make data available, select hypotheses, and decide when to continue. Agents produce reports, code, and figures so you can examine how each result was reached.
-
-> [!NOTE]
 > For more details on the technical architecture, evaluation, and scientific methodology, see the accompanying [paper](#paper).
 
 ## Skills
@@ -130,13 +112,29 @@ See [Updating and troubleshooting](docs/user-guide.md#updating-and-troubleshooti
 
 The interface, project files, and analysis environment run locally on your Mac. Registered input data stays at its original location; keep those files available when reopening or moving a project.
 
-> [!IMPORTANT]
-> **Local does not mean offline.** Research uses external services, including Anthropic and Paperclip; relevant data, excerpts, and research context may be sent to them. Agents can generate and execute code locally. Use only data permitted by your organization's policies.
+**Local does not mean offline.** Research uses external services, including Anthropic and Paperclip; relevant data, excerpts, and research context may be sent to them. Agents can generate and execute code locally. Use only data permitted by your organization's policies.
 
 ## Documentation
 
-- [User Guide](docs/user-guide.md): authentication, project data, models, skills, updating, and troubleshooting
+- [User Guide](docs/user-guide.md) — authentication, project data, models, skills, updating, and troubleshooting
 
 ## Paper
 
-Paper and citation details will be added when available.
+**[Paper Title](paper-url)**<br>
+Authors...
+
+<!-- PUBLICATION: PAPER AND CITATION
+Replace Paper Title, paper-url, and Authors... above with the approved details.
+Add the final BibTeX citation below and keep the Agent System callout pointing
+to this Paper section.
+Required: title, authors, public URL, and approved BibTeX. Do not infer a venue,
+DOI, arXiv identifier, or publication date.
+-->
+
+### Citation
+
+```bibtex
+```
+
+<!-- PUBLICATION: Add the approved license notice and link before publication.
+License and publication approval are pending; no license is asserted here. -->
