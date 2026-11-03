@@ -73,6 +73,7 @@ test('selected card footer has separate version/action groups and no round CTA',
     assert.deepEqual(footer.children.map(n => n.classList.contains('hs-regeneration-nav') ? 'versions' : 'actions'), ['versions', 'actions']);
     assert.deepEqual(footer.children[0].children.map(n => n.textContent), ['‹', '3 / 3', '›']);
     assert.deepEqual(footer.children[1].children.map(n => n.textContent), ['View full hypothesis', 'Selected']);
+    assert.match(css, /\.hs-card-selected-static\s*\{[^}]*line-height: normal;/);
     assert.equal(find(card, 'hs-card-start-round'), undefined);
     assert.equal(find(card, 'hs-card-overflow'), undefined); // selected lock preserved
 });

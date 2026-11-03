@@ -1562,6 +1562,7 @@
 .hs-card-selected-static {
     color: var(--v2-accent);
     cursor: default;
+    line-height: normal;
 }
 .hs-card-overflow {
     flex: 0 0 auto;

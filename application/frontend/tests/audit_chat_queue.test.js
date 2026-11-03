@@ -65,7 +65,7 @@ function deferred() {
     return { promise, resolve };
 }
 
-function composerControl({ pending, stoppingJobId = null, text = 'Next question' }) {
+function composerControl({ pending, stoppingJobId = null, text = 'Next question', keyAvailable = true }) {
     const attributes = {};
     const classes = new Set();
     const chatSendBtn = {
@@ -79,22 +79,23 @@ function composerControl({ pending, stoppingJobId = null, text = 'Next question'
     };
     const chatInputEl = { value: text, disabled: false };
     const invoke = new Function(
-        'chatSendBtn', 'chatInputEl', 'isActiveChatPending', 'stoppingAuditJobId',
+        'chatSendBtn', 'chatInputEl', 'isActiveChatPending', 'stoppingAuditJobId', 'anthropicApiKeyAvailable',
         `${refreshControlsSource}; refreshSendEnabled();`
     );
-    invoke(chatSendBtn, chatInputEl, () => pending, stoppingJobId);
+    invoke(chatSendBtn, chatInputEl, () => pending, stoppingJobId, keyAvailable);
     return { chatSendBtn, chatInputEl, attributes, classes };
 }
 
-function composerHandlers({ pending, sendMessage, cancelActiveAuditResponse }) {
+function composerHandlers({ pending, sendMessage, cancelActiveAuditResponse, keyAvailable = true }) {
     return new Function(
-        'isActiveChatPending', 'sendMessage', 'cancelActiveAuditResponse',
+        'isActiveChatPending', 'sendMessage', 'cancelActiveAuditResponse', 'anthropicApiKeyAvailable',
         `${composerHandlersSource}; return { handleComposerKeydown, handleComposerSubmit };`
-    )(() => pending, sendMessage, cancelActiveAuditResponse);
+    )(() => pending, sendMessage, cancelActiveAuditResponse, keyAvailable);
 }
 
 function makeHarness({
     queued = [], pending = true, projectId = `prj_${'a'.repeat(32)}`,
+    keyAvailable = true,
 } = {}) {
     const chatId = 'chat-1';
     const pendingAuditJobs = pending
@@ -181,6 +182,7 @@ function makeHarness({
         'projectId', 'stoppingAuditJobId', 'stoppingAuditJob', 'auditScreenState',
         'chatInputEl', 'refreshSendEnabled', 'captureViewerContextSnapshot',
         'autoSizeInput', 'normalizeViewerContextSnapshot', 'reconcileAuditScreenAfterWork',
+        'anthropicApiKeyAvailable',
         `${queueSource}
          ${resumeSource}
          ${promoteSource}
@@ -225,7 +227,8 @@ function makeHarness({
         () => ({ version: 1, capturedAt: 10, artifacts: [] }),
         () => {},
         (value) => value,
-        () => {}
+        () => {},
+        keyAvailable
     );
 
     return {
@@ -295,6 +298,42 @@ test('Audit terminal states all restore the single idle Send control', () => {
         assert.match(control.chatSendBtn.innerHTML, /M12 19V5/, terminalState);
         assert.doesNotMatch(control.chatSendBtn.innerHTML, /<rect /, terminalState);
     }
+});
+
+test('missing Anthropic key shows unavailable state and blocks every composer submission path', () => {
+    const unavailable = templateSource.split('id="audit-unavailable"')[1].split('</div>')[0];
+    assert.match(unavailable, /class="v2-home-status" hidden/);
+    assert.match(unavailable, /<p class="v2-error-title">Audit Agent unavailable<\/p>/);
+    assert.match(unavailable, /<p class="v2-muted">ANTHROPIC_API_KEY environment variable not set<\/p>/);
+    assert.doesNotMatch(unavailable, /button|Try Again/i);
+
+    const control = composerControl({ pending: false, text: 'Blocked question', keyAvailable: false });
+    assert.equal(control.chatSendBtn.disabled, true);
+
+    let sendCalls = 0;
+    let cancelCalls = 0;
+    let prevented = 0;
+    const handlers = composerHandlers({
+        pending: false,
+        keyAvailable: false,
+        sendMessage() { sendCalls += 1; },
+        cancelActiveAuditResponse() { cancelCalls += 1; },
+    });
+    handlers.handleComposerKeydown({
+        key: 'Enter', shiftKey: false, isComposing: false,
+        preventDefault() { prevented += 1; },
+    });
+    handlers.handleComposerSubmit({ preventDefault() { prevented += 1; } });
+    assert.equal(prevented, 2);
+    assert.equal(sendCalls, 0);
+    assert.equal(cancelCalls, 0);
+
+    const harness = makeHarness({ pending: false, keyAvailable: false });
+    harness.chatInputEl.value = 'Blocked question';
+    harness.sendMessage();
+    assert.equal(harness.chatInputEl.value, 'Blocked question');
+    assert.deepEqual(harness.chatSessions[0].messages, []);
+    assert.deepEqual(harness.submitted, []);
 });
 
 test('Audit Enter queues while active, Shift+Enter inserts a newline, and submit Stop preserves drafts', async () => {

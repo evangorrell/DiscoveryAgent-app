@@ -41,7 +41,7 @@ DIRECTOR_AGENT_SWITCHES: dict[str, tuple[str, bool]] = {
 }
 SUB_AGENT_ARCHITECTURE = True
 MISSING_KEY_MESSAGE = (
-    "Anthropic API key not detected\n\n"
+    "Anthropic API key not detected.\n\n"
     "Set ANTHROPIC_API_KEY in your environment and restart DiscoveryAgent before "
     "starting or resuming a round."
 )

@@ -133,7 +133,7 @@ function makeLifecycleHarness({
         'readAuditChatStateFromStorage', 'clearChatBubbles', 'renderStoredChatHistory',
         'renderChatList', 'revealActiveChatRow', 'autoSizeInput', 'updateComposerForActiveChat',
         'syncEmptyState', 'setHistoryDrawerOpen', 'revealMainInterface', 'hideBootOverlay',
-        'resumePendingAuditJobs',
+        'resumePendingAuditJobs', 'anthropicApiKeyAvailable',
         `let auditViewRestored = false;
          ${workStateSource}
          ${lifecycleSource}
@@ -163,7 +163,7 @@ function makeLifecycleHarness({
         rebuildPendingChatIds, cleanupUnlistedDraftChats, readAuditChatStateFromStorage,
         clearChatBubbles, renderStoredChatHistory, renderChatList, revealActiveChatRow,
         autoSizeInput, updateComposerForActiveChat, syncEmptyState, setHistoryDrawerOpen,
-        revealMainInterface, hideBootOverlay, resumePendingAuditJobs,
+        revealMainInterface, hideBootOverlay, resumePendingAuditJobs, true,
     );
 
     return {
@@ -443,6 +443,7 @@ test('the first send from blank New Chat creates exactly one conversation identi
         'refreshSendEnabled', 'renderChatList', 'queueAuditMessage', 'persistAuditChatState',
         'renderQueuedMessages', 'syncEmptyState', 'normalizeStoredAuditChatMessages',
         'appendUserMessageToChat', 'renderStoredChatHistory', 'submitAuditJob',
+        'anthropicApiKeyAvailable',
         `function getActiveChat() { return chatSessions.find((chat) => chat.id === activeChatId) || null; }
          ${ensureChatSource}${sendSource}
          return { sendMessage, state() { return { activeChatId, auditScreenState, count: chatSessions.length }; } };`,
@@ -455,7 +456,7 @@ test('the first send from blank New Chat creates exactly one conversation identi
             chat.messages.push({ role: 'user', text });
             chatHistory = chat.messages;
         },
-        () => {}, () => { submitted += 1; pendingChatIds.add('chat-1'); },
+        () => {}, () => { submitted += 1; pendingChatIds.add('chat-1'); }, true,
     );
 
     send.sendMessage();

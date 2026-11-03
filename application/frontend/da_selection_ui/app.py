@@ -11013,6 +11013,7 @@ def rounds_workspace():
         durable_chat_state=_read_conversation_surface_state(
             'audit_agent', 'main', project['id'],
         ),
+        anthropic_api_key_available=local_round_runner._anthropic_key_is_present(os.environ),
         pre_round_overlay=pre_round_overlay,
         overlay_body=(
             'DiscoveryAgent works best when it begins with an exploratory '

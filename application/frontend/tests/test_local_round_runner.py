@@ -124,7 +124,7 @@ def test_missing_environment_key_is_actionable_and_never_reaches_launcher(
     with pytest.raises(runner.RoundLaunchError) as error:
         launch(project, env=env)
     assert error.value.code == "anthropic_api_key_missing"
-    assert error.value.message.startswith("Anthropic API key not detected")
+    assert error.value.message.startswith("Anthropic API key not detected.")
     assert "restart DiscoveryAgent" in error.value.message
     assert not (Path(project["project_root"]) / "checkpoint" / "run_state.json").exists()
 
