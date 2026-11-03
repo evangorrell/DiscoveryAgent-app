@@ -22,7 +22,7 @@ test('successful Create closes its workflow and replaces history with the server
     assert.match(createSuccess, /resetSubmitState\(\)[\s\S]*closeModal\(\{ force: true \}\)[\s\S]*window\.location\.replace\(data\.projects_url\)/);
     assert.doesNotMatch(createSuccess, /window\.location\.href\s*=\s*data\.destination/);
     assert.doesNotMatch(createSuccess, /['"]\/projects(?:['"]|\/)/);
-    assert.match(template, /projects\.js'\) \}\}\?v=20261001-preserve-data-1/);
+    assert.match(template, /projects\.js'\) \}\}\?v=20261102-project-location-1/);
 });
 
 test('clicking a project card title still opens that project through its canonical home URL', () => {
@@ -104,7 +104,7 @@ test('Add Data persists and restores the complete create-project draft', () => {
 
     els.name.value = ''; els.objective.value = ''; els.context.value = ''; els.queryCount.value = '';
     els.deepResearch.checked = true; els.webSearch.checked = false;
-    draft.applyCreateProjectDraft(draft.readCreateProjectDraft());
+    draft.applyCreateProjectDraft(draft.readCreateProjectDraft(), { restoreProjectLocation: true });
     assert.equal(els.name.value, 'Draft Project');
     assert.equal(els.objective.value, 'Preserve this objective exactly.');
     assert.equal(els.context.value, 'Preserve this dataset context exactly.');
@@ -115,12 +115,49 @@ test('Add Data persists and restores the complete create-project draft', () => {
     assert.equal(draft.state().advancedExpanded, true);
 });
 
+test('ordinary Create uses the configured default while explicit draft return preserves its location', () => {
+    const draftSource = sourceBlock('function selectHasOption', 'function preserveCreateDraftBeforeAddingData');
+    const controls = {
+        name: { value: '' }, objective: { value: '' }, context: { value: '' }, queryCount: { value: '' },
+        reasoningModel: { value: 'reasoner', options: [{ value: 'reasoner' }] },
+        executionModel: { value: 'executor', options: [{ value: 'executor' }] },
+        deepResearch: { checked: true }, webSearch: { checked: true },
+    };
+    const factory = new Function('els', [
+        "let pendingProjectParent = '/Users/scientist/DiscoveryAgent/projects';",
+        'let pendingCanonicalDefaultLocation = false;',
+        'let selectedDataSources = []; let draftDataSources = []; let advancedExpanded = false;',
+        'const normalizeEditableDataSelection = (value) => value || [];',
+        'const copySelection = (value) => value.slice();',
+        'function setAdvancedSettingsExpanded(value) { advancedExpanded = value; }',
+        draftSource,
+        'return { applyCreateProjectDraft, state: () => ({ pendingProjectParent, pendingCanonicalDefaultLocation }) };',
+    ].join('\n'));
+    const draft = factory(controls);
+    const saved = {
+        project_parent: '/Users/scientist/Library/Application Support/DiscoveryAgent/projects',
+        canonical_default_location: true,
+        data_sources: [],
+    };
+
+    draft.applyCreateProjectDraft(saved);
+    assert.deepEqual(draft.state(), {
+        pendingProjectParent: '/Users/scientist/DiscoveryAgent/projects',
+        pendingCanonicalDefaultLocation: false,
+    });
+    draft.applyCreateProjectDraft(saved, { restoreProjectLocation: true });
+    assert.deepEqual(draft.state(), {
+        pendingProjectParent: '/Users/scientist/Library/Application Support/DiscoveryAgent/projects',
+        pendingCanonicalDefaultLocation: true,
+    });
+});
+
 test('project draft handoff has an explicit return route and refuses navigation if storage fails', () => {
     assert.match(template, /open_data_picker='1', project_draft='1'/);
     assert.match(source, /els\.dataLibraryAdd\.addEventListener\('click', preserveCreateDraftBeforeAddingData\)/);
     assert.match(source, /function preserveCreateDraftBeforeAddingData\(event\)[\s\S]*if \(saveCreateProjectDraft\(\)\) return;[\s\S]*event\.preventDefault\(\)/);
     assert.match(source, /pendingCreateDraftRestore = initialParams\.get\('resume_project_draft'\) === '1'/);
-    assert.match(source, /if \(pendingCreateDraftRestore\)[\s\S]*openCreate\(\)[\s\S]*replaceState\(\{\}, '', '\/projects'\)/);
+    assert.match(source, /if \(pendingCreateDraftRestore\)[\s\S]*openCreate\(\{ restoreDraftLocation: true \}\)[\s\S]*replaceState\(\{\}, '', '\/projects'\)/);
     assert.match(source, /clearCreateProjectDraft\(\)[\s\S]*window\.location\.replace\(data\.projects_url\)/);
 });
 

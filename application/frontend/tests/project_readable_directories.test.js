@@ -7,6 +7,7 @@ const vm = require('node:vm');
 const ROOT = path.resolve(__dirname, '..');
 const client = fs.readFileSync(path.join(ROOT, 'da_selection_ui/static/projects.js'), 'utf8');
 const template = fs.readFileSync(path.join(ROOT, 'da_selection_ui/templates/projects.html'), 'utf8');
+const style = fs.readFileSync(path.join(ROOT, 'da_selection_ui/static/style.css'), 'utf8');
 
 function sourceBlock(start, end) {
     const startIndex = client.indexOf(start);
@@ -42,6 +43,10 @@ test('Project Location preview uses only the exact readable slug', () => {
     assert.equal(
         api.projectDestination('/Users/scientist/DiscoveryAgent/projects'),
         '/Users/scientist/DiscoveryAgent/projects/multiregion-alzheimers-disease'
+    );
+    assert.equal(
+        api.projectDestination('/Users/scientist/Library/Application Support/DiscoveryAgent/projects'),
+        '/Users/scientist/Library/Application Support/DiscoveryAgent/projects/multiregion-alzheimers-disease'
     );
 });
 
@@ -102,8 +107,7 @@ test('Edit Use Default preview is independent of Create pending identity', () =>
         wiring.indexOf("els.useDefaultLocation.addEventListener('click'"),
         wiring.indexOf("els.selectData.addEventListener('click'")
     );
-    assert.match(useDefault, /pendingProjectParent = els\.form\.dataset\.defaultProjectParent/);
-    assert.match(useDefault, /pendingCanonicalDefaultLocation = modalMode === 'edit'/);
+    assert.match(useDefault, /selectDefaultProjectLocation\(\)/);
     assert.match(useDefault, /renderProjectLocation\(\)/);
     assert.doesNotMatch(useDefault, /fetch\(|pendingProjectId|project_id/);
 });
@@ -121,7 +125,8 @@ test('Create and Edit openings reset only temporary default-location intent', ()
     const create = sourceBlock('function openCreate()', 'async function openEdit');
     const edit = sourceBlock('async function openEdit(project)', 'function openDeleteConfirmation');
     assert.match(create, /modalMode = 'create'; editingProjectId = null/);
-    assert.match(create, /pendingCanonicalDefaultLocation = false/);
+    assert.match(create, /selectDefaultProjectLocation\(\)/);
+    assert.match(create, /restoreProjectLocation: restoreDraftLocation/);
     assert.match(edit, /modalMode = 'edit'; editingProjectId = project\.id/);
     assert.ok((edit.match(/pendingCanonicalDefaultLocation = false/g) || []).length >= 2);
 });
@@ -147,9 +152,23 @@ test('duplicate-name response uses inline V2 error and restores Project Name foc
     assert.match(persist, /restoreFocus: !projectNameError/);
     assert.match(persist, /'duplicate_project_slug', 'invalid_project_location'/);
     assert.match(persist, /showProjectLocationValidationError\(message\)/);
+    assert.match(locationError, /setFormError\(null\)/);
+    assert.match(locationError, /els\.projectLocationStatus\.textContent = message/);
+    assert.match(locationError, /els\.projectLocationStatus\.classList\.add\('is-error'\)/);
+    assert.match(locationError, /els\.projectLocationStatus\.setAttribute\('role', 'alert'\)/);
     assert.match(locationError, /els\.chooseLocation\.focus\(\{ preventScroll: true \}\)/);
 });
 
+test('Project Location validation stays in the field helper row before its actions', () => {
+    const locationField = template.slice(
+        template.indexOf('class="v2-advanced-setting-section v2-project-location-field"'),
+        template.indexOf('</div>\n                </div>\n            </div>', template.indexOf('id="np-project-location-path"'))
+    );
+    assert.ok(locationField.indexOf('id="np-project-location-path"') < locationField.indexOf('id="np-project-location-status"'));
+    assert.ok(locationField.indexOf('id="np-project-location-status"') < locationField.indexOf('id="np-project-location-actions"'));
+    assert.match(style, /\.v2-project-location-status\.is-error \{ color: var\(--v2-danger, #b3261e\); \}/);
+});
+
 test('slug-only preview ships under a fresh ordinary-reload cache key', () => {
-    assert.match(template, /projects\.js'\) \}\}\?v=20261001-preserve-data-1/);
+    assert.match(template, /projects\.js'\) \}\}\?v=20261102-project-location-1/);
 });

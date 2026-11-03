@@ -245,7 +245,7 @@
         }
         if (pendingCreateDraftRestore) {
             pendingCreateDraftRestore = false;
-            openCreate();
+            openCreate({ restoreDraftLocation: true });
             window.history.replaceState({}, '', '/projects');
         }
     }
@@ -710,8 +710,9 @@
         return Array.from(select.options || []).some((option) => option.value === value);
     }
 
-    function applyCreateProjectDraft(draft) {
+    function applyCreateProjectDraft(draft, options) {
         if (!draft) return;
+        const config = Object.assign({ restoreProjectLocation: false }, options || {});
         els.name.value = typeof draft.project_name === 'string' ? draft.project_name : '';
         els.objective.value = typeof draft.research_objective === 'string' ? draft.research_objective : '';
         els.context.value = typeof draft.project_context === 'string' ? draft.project_context : '';
@@ -724,10 +725,12 @@
         }
         els.deepResearch.checked = draft.deep_research !== false;
         els.webSearch.checked = draft.web_search !== false;
-        if (typeof draft.project_parent === 'string' && draft.project_parent.trim()) {
+        if (config.restoreProjectLocation && typeof draft.project_parent === 'string' && draft.project_parent.trim()) {
             pendingProjectParent = draft.project_parent;
         }
-        pendingCanonicalDefaultLocation = draft.canonical_default_location === true;
+        if (config.restoreProjectLocation) {
+            pendingCanonicalDefaultLocation = draft.canonical_default_location === true;
+        }
         selectedDataSources = normalizeEditableDataSelection(draft.data_sources);
         draftDataSources = copySelection(selectedDataSources);
         setAdvancedSettingsExpanded(draft.advanced_settings_expanded === true);
@@ -878,7 +881,10 @@
 
     function showProjectLocationValidationError(message) {
         setAdvancedSettingsExpanded(true);
-        setFormError(message || 'Choose a different project name or location.');
+        setFormError(null);
+        els.projectLocationStatus.textContent = message || 'Choose a different project name or location.';
+        els.projectLocationStatus.classList.add('is-error');
+        els.projectLocationStatus.setAttribute('role', 'alert');
         window.setTimeout(() => {
             try { els.chooseLocation.focus({ preventScroll: true }); }
             catch (error) { els.chooseLocation.focus(); }
@@ -921,6 +927,11 @@
         return parent.replace(/\/$/, '') + '/' + projectDirectoryName(
             projectName == null ? els.name.value : projectName
         );
+    }
+
+    function selectDefaultProjectLocation() {
+        pendingProjectParent = els.form.dataset.defaultProjectParent;
+        pendingCanonicalDefaultLocation = modalMode === 'edit';
     }
 
     function renderProjectLocation() {
@@ -1324,6 +1335,8 @@
     }
 
     function openCreate() {
+        const options = arguments.length ? arguments[0] : null;
+        const restoreDraftLocation = options && options.restoreDraftLocation === true;
         editLoadToken++;
         const savedDraft = readCreateProjectDraft();
         modalMode = 'create'; editingProjectId = null; persistedEditSnapshot = null; importInvoker = null; importPreviewToken = '';
@@ -1336,14 +1349,13 @@
         els.executionModel.value = els.executionModel.getAttribute('data-default-model') || els.executionModel.value;
         els.queryCount.value = els.queryCount.getAttribute('data-default-query-count') || '12';
         els.deepResearch.checked = true; els.webSearch.checked = true;
-        pendingProjectParent = els.form.dataset.defaultProjectParent;
-        pendingCanonicalDefaultLocation = false;
+        selectDefaultProjectLocation();
         currentProjectRoot = ''; currentProjectParent = ''; projectLocationAvailable = true;
         projectHasActiveRound = false; renderProjectLocation();
         selectedDataSources = [];
         draftDataSources = [];
         librarySources = [];
-        applyCreateProjectDraft(savedDraft);
+        applyCreateProjectDraft(savedDraft, { restoreProjectLocation: restoreDraftLocation });
         renderProjectLocation();
         renderSelectedDataHierarchy();
         resetSubmitState();
@@ -2008,8 +2020,7 @@
         els.locateProject.addEventListener('click', locateEditProjectInline);
         els.chooseLocation.addEventListener('click', chooseProjectLocation);
         els.useDefaultLocation.addEventListener('click', () => {
-            pendingProjectParent = els.form.dataset.defaultProjectParent;
-            pendingCanonicalDefaultLocation = modalMode === 'edit';
+            selectDefaultProjectLocation();
             renderProjectLocation();
         });
         els.selectData.addEventListener('click', openDataLibrarySelector);

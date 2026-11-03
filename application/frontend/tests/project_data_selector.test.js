@@ -343,7 +343,7 @@ test('modal navigation persists create drafts and delegates picker work to Data'
     assert.doesNotMatch(selectorMarkup, /form=|download=|target=/);
     assert.doesNotMatch(source, /addDataLibrarySources|registrationFailureMessage/);
     assert.match(source, /localStorage\.setItem\(CREATE_DRAFT_STORAGE_KEY/);
-    assert.match(source, /function applyCreateProjectDraft\(draft\)/);
+    assert.match(source, /function applyCreateProjectDraft\(draft, options\)/);
     assert.doesNotMatch(loader, /selectedDataSources\s*=|draftDataSources\s*=/);
     assert.match(source, /expandedDatasetIds[\s\S]*restoreSelectorView\(config\.viewState\)/);
     assert.doesNotMatch(librarySource, /selectedDataSources|draftDataSources|submitForm|persistProject/);
