@@ -242,7 +242,7 @@ def external_data_read_paths(project: dict[str, Any]) -> list[str]:
 def resolve_backend_runtime(env: dict[str, str] | None = None) -> tuple[Path, Path, Path]:
     """Resolve and validate backend root, interpreter, and existing launcher."""
     current_env = os.environ if env is None else env
-    default_root = Path(__file__).resolve().parents[2] / "discoveryagent"
+    default_root = Path(__file__).resolve().parents[2] / "backend"
     backend_root = Path(current_env.get("DISCOVERYAGENT_BACKEND_ROOT") or default_root).expanduser().resolve()
     if not backend_root.is_dir():
         raise RoundLaunchError(

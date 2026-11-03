@@ -67,6 +67,21 @@ def launch_env(backend):
     }
 
 
+def test_default_backend_root_uses_packaged_backend(monkeypatch, tmp_path):
+    frontend_module = tmp_path / "application/frontend/da_selection_ui/local_round_runner.py"
+    frontend_module.parent.mkdir(parents=True)
+    backend_root = tmp_path / "application/backend"
+    python = backend_root / ".venv/bin/python"
+    launcher = backend_root / "scripts/run_hb_sherlock.py"
+    python.parent.mkdir(parents=True)
+    launcher.parent.mkdir(parents=True)
+    python.write_text("", encoding="utf-8")
+    python.chmod(0o755)
+    launcher.write_text("", encoding="utf-8")
+    monkeypatch.setattr(runner, "__file__", str(frontend_module))
+    assert runner.resolve_backend_runtime({}) == (backend_root, python, launcher)
+
+
 class NoopThread:
     def __init__(self, **_kwargs):
         pass

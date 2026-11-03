@@ -407,6 +407,9 @@ def list_children(dataset_id: str, relative: Any = ".", *, cursor: int = 0, limi
         ]
     except PermissionError as exc:
         raise DataLibraryError("data_path_unreadable", "DiscoveryAgent does not have permission to list that folder.", 403) from exc
+    except OSError as exc:
+        # The folder can disappear or be unmounted after resolve_relative.
+        raise DataLibraryError("data_path_unavailable", f"The selected data path is unavailable: {record['display_name']}/{relative}.", 409) from exc
     entries.sort(key=lambda entry: (not entry.is_dir(follow_symlinks=False), unicodedata.normalize("NFC", entry.name).casefold(), entry.name))
     page = entries[cursor:cursor + limit]
     base = normalize_relative_path(relative)

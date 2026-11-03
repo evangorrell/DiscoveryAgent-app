@@ -30,6 +30,7 @@ from .errors import BootstrapError, LaunchRuntimeError, StateError
 from .frontend_process import readiness_is_healthy
 from .installation import ReleaseMetadata
 from .launch import existing_frontend_is_healthy
+from .maintenance import require_idle_research
 from .paths import InstallationPaths
 from .path_integration import PathIntegrationChange, configure_cli_path
 from .runtime import (
@@ -56,6 +57,7 @@ from .state import (
 EnvironmentSyncer = Callable[[Path, Path, Path, Path, Path], Path]
 ReleaseValidator = Callable[[Path, Path], EnvironmentValidation]
 FrontendChecker = Callable[[InstallationPaths, ManagerState | None], bool]
+ResearchGuard = Callable[..., None]
 ManagerInstaller = Callable[[Path, InstallationPaths], Path]
 CliInstaller = Callable[..., Path]
 StateWriter = Callable[[Path, ManagerState], None]
@@ -402,6 +404,7 @@ def install_production_release(
     environment_syncer: EnvironmentSyncer = sync_environment,
     release_validator: ReleaseValidator = validate_installed_release,
     frontend_checker: FrontendChecker = installation_has_healthy_frontend,
+    research_guard: ResearchGuard = require_idle_research,
     lock_factory: Callable[[Path], InstallationLock] = InstallationLock,
     manager_installer: ManagerInstaller = install_manager_atomic,
     cli_installer: CliInstaller = install_cli_shim,
@@ -425,6 +428,15 @@ def install_production_release(
         staging_root = paths.root / "staging"
         staging_root.mkdir(parents=True, exist_ok=True)
         previous = existing_installation_state(paths)
+        if previous is not None:
+            research_guard(previous, action="installing")
+        # A reinstall without an explicit --data-root keeps the project folder
+        # the scientist already chose instead of resetting it to the default.
+        data_root = (
+            Path(previous.data_root)
+            if previous is not None and config.data_root is None
+            else selected.data_root
+        )
         if frontend_checker(paths, previous):
             raise BootstrapError(
                 "DiscoveryAgent is currently running. Stop it before installing."
@@ -512,6 +524,14 @@ def install_production_release(
             raise BootstrapError("Packaged application payload changed during installation")
         if (selected.payload_root / "release.json").read_bytes() != source_release_json:
             raise BootstrapError("Packaged release.json changed during installation")
+        # Environment setup can take minutes. Research or the app may have
+        # started meanwhile, so check again before replacing the manager.
+        if previous is not None:
+            research_guard(previous, action="installing")
+        if frontend_checker(paths, previous):
+            raise BootstrapError(
+                "DiscoveryAgent is currently running. Stop it before installing."
+            )
         reporter("Installing the discoveryagent command")
         manager_installer(selected.payload_root, paths)
         cli_path = cli_installer(
@@ -525,7 +545,7 @@ def install_production_release(
                 paths,
                 metadata,
                 runtimes,
-                selected.data_root,
+                data_root,
                 path_change.cli_state,
                 previous,
             )

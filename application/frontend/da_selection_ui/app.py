@@ -89,6 +89,7 @@ from .utils.memory_monitor import (
 try:
     # Prefer package-relative imports when installed
     from .select_hypothesis import (
+        HYPOTHESIS_STATE_LOCK,
         InteractiveHypothesisGenerator,
         display_card_title,
         parse_hypothesis_sections_text,
@@ -99,6 +100,7 @@ except Exception:
     # Fallback for running as a loose script
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from select_hypothesis import (
+        HYPOTHESIS_STATE_LOCK,
         InteractiveHypothesisGenerator,
         display_card_title,
         parse_hypothesis_sections_text,
@@ -220,7 +222,6 @@ REMOVED_HYPOTHESIS_STATE_IDS_LOCK = threading.Lock()
 # Literal manual edits do not use the shared LLM agent, so they may commit on
 # one card while another card's LLM call is in flight. These short locks keep
 # shared candidate identities and on-disk snapshots coherent at commit time.
-HYPOTHESIS_STATE_LOCK = threading.RLock()
 HYPOTHESIS_PERSIST_LOCK = threading.RLock()
 AUDIT_CHAT_JOBS: dict[str, dict] = {}
 AUDIT_CHAT_JOBS_LOCK = threading.Lock()
@@ -5218,6 +5219,15 @@ def _seed_hypothesis_from_request_draft(
     if idx < 1:
         return False
 
+    state_id = sanitize_field(raw_state_id, 64) if raw_state_id is not None else ''
+    state_id = state_id.strip() if isinstance(state_id, str) else ''
+    # Existing cards may have shifted; removed cards must not be recreated.
+    if state_id and (
+        state_id in _ensure_hypothesis_state_ids(generator)
+        or _hypothesis_state_id_was_removed(state_id)
+    ):
+        return False
+
     hypotheses = list(getattr(generator, 'hypotheses', []) or [])
     if idx <= len(hypotheses) and str(hypotheses[idx - 1] or '').strip():
         return False
@@ -5228,8 +5238,6 @@ def _seed_hypothesis_from_request_draft(
     generator.hypotheses = hypotheses
 
     state_ids = _ensure_hypothesis_state_ids(generator)
-    state_id = sanitize_field(raw_state_id, 64) if raw_state_id is not None else ''
-    state_id = state_id.strip() if isinstance(state_id, str) else ''
     if state_id and idx <= len(state_ids):
         state_ids[idx - 1] = state_id
         generator.hypothesis_state_ids = state_ids
@@ -5399,9 +5407,14 @@ def with_hypothesis_card_operation_lock(operation_name: str, *, direct_manual_is
                 _get_hypothesis_card_operation_lock(session_id, index)
                 if session_id and index > 0 else nullcontext()
             )
+            # A literal manual edit is a short in-memory mutation. Hold the
+            # same state lock as Remove across its whole commit so a removal
+            # cannot shift the card it resolved before the text is written.
+            state_lock = HYPOTHESIS_STATE_LOCK if independent_manual else nullcontext()
             with card_lock:
-                with _session_operation_context(operation_name, serialize=not independent_manual):
-                    return func(*args, **kwargs)
+                with state_lock:
+                    with _session_operation_context(operation_name, serialize=not independent_manual):
+                        return func(*args, **kwargs)
         return _wrapped
     return _decorator
 
@@ -14033,11 +14046,17 @@ def rewrite_image_sources(
         cleaned = src.lstrip('./')
         return f"{base_prefix}{cleaned}"
 
+    from html import escape, unescape
+
     def _replace(match: re.Match) -> str:
         lead = match.group(1)
         quote = match.group(2)
         src = match.group(3)
-        return f"{lead}{quote}{_rewrite_src(src)}{quote}"
+        # The sanitized src is entity-encoded, and resolving it can follow a
+        # symlink to a filename containing quotes. Decode before resolving
+        # and re-encode the result so it cannot leave the src attribute.
+        rewritten = escape(_rewrite_src(unescape(src)), quote=True)
+        return f"{lead}{quote}{rewritten}{quote}"
 
     return IMG_SRC_PATTERN.sub(_replace, html_content)
 
@@ -20504,6 +20523,15 @@ def api_remove_hypothesis():
         return pending_card_lock
 
     idx, idx_error = _resolve_hypothesis_index(generator, raw_idx, state_id)
+    if idx_error == 'stale_state' and _hypothesis_state_id_was_removed(state_id):
+        # A repeated or retried remove of an already removed card must not
+        # fall back to its old position, which now holds the next card.
+        return jsonify({
+            'success': False,
+            'error': 'That hypothesis was already removed. Re-open the current list.',
+            'stale_selection': True,
+            'removed': True,
+        })
     if idx_error == 'stale_state':
         # Remove is a card-position operation. If the card's version id is stale
         # but the displayed index still exists, remove that current slot instead
@@ -20526,6 +20554,7 @@ def api_remove_hypothesis():
         _remember_removed_hypothesis_state_id(
             removed_snapshot.get('state_id') or state_id
         )
+        _remember_removed_hypothesis_state_id(state_id)
 
         # Drop the removed slot's state id FIRST so the surviving hypotheses
         # keep their original (stable) state ids after the index shift.

@@ -55,6 +55,7 @@ ROUND_REPORT_SUMMARY_RATIO = 0.5
 ROUND_REPORT_SUMMARY_TRIGGER_CHARS = 20000
 ROUND_REPORT_SUMMARY_CHUNK_CHARS = 60000
 ROUND_REPORT_SUMMARY_MAX_LEN_MULTIPLIER = 1.2
+HYPOTHESIS_STATE_LOCK = threading.RLock()
 ROUND_REPORT_SUMMARY_SYSTEM_PROMPT = (
     "You are a careful scientific report summarizer. "
     "Summarize only the provided text. Preserve key findings, quantitative results, "
@@ -2184,6 +2185,17 @@ User question:
             print(exchange['A'])
             print("-"*80)
 
+    def _store_hypothesis_result(self, idx: int, state_id: str | None, result: str) -> None:
+        """Store a model result in its original card after any index shifts."""
+        with HYPOTHESIS_STATE_LOCK:
+            if state_id:
+                state_ids = getattr(self, 'hypothesis_state_ids', [])
+                if state_id not in state_ids:
+                    return
+                idx = state_ids.index(state_id) + 1
+            if 1 <= idx <= len(self.hypotheses):
+                self.hypotheses[idx - 1] = result
+
     def regenerate_hypothesis(self, idx: int, feedback: Optional[str] = None) -> Optional[str]:
         """
         Regenerate a specific hypothesis with user feedback.
@@ -2212,7 +2224,10 @@ User question:
         self.log_interaction('regenerate_feedback', {'hypothesis_index': idx, 'feedback': feedback})
 
         # Continue the conversation - NO RESET
-        hypothesis_title = self._focused_hypothesis_title(self.hypotheses[idx - 1])
+        with HYPOTHESIS_STATE_LOCK:
+            hypothesis_title = self._focused_hypothesis_title(self.hypotheses[idx - 1])
+            state_ids = getattr(self, 'hypothesis_state_ids', [])
+            state_id = state_ids[idx - 1] if idx <= len(state_ids) else None
         regenerate_prompt = f"""Please rewrite this hypothesis, titled “{hypothesis_title}”, integrating the following feedback from a human expert:
 
 {feedback}
@@ -2248,8 +2263,7 @@ Generate a complete revised hypothesis with **Title**:, **Hypothesis**:, and **J
             )
             self.hypothesis_gen_agent.add_assistant_message(new_hypothesis)
 
-            # Update the list
-            self.hypotheses[idx - 1] = new_hypothesis
+            self._store_hypothesis_result(idx, state_id, new_hypothesis)
 
             print(f"\n✓ This hypothesis was regenerated ({len(new_hypothesis)} characters)")
 
@@ -2596,7 +2610,10 @@ Format them as:
         self.log_interaction('edit_feedback', {'hypothesis_index': idx, 'feedback': feedback})
 
         # Continue the conversation - NO RESET
-        hypothesis_title = self._focused_hypothesis_title(self.hypotheses[idx - 1])
+        with HYPOTHESIS_STATE_LOCK:
+            hypothesis_title = self._focused_hypothesis_title(self.hypotheses[idx - 1])
+            state_ids = getattr(self, 'hypothesis_state_ids', [])
+            state_id = state_ids[idx - 1] if idx <= len(state_ids) else None
         edit_prompt = f"""Please rewrite this hypothesis, titled “{hypothesis_title}”, integrating the following feedback from a human expert:
 
 {feedback}
@@ -2633,8 +2650,7 @@ Provide the complete revised hypothesis below:
             )
             self.hypothesis_gen_agent.add_assistant_message(edited_hypothesis)
 
-            # Update the list
-            self.hypotheses[idx - 1] = edited_hypothesis
+            self._store_hypothesis_result(idx, state_id, edited_hypothesis)
 
             print(f"\n✓ This hypothesis was edited ({len(edited_hypothesis)} characters)")
 

@@ -81,7 +81,7 @@ test('project and run identity reject cross-project and stale terminal responses
     const evaluate = new Function(`
         const CFG = { projectId: 'project-a' };
         const state = { runStatuses: new Map() };
-        function canonicalRoundStatus(value) { return String(value || 'unavailable').toLowerCase(); }
+        ${titleHelpers}
         ${helpers}
         return { runResponseMatches, acceptRunStatus, state };
     `);
@@ -97,7 +97,50 @@ test('project and run identity reject cross-project and stale terminal responses
     assert.equal(acceptRunStatus({ run_id: runA, status: 'running' }), false);
     assert.equal(state.runStatuses.get(runA), 'interrupted');
     assert.equal(acceptRunStatus({ run_id: runB, status: 'running' }), true);
-    assert.equal(state.runStatuses.get(runB), 'running');
+    assert.equal(state.runStatuses.get(runB), 'in progress');
+});
+
+test('completed run resists a late running poll for the same run', () => {
+    const helpers = source.slice(
+        source.indexOf('  function runResponseMatches'),
+        source.indexOf('  async function refreshActivity'),
+    );
+    const { acceptRunStatus, state } = new Function(`
+        const CFG = { projectId: 'project-a' };
+        const state = { runStatuses: new Map() };
+        ${titleHelpers}
+        ${helpers}
+        return { acceptRunStatus, state };
+    `)();
+    const runId = 'c'.repeat(32);
+    assert.equal(acceptRunStatus({ run_id: runId, status: 'completed' }), true);
+    assert.equal(state.runStatuses.get(runId), 'complete');
+    assert.equal(acceptRunStatus({ run_id: runId, status: 'running' }), false);
+    assert.equal(acceptRunStatus({ run_id: runId, status: 'completed' }), true);
+});
+
+test('focusing a split pane preserves its loaded file and scroll state', () => {
+    const focusSource = functionSource('focusPane', 'renderPanes');
+    const classes = [new Set(['is-active']), new Set()];
+    const panes = classes.map((set) => ({
+        classList: { toggle(name, enabled) { enabled ? set.add(name) : set.delete(name); } },
+    }));
+    const state = { activePane: 0 };
+    let persisted = 0;
+    const focusPane = new Function('state', 'els', 'persistViewer',
+        `${focusSource}; return focusPane;`)(
+        state,
+        { panes: { querySelectorAll() { return panes; } } },
+        () => { persisted += 1; },
+    );
+    focusPane(1);
+    assert.equal(state.activePane, 1);
+    assert.equal(classes[0].has('is-active'), false);
+    assert.equal(classes[1].has('is-active'), true);
+    assert.equal(persisted, 1);
+    focusPane(1);
+    assert.equal(persisted, 1);
+    assert.match(source, /pane\.addEventListener\('click',\(\)=>focusPane\(i\)\)/);
 });
 
 test('Activity is round-local and excludes successor lifecycle presentation', () => {

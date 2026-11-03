@@ -234,6 +234,25 @@ def test_tree_reports_only_live_immediate_file_sizes_and_survives_one_stat_failu
     assert "size_bytes" not in persisted
 
 
+def test_tree_returns_structured_error_if_folder_disappears_during_listing(monkeypatch, tmp_path):
+    configure_roots(monkeypatch, tmp_path)
+    source = source_folder(tmp_path)
+    record, _ = data_library.add_source(str(source))
+    original_scandir = data_library.os.scandir
+
+    def missing_on_list(path):
+        if Path(path) == source.resolve():
+            raise FileNotFoundError("source disappeared after resolution")
+        return original_scandir(path)
+
+    monkeypatch.setattr(data_library.os, "scandir", missing_on_list)
+    response = app_module.app.test_client().get(
+        f"/api/data-library/sources/{record['id']}/tree"
+    )
+    assert response.status_code == 409
+    assert response.get_json()["code"] == "data_path_unavailable"
+
+
 @pytest.mark.parametrize("relative", ["../outside", "/tmp", "nested/../../outside", "%2e%2e/outside"])
 def test_tree_rejects_traversal_and_absolute_injection(monkeypatch, tmp_path, relative):
     configure_roots(monkeypatch, tmp_path)

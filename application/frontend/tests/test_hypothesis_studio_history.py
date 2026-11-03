@@ -10,6 +10,8 @@ from pathlib import Path
 import threading
 from contextlib import contextmanager
 
+import pytest
+
 from da_selection_ui import app as app_module
 from da_selection_ui import hypothesis_history
 from da_selection_ui.select_hypothesis import InteractiveHypothesisGenerator
@@ -1775,7 +1777,7 @@ def test_studio_render_keeps_pristine_overlay_but_enables_eligible_generation(mo
     assert "hypothesis_studio.css') }}" not in html
     assert "hypothesis_studio.css?v=20261001-review-footer-1" in html
     assert "hypothesis_layout.js?v=20261001-layout-final-1" in html
-    assert "hypothesis_studio.js?v=20261001-footer-stable-1" in html
+    assert "hypothesis_studio.js?v=20261014-manual-draft-1" in html
     assert "hypothesis_events.js?v=20260808-selected-lineage-reindex" in html
     assert "hypothesis_activity.js?v=20260711-unseen-activity" in html
     assert 'Select <span class="v2-arrow" aria-hidden="true">&rarr;</span>' in html
@@ -3445,6 +3447,166 @@ def test_remove_hypothesis_falls_back_to_index_when_state_id_is_stale(monkeypatc
     assert body["hypotheses"][0]["index"] == 1
     assert body["hypotheses"][0]["state_id"] == "sid-2"
     assert gen.hypotheses == [HYP2]
+
+
+def test_repeated_remove_with_removed_state_id_cannot_delete_shifted_neighbor(monkeypatch, tmp_path):
+    rd = _round_dir(tmp_path)
+    gen = FakeGenerator(rd)
+    gen.hypotheses = [HYP1, HYP2]
+    gen.hypothesis_state_ids = ["sid-1", "sid-2"]
+    client = _wire(monkeypatch, gen)
+
+    first = client.post("/api/remove_hypothesis", json={"index": 1, "state_id": "sid-1"})
+    assert first.get_json()["success"] is True
+    repeated = client.post("/api/remove_hypothesis", json={"index": 1, "state_id": "sid-1"})
+    payload = repeated.get_json()
+
+    assert payload["success"] is False
+    assert payload["removed"] is True
+    assert gen.hypotheses == [HYP2]
+    assert gen.hypothesis_state_ids == ["sid-2"]
+
+
+def test_repeated_remove_with_pre_revision_id_preserves_neighbor(monkeypatch, tmp_path):
+    gen = FakeGenerator(_round_dir(tmp_path))
+    gen.hypotheses = [HYP1, HYP2]
+    gen.hypothesis_state_ids = ["sid-1", "sid-2"]
+    client = _wire(monkeypatch, gen)
+    gen.hypothesis_state_ids[0] = "sid-1-revised"
+
+    payload = {"index": 1, "state_id": "sid-1"}
+    assert client.post("/api/remove_hypothesis", json=payload).get_json()["success"]
+    repeated = client.post("/api/remove_hypothesis", json=payload).get_json()
+
+    assert repeated["success"] is False
+    assert repeated["removed"] is True
+    assert gen.hypotheses == [HYP2]
+    assert gen.hypothesis_state_ids == ["sid-2"]
+
+
+def test_manual_edit_cannot_recreate_removed_last_card(monkeypatch, tmp_path):
+    gen = FakeGenerator(_round_dir(tmp_path))
+    gen.hypotheses = [HYP1, HYP2]
+    gen.hypothesis_state_ids = ["sid-1", "sid-2"]
+    client = _wire(monkeypatch, gen)
+    assert client.post("/api/remove_hypothesis", json={
+        "index": 2, "state_id": "sid-2",
+    }).get_json()["success"]
+
+    response = client.post("/api/edit", json={
+        "index": 2, "state_id": "sid-2", "manual_hypothesis": HYP2,
+    }).get_json()
+
+    assert response["success"] is False
+    assert gen.hypotheses == [HYP1]
+    assert gen.hypothesis_state_ids == ["sid-1"]
+
+
+def test_manual_edit_resolves_survivor_at_its_new_index(monkeypatch, tmp_path):
+    gen = FakeGenerator(_round_dir(tmp_path))
+    gen.hypotheses = [HYP1, HYP2, HYP3]
+    gen.hypothesis_state_ids = ["sid-1", "sid-2", "sid-3"]
+    client = _wire(monkeypatch, gen)
+    assert client.post("/api/remove_hypothesis", json={
+        "index": 1, "state_id": "sid-1",
+    }).get_json()["success"]
+    manual = HYP3.replace("Mitochondrial state", "Edited mitochondrial state")
+
+    response = client.post("/api/edit", json={
+        "index": 3, "state_id": "sid-3", "manual_hypothesis": manual,
+    }).get_json()
+
+    assert response["success"] is True
+    assert response["hypothesis"]["index"] == 2
+    assert len(gen.hypotheses) == 2
+    assert gen.hypotheses[0] == HYP2
+    assert gen.parse_hypothesis_sections(gen.hypotheses[1]) == gen.parse_hypothesis_sections(manual)
+    assert len(set(gen.hypothesis_state_ids)) == 2
+
+
+@pytest.mark.parametrize("endpoint", ["/api/edit", "/api/regenerate", "/api/regenerate_guidance"])
+def test_agent_result_preserves_manual_edit_after_removal(monkeypatch, tmp_path, endpoint):
+    gen = _chat_generator_for_context_test(_round_dir(tmp_path))
+    gen.hypotheses = [HYP1, HYP2, HYP3]
+    gen.hypothesis_state_ids = ["sid-1", "sid-2", "sid-3"]
+    gen.hypothesis_chat_threads = {}
+    client = _wire(monkeypatch, gen)
+    revised = HYP2.replace("Microglial state", "Revised microglial state")
+    manual = HYP3.replace("Mitochondrial state", "Edited mitochondrial state")
+    monkeypatch.setattr(app_module, "_persist_generated_hypotheses", lambda _gen, **kwargs: None)
+
+    @contextmanager
+    def thread_context(*args, **kwargs):
+        yield
+
+    monkeypatch.setattr(app_module, "_hypothesis_thread_ctx", thread_context)
+
+    def model_response(*args, **kwargs):
+        assert client.post("/api/remove_hypothesis", json={
+            "index": 1, "state_id": "sid-1",
+        }).get_json()["success"]
+        return revised
+
+    gen.hypothesis_gen_agent._call_api_with_retry = model_response
+    original_reconcile = app_module._reconcile_hypothesis_operation_result
+
+    def manual_edit_then_reconcile(generator, operation, result):
+        assert client.post("/api/edit", json={
+            "index": 2, "state_id": "sid-3", "manual_hypothesis": manual,
+        }).get_json()["success"]
+        return original_reconcile(generator, operation, result)
+
+    monkeypatch.setattr(app_module, "_reconcile_hypothesis_operation_result", manual_edit_then_reconcile)
+    response = client.post(endpoint, json={
+        "index": 2, "state_id": "sid-2", "feedback": "Refine the hypothesis",
+    }).get_json()
+
+    assert response["success"] is True
+    assert gen.hypotheses[0] == revised
+    assert gen.parse_hypothesis_sections(gen.hypotheses[1]) == gen.parse_hypothesis_sections(manual)
+    assert len(set(gen.hypothesis_state_ids)) == 2
+
+
+def test_concurrent_remove_cannot_redirect_a_direct_manual_edit(monkeypatch, tmp_path):
+    gen = FakeGenerator(_round_dir(tmp_path))
+    gen.hypotheses = [HYP1, HYP2, HYP3]
+    gen.hypothesis_state_ids = ["sid-1", "sid-2", "sid-3"]
+    client = _wire(monkeypatch, gen)
+    edited = HYP2.replace("Microglial state", "Edited microglial state")
+    removal_done = threading.Event()
+    results = {}
+
+    def remove_first_card():
+        results["remove"] = client.post(
+            "/api/remove_hypothesis", json={"index": 1, "state_id": "sid-1"}
+        ).get_json()
+        removal_done.set()
+
+    original_capture = app_module._capture_hypothesis_operation_state
+
+    def capture_then_race_remove(*args, **kwargs):
+        captured = original_capture(*args, **kwargs)
+        # Remove the card in front of the edited one after the edit resolved
+        # its position but before it commits the new text.
+        worker = threading.Thread(target=remove_first_card)
+        worker.start()
+        removal_done.wait(0.5)
+        results["worker"] = worker
+        return captured
+
+    monkeypatch.setattr(
+        app_module, "_capture_hypothesis_operation_state", capture_then_race_remove
+    )
+    response = client.post("/api/edit", json={
+        "index": 2, "state_id": "sid-2", "manual_hypothesis": edited,
+    }).get_json()
+    results["worker"].join(timeout=2)
+
+    assert response["success"] is True
+    assert results["remove"]["success"] is True
+    assert len(gen.hypotheses) == 2
+    assert "Edited microglial state" in gen.hypotheses[0]
+    assert gen.hypotheses[1] == HYP3
 
 
 def test_remove_final_hypothesis_returns_an_empty_active_set(monkeypatch, tmp_path):
