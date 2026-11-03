@@ -43,6 +43,7 @@ def test_workspace_frontend_has_independent_round_and_split_controls():
     assert "rw-pane-divider" in js and "Resize file panes" in js
 
 def test_interrupted_precheckpoint_round_does_not_show_first_round_overlay(monkeypatch, tmp_path):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     round_zero = tmp_path / "project" / "checkpoint" / "checkpoints" / "round_0"
     round_zero.mkdir(parents=True)
     (round_zero / "round_activity.jsonl").write_text(
@@ -72,6 +73,7 @@ def test_interrupted_precheckpoint_round_does_not_show_first_round_overlay(monke
     assert captured["template"] == "round_workspace.html"
     assert captured["pre_round_overlay"] is False
     assert captured["pinned_round"] == 0
+    assert captured["anthropic_api_key_available"] is False
 
 
 def test_activity_frontend_has_only_status_and_query_progress_sections():

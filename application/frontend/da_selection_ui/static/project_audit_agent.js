@@ -3,6 +3,7 @@
     const mainInterfaceEl = document.getElementById('main-interface');
     const workspaceEl = document.querySelector('[data-audit-scroll-region]');
     const chatMessagesEl = document.getElementById('chat-messages');
+    const auditUnavailableEl = document.getElementById('audit-unavailable');
     const chatInputEl = document.getElementById('chat-input');
     const composerEl = document.getElementById('aa-composer');
     const queuedMessagesEl = document.getElementById('audit-queued-messages');
@@ -45,6 +46,7 @@
     const AUDIT_CHAT_STORAGE_MAX_CHARS = 350000;
     const projectId = (typeof config.projectId === 'string') ? config.projectId.trim() : '';
     const hasProjectIdentity = projectId.length > 0;
+    const anthropicApiKeyAvailable = config.anthropicApiKeyAvailable !== false;
     const auditChatStorageKey = hasProjectIdentity
         ? `da_audit_chat_state_v${CHAT_STORAGE_VERSION}_project_${projectId}`
         : '';
@@ -917,7 +919,8 @@
     function syncEmptyState() {
         if (!mainInterfaceEl) return;
         const hasQueue = getQueuedAuditMessages(activeChatId).length > 0;
-        mainInterfaceEl.classList.toggle('is-empty', chatHistory.length === 0 && !pendingChatIds.has(activeChatId) && !hasQueue);
+        mainInterfaceEl.classList.toggle('is-empty', anthropicApiKeyAvailable && chatHistory.length === 0 && !pendingChatIds.has(activeChatId) && !hasQueue);
+        if (auditUnavailableEl) auditUnavailableEl.hidden = anthropicApiKeyAvailable;
         if (chatExportCurrentBtn) {
             chatExportCurrentBtn.disabled = chatHistory.length === 0;
         }
@@ -1035,6 +1038,14 @@
 
     function refreshSendEnabled() {
         if (!chatSendBtn) return;
+        if (!anthropicApiKeyAvailable) {
+            chatSendBtn.classList.remove('is-stop');
+            chatSendBtn.setAttribute('aria-label', 'Send message');
+            chatSendBtn.setAttribute('title', 'Send message');
+            chatSendBtn.setAttribute('aria-busy', 'false');
+            chatSendBtn.disabled = true;
+            return;
+        }
         const isPending = isActiveChatPending();
         const hasMessage = !!(chatInputEl && (chatInputEl.value || '').trim());
         if (isPending) {
@@ -1580,7 +1591,7 @@
         revealMainInterface();
         hideBootOverlay();
         autoSizeInput();
-        resumePendingAuditJobs();
+        if (anthropicApiKeyAvailable) resumePendingAuditJobs();
     }
 
     function setComposerEnabled(enabled) {
@@ -1596,6 +1607,11 @@
             restoreLocalChatInterface();
         }
         updateComposerForActiveChat();
+        if (!anthropicApiKeyAvailable) {
+            hideBootOverlay();
+            initPromise = null;
+            return;
+        }
         try {
             const res = await fetch('/api/initialize', {
                 method: 'POST',
@@ -1661,6 +1677,7 @@
     }
 
     function promoteNextQueuedAuditMessage(chatId) {
+        if (!anthropicApiKeyAvailable) return false;
         if (pendingChatIds.has(chatId)) return false;
         const next = shiftQueuedAuditMessage(chatId);
         if (!next) return false;
@@ -1680,6 +1697,7 @@
     }
 
     async function submitAuditJob(requestChatId, message, requestContext, replyContent, viewerContext) {
+        if (!anthropicApiKeyAvailable) return;
         const submittedViewerContext = normalizeViewerContextSnapshot(viewerContext);
         const submittedJob = {
             jobId: createAuditJobId(),
@@ -1791,6 +1809,7 @@
     }
 
     function sendMessage() {
+        if (!anthropicApiKeyAvailable) return;
         const message = (chatInputEl.value || '').trim();
         if (!message) return;
 
@@ -1836,11 +1855,13 @@
     function handleComposerKeydown(e) {
         if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
             e.preventDefault();
+            if (!anthropicApiKeyAvailable) return;
             sendMessage();
         }
     }
     function handleComposerSubmit(e) {
         e.preventDefault();
+        if (!anthropicApiKeyAvailable) return;
         if (isActiveChatPending()) {
             cancelActiveAuditResponse();
             return;

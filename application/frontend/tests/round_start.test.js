@@ -5,6 +5,7 @@ const path = require('node:path');
 
 const CLIENT = path.resolve(__dirname, '../da_selection_ui/static/round_start.js');
 const SOURCE = fs.readFileSync(CLIENT, 'utf8');
+const LAUNCH_TEMPLATE = fs.readFileSync(path.resolve(__dirname, '../da_selection_ui/templates/_round_launch_dialog.html'), 'utf8');
 
 function deferred() {
     let resolve;
@@ -168,6 +169,7 @@ test('Round Start submits exactly the editable per-round settings', async () => 
 });
 
 test('launch failure stays in the settings dialog and restores its actions', async () => {
+    assert.match(LAUNCH_TEMPLATE, /id="round-launch-error"[\s\S]{0,100}style="color: var\(--v2-danger, #b3261e\);"/);
     const ui = loadClient((url) => Promise.resolve(url.startsWith('/api/rounds/options')
         ? response(true, optionsPayload())
         : response(false, {

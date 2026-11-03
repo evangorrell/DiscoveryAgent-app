@@ -1775,7 +1775,7 @@ def test_studio_render_keeps_pristine_overlay_but_enables_eligible_generation(mo
     assert 'class="v2-modal-overlay v2-blocking-overlay"' in html
     assert 'class="v2-modal v2-blocking-box"' in html
     assert "hypothesis_studio.css') }}" not in html
-    assert "hypothesis_studio.css?v=20261001-review-footer-1" in html
+    assert "hypothesis_studio.css?v=20261102-selected-footer-baseline-1" in html
     assert "hypothesis_layout.js?v=20261001-layout-final-1" in html
     assert "hypothesis_studio.js?v=20261014-manual-draft-1" in html
     assert "hypothesis_events.js?v=20260808-selected-lineage-reindex" in html

@@ -23,6 +23,7 @@
     codeDir: {{ code_dir | default('') | tojson }},
     durableChatState: {{ durable_chat_state | default(none) | tojson }},
     projectSlug: {{ project_slug | default('') | tojson }},
+    anthropicApiKeyAvailable: {{ anthropic_api_key_available | default(false) | tojson }},
     chatMode: 'audit'
   };
 </script>
@@ -128,6 +129,10 @@
                                             </div>
                                         </form>
                                     </div>
+                                    <div id="audit-unavailable" class="v2-home-status" hidden>
+                                        <p class="v2-error-title">Audit Agent unavailable</p>
+                                        <p class="v2-muted">ANTHROPIC_API_KEY environment variable not set</p>
+                                    </div>
                                     <section id="chat-messages" class="aa-conversation" aria-live="polite"
                                              aria-label="Conversation with Audit Agent"></section>
                                 </div>
@@ -212,5 +217,5 @@
 <script src="{{ url_for('static', filename='round_workspace_tab_scrollbar.js', v='20260823-tab-scrollbar-overflow-1') }}"></script>
 <script src="{{ url_for('static', filename='round_workspace.js', v='20261014-pane-focus-1') }}"></script>
 <script src="{{ url_for('static', filename='round_configuration.js', v='20261001-configuration-polish-1') }}"></script>
-<script src="{{ url_for('static', filename='project_audit_agent.js', v='20261001-project-visit-1') }}"></script>
+<script src="{{ url_for('static', filename='project_audit_agent.js', v='20261102-audit-key-unavailable-1') }}"></script>
 {% endblock %}

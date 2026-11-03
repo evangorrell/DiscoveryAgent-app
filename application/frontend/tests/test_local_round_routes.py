@@ -167,7 +167,7 @@ def test_start_and_resume_routes_return_missing_key_as_expected_validation(monke
         payload = response.get_json()
         assert payload["ok"] is False
         assert payload["code"] == "anthropic_api_key_missing"
-        assert payload["message"].startswith("Anthropic API key not detected")
+        assert payload["message"].startswith("Anthropic API key not detected.")
         assert "ANTHROPIC_API_KEY" in payload["message"]
 
 
