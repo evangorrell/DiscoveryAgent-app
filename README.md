@@ -1,4 +1,10 @@
-# DiscoveryAgent
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/header-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/header-light.png">
+    <img alt="DiscoveryAgent: long-horizon AI research that you can steer and audit." src="docs/assets/header-light.png" width="100%">
+  </picture>
+</p>
 
 DiscoveryAgent is a multi-agent AI system for semi-autonomous scientific research. Give it your data and a research objective, and it carries out iterative scientific investigations—exploring your data, connecting findings to the scientific literature, performing computational analyses, and developing new hypotheses.
 
@@ -128,6 +134,11 @@ DOI, arXiv identifier, or publication date.
 ### Citation
 
 ```bibtex
+@misc{queen2026discoveryagent,
+  title = {{DiscoveryAgent}: A Framework for Scientist-centric Agentic AI},
+  author = {Queen, Owen and Ciuc\u{a}, Ioana and Dann, Emma and Somalwar, Jean and You, Carine and Dillmann, Steven and Manwadkar, Viraj and Gorrell, Evan and Zhang, Harrison G. and Pritchard, Jonathan and Wechsler, Risa and Zou, James},
+  year = {2026}
+}
 ```
 
 <!-- PUBLICATION: Add the approved license notice and link before publication.
