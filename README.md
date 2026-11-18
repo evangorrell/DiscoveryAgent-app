@@ -120,26 +120,22 @@ The interface, project files, and analysis environment run locally on your Mac. 
 
 ## Paper
 
-**[Paper Title](paper-url)**<br>
-Authors...
-
-<!-- PUBLICATION: PAPER AND CITATION
-Replace Paper Title, paper-url, and Authors... above with the approved details.
-Add the final BibTeX citation below and keep the Agent System callout pointing
-to this Paper section.
-Required: title, authors, public URL, and approved BibTeX. Do not infer a venue,
-DOI, arXiv identifier, or publication date.
--->
+**[DiscoveryAgent: A Framework for Scientist-centric Agentic AI](https://arxiv.org/abs/2611.21950)**<br>
+Owen Queen, Ioana Ciucă, Emma Dann, Jean Somalwar, Carine You, Steven Dillmann, Viraj Manwadkar, Evan Gorrell, Harrison G. Zhang, Jonathan K. Pritchard, Risa H. Wechsler, James Zou.
 
 ### Citation
 
 ```bibtex
 @misc{queen2026discoveryagent,
   title = {{DiscoveryAgent}: A Framework for Scientist-centric Agentic AI},
-  author = {Queen, Owen and Ciuc\u{a}, Ioana and Dann, Emma and Somalwar, Jean and You, Carine and Dillmann, Steven and Manwadkar, Viraj and Gorrell, Evan and Zhang, Harrison G. and Pritchard, Jonathan and Wechsler, Risa and Zou, James},
-  year = {2026}
+  author = {Queen, Owen and Ciuc\u{a}, Ioana and Dann, Emma and Somalwar, Jean and You, Carine and Dillmann, Steven and Manwadkar, Viraj and Gorrell, Evan and Zhang, Harrison G. and Pritchard, Jonathan K. and Wechsler, Risa H. and Zou, James},
+  year = {2026},
+  eprint = {2611.21950},
+  archivePrefix = {arXiv},
+  url = {https://arxiv.org/abs/2611.21950}
 }
 ```
 
-<!-- PUBLICATION: Add the approved license notice and link before publication.
-License and publication approval are pending; no license is asserted here. -->
+## License
+
+Licensed under the [MIT License](LICENSE).
